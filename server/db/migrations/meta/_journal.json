@@ -57,6 +57,13 @@
       "when": 1783113050803,
       "tag": "0008_add_notifications_actor_id",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1783113050804,
+      "tag": "0009_add_likes_tables",
+      "breakpoints": true
     }
   ]
 }

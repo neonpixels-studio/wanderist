@@ -34,7 +34,10 @@ const mockGetQuery = vi.mocked(
   globalThis.getQuery as (event: unknown) => Record<string, unknown>,
 );
 
-function makeDbForListing(rows: Record<string, unknown>[]) {
+function makeDbForListing(
+  rows: Record<string, unknown>[],
+  likeRows: { contentId: string }[] = [],
+) {
   const offsetMock = vi.fn().mockResolvedValue(rows);
   const limitMock = vi.fn().mockReturnValue({ offset: offsetMock });
   const orderByMock = vi.fn().mockReturnValue({ limit: limitMock });
@@ -52,6 +55,10 @@ function makeDbForListing(rows: Record<string, unknown>[]) {
   const tagsFromMock = vi
     .fn()
     .mockReturnValue({ innerJoin: tagsInnerJoinMock });
+
+  // likedContentIds: select({ contentId }).from(entryLikes).where(...) awaited.
+  const likesWhereMock = vi.fn().mockResolvedValue(likeRows);
+  const likesFromMock = vi.fn().mockReturnValue({ where: likesWhereMock });
 
   const selectDistinctWhereMock = vi.fn().mockResolvedValue([]);
   const selectDistinctInnerJoinMock = vi
@@ -75,7 +82,10 @@ function makeDbForListing(rows: Record<string, unknown>[]) {
       if (callCount === 2) {
         return { from: photosFromMock };
       }
-      return { from: tagsFromMock };
+      if (callCount === 3) {
+        return { from: tagsFromMock };
+      }
+      return { from: likesFromMock };
     }),
     selectDistinct: selectDistinctMock,
     _whereMock: whereMock,
@@ -90,26 +100,25 @@ describe("GET /api/entries", () => {
     mockGetQuery.mockReturnValue({});
   });
 
-  it("returns entries scoped to the authenticated user", async () => {
-    const expectedEntries = [
+  it("returns entries scoped to the user, each flagged by like state", async () => {
+    const storedEntries = [
       { id: "e-1", userId: "user-1", title: "First Entry" },
+      { id: "e-2", userId: "user-1", title: "Second Entry" },
     ];
     mockRequireUser.mockReturnValue("user-1");
-    const mockDb = makeDbForListing(expectedEntries);
+    // The user has liked e-1 but not e-2.
+    const mockDb = makeDbForListing(storedEntries, [{ contentId: "e-1" }]);
     mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
 
     const defaultHandler = "default" in handler ? handler.default : handler;
-    const result = await (defaultHandler as (event: unknown) => unknown)({});
+    const result = (await (defaultHandler as (event: unknown) => unknown)(
+      {},
+    )) as { entries: { id: string; likedByCurrentUser: boolean }[] };
 
-    expect(result).toMatchObject({
-      entries: expectedEntries.map((entry) => ({
-        ...entry,
-        photos: [],
-        tags: [],
-      })),
-      tab: "timeline",
-      page: 1,
-    });
+    expect(result.entries).toEqual([
+      { ...storedEntries[0], photos: [], tags: [], likedByCurrentUser: true },
+      { ...storedEntries[1], photos: [], tags: [], likedByCurrentUser: false },
+    ]);
   });
 
   it("throws 401 when not authenticated", async () => {
