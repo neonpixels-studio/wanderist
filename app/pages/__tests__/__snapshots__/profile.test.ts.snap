@@ -1,0 +1,36 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`profile page > renders a loaded public profile 1`] = `
+"<div data-v-0199c68f="" class="content">
+  <header data-v-0199c68f="" class="topbar"><button data-v-0199c68f="" class="icon-btn" aria-label="Search"><svg data-v-0199c68f="" data-icon="" name="search" size="18"></svg></button></header>
+  <header data-v-0a24448e="" data-v-0199c68f="" class="phead card card--pad"><span data-v-0a24448e="" class="phead__av"><svg data-v-0a24448e="" data-icon="" name="user" size="30"></svg></span>
+    <div data-v-0a24448e="" class="phead__id">
+      <h1 data-v-0a24448e="">Elsa</h1>
+      <div data-v-0a24448e="" class="phead__handle">@elsa_far</div>
+      <div data-v-0a24448e="" class="phead__home"><svg data-v-0a24448e="" data-icon="" name="pin" size="13"></svg> Reykjavik</div>
+    </div><button data-v-0a24448e="" class="btn btn--sm btn--outline">follow</button>
+  </header>
+  <!--v-if-->
+  <p data-v-0199c68f="" class="pbio">Cold-water swimmer chasing coastlines.</p>
+  <div data-v-0199c68f="" class="pstats">
+    <div data-v-0199c68f="" class="pstat"><b data-v-0199c68f="">3</b><span data-v-0199c68f="">followers</span></div>
+    <div data-v-0199c68f="" class="pstat"><b data-v-0199c68f="">1</b><span data-v-0199c68f="">following</span></div>
+    <div data-v-0199c68f="" class="pstat"><b data-v-0199c68f="">8</b><span data-v-0199c68f="">places</span></div>
+  </div>
+  <section data-v-0199c68f="" class="psec">
+    <div data-v-0199c68f="" class="sec-head">
+      <div data-v-0199c68f="">
+        <div data-v-0199c68f="" class="label">// followers</div>
+        <h2 data-v-0199c68f="">Who follows Elsa</h2>
+      </div>
+    </div>
+    <!-- Not dismissible: this is the section's only content when it errors, so
+       dismissing it would leave the section blank with no way to recover. -->
+    <div data-v-42077964="" data-v-0199c68f="" class="card card--pad"><a data-v-42077964="" href="/u/user-2" class="person"><span data-v-42077964="" class="person__av"><svg data-v-42077964="" data-icon="" name="user" size="19"></svg></span>
+        <div data-v-42077964="" class="person__name"><b data-v-42077964="">Marco</b><span data-v-42077964="">@marco</span></div>
+      </a>
+      <!--v-if-->
+    </div>
+  </section>
+</div>"
+`;

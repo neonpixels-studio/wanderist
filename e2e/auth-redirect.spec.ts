@@ -17,6 +17,9 @@ const PROTECTED_ROUTES = [
   "/settings",
   "/explore",
   "/home",
+  // Traveler profile route (app/pages/u/[id].vue) — auth-gated like the rest.
+  // Any id works since the middleware redirects before the page fetches.
+  "/u/test-user",
 ];
 
 for (const route of PROTECTED_ROUTES) {

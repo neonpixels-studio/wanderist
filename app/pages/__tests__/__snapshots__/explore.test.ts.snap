@@ -142,18 +142,10 @@ exports[`Explore page (/explore) > renders without crashing and matches snapshot
         </div>
         <!--v-if-->
         <div data-v-fccf1d79="" class="card card--pad" style="padding: 16px 18px;">
-          <div data-v-fccf1d79="" class="person"><span data-v-fccf1d79="" class="person__av"><svg data-v-fccf1d79="" data-icon="" name="user" size="19"></svg></span>
-            <div data-v-fccf1d79="" class="person__name"><b data-v-fccf1d79="">Elsa Farþegi</b><span data-v-fccf1d79="">@elsa_far · Reykjavík · 84 places</span></div><button data-v-fccf1d79="" class="btn btn--sm btn--outline">follow</button>
-          </div>
-          <div data-v-fccf1d79="" class="person"><span data-v-fccf1d79="" class="person__av"><svg data-v-fccf1d79="" data-icon="" name="user" size="19"></svg></span>
-            <div data-v-fccf1d79="" class="person__name"><b data-v-fccf1d79="">Marco Reis</b><span data-v-fccf1d79="">@marco.travels · Lisbon · 2100 places</span></div><button data-v-fccf1d79="" class="btn btn--sm btn--outline">follow</button>
-          </div>
-          <div data-v-fccf1d79="" class="person"><span data-v-fccf1d79="" class="person__av"><svg data-v-fccf1d79="" data-icon="" name="user" size="19"></svg></span>
-            <div data-v-fccf1d79="" class="person__name"><b data-v-fccf1d79="">Yuki Tanaka</b><span data-v-fccf1d79="">@yuki · Tokyo · 510 places</span></div><button data-v-fccf1d79="" class="btn btn--sm btn--outline">follow</button>
-          </div>
-          <div data-v-fccf1d79="" class="person"><span data-v-fccf1d79="" class="person__av"><svg data-v-fccf1d79="" data-icon="" name="user" size="19"></svg></span>
-            <div data-v-fccf1d79="" class="person__name"><b data-v-fccf1d79="">Maya Rambles</b><span data-v-fccf1d79="">@mayarambles · Oslo · 332 places</span></div><button data-v-fccf1d79="" class="btn btn--sm btn--outline">follow</button>
-          </div>
+          <div data-v-fccf1d79="" class="person"><span data-v-fccf1d79="" class="person__av"><svg data-v-fccf1d79="" data-icon="" name="user" size="19"></svg></span><a data-v-fccf1d79="" class="person__name"><b data-v-fccf1d79="">Elsa Farþegi</b><span data-v-fccf1d79="">@elsa_far · Reykjavík · 84 places</span></a><button data-v-fccf1d79="" class="btn btn--sm btn--outline">follow</button></div>
+          <div data-v-fccf1d79="" class="person"><span data-v-fccf1d79="" class="person__av"><svg data-v-fccf1d79="" data-icon="" name="user" size="19"></svg></span><a data-v-fccf1d79="" class="person__name"><b data-v-fccf1d79="">Marco Reis</b><span data-v-fccf1d79="">@marco.travels · Lisbon · 2100 places</span></a><button data-v-fccf1d79="" class="btn btn--sm btn--outline">follow</button></div>
+          <div data-v-fccf1d79="" class="person"><span data-v-fccf1d79="" class="person__av"><svg data-v-fccf1d79="" data-icon="" name="user" size="19"></svg></span><a data-v-fccf1d79="" class="person__name"><b data-v-fccf1d79="">Yuki Tanaka</b><span data-v-fccf1d79="">@yuki · Tokyo · 510 places</span></a><button data-v-fccf1d79="" class="btn btn--sm btn--outline">follow</button></div>
+          <div data-v-fccf1d79="" class="person"><span data-v-fccf1d79="" class="person__av"><svg data-v-fccf1d79="" data-icon="" name="user" size="19"></svg></span><a data-v-fccf1d79="" class="person__name"><b data-v-fccf1d79="">Maya Rambles</b><span data-v-fccf1d79="">@mayarambles · Oslo · 332 places</span></a><button data-v-fccf1d79="" class="btn btn--sm btn--outline">follow</button></div>
           <!--v-if-->
         </div>
       </div>

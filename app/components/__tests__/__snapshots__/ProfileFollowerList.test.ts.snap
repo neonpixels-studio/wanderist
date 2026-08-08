@@ -1,0 +1,17 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ProfileFollowerList > renders each follower linked to their profile and matches snapshot 1`] = `
+"<!-- Not dismissible: this is the section's only content when it errors, so
+       dismissing it would leave the section blank with no way to recover. -->
+<div data-v-42077964="" class="card card--pad"><a data-v-42077964="" href="/u/user-2" class="person"><span data-v-42077964="" class="person__av"><svg data-v-42077964="" data-icon="" name="user" size="19"></svg></span>
+    <div data-v-42077964="" class="person__name"><b data-v-42077964="">Marco</b><span data-v-42077964="">@marco</span></div>
+  </a><a data-v-42077964="" href="/u/user-3" class="person"><span data-v-42077964="" class="person__av"><svg data-v-42077964="" data-icon="" name="user" size="19"></svg></span>
+    <div data-v-42077964="" class="person__name"><b data-v-42077964="">nina</b><span data-v-42077964="">@nina</span></div>
+  </a><a data-v-42077964="" href="/u/user-4" class="person"><span data-v-42077964="" class="person__av"><svg data-v-42077964="" data-icon="" name="user" size="19"></svg></span>
+    <div data-v-42077964="" class="person__name"><b data-v-42077964="">Wanderist traveler</b>
+      <!--v-if-->
+    </div>
+  </a>
+  <!--v-if-->
+</div>"
+`;

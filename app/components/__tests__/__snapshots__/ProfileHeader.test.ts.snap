@@ -1,0 +1,11 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ProfileHeader > renders the name, handle, and home base and matches snapshot 1`] = `
+"<header data-v-0a24448e="" class="phead card card--pad"><span data-v-0a24448e="" class="phead__av"><svg data-v-0a24448e="" data-icon="" name="user" size="30"></svg></span>
+  <div data-v-0a24448e="" class="phead__id">
+    <h1 data-v-0a24448e="">Elsa</h1>
+    <div data-v-0a24448e="" class="phead__handle">@elsa_far</div>
+    <div data-v-0a24448e="" class="phead__home"><svg data-v-0a24448e="" data-icon="" name="pin" size="13"></svg> Reykjavik</div>
+  </div><button data-v-0a24448e="" class="btn btn--sm btn--outline">follow</button>
+</header>"
+`;
