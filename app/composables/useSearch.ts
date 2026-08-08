@@ -4,6 +4,8 @@
  * SearchItem shape that AppCommandPalette, explore, and map already use.
  */
 
+import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
+
 export interface SearchItem {
   id: string;
   title: string;
@@ -107,9 +109,9 @@ function mapGuide(guide: GuideResult): SearchItem {
 }
 
 function mapPerson(person: PersonResult): SearchItem {
-  const title = person.handle
-    ? `@${person.handle.replace(/^@/, "")}`
-    : (person.displayName ?? "Wanderist traveler");
+  const title =
+    formatHandle(person.handle) ||
+    (person.displayName ?? DEFAULT_TRAVELER_NAME);
   const subtitle =
     person.displayName && person.handle ? person.displayName : undefined;
   return {
@@ -117,7 +119,7 @@ function mapPerson(person: PersonResult): SearchItem {
     title,
     subtitle,
     icon: "user",
-    href: "/explore",
+    href: `/u/${encodeURIComponent(person.id)}`,
   };
 }
 

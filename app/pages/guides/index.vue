@@ -55,7 +55,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, watch } from "vue";
 import { useGuidesStore } from "~/stores/guides";
 import type {
   Guide,
@@ -78,11 +78,14 @@ const isSavingGuide = ref(false);
 // delete of a different guide — each card's own in-flight state is looked up
 // independently.
 const deletingGuideIds = ref<Set<string>>(new Set());
-// Tracks which guides the user has liked this session so the heart can toggle
-// optimistically. Mirrors likedEntryIds in pages/journal.vue — the server
-// stores only a denormalised count, not per-user like state, so "have I liked
-// this?" lives on the client for the lifetime of the page.
+// Tracks which guides the user has liked. Seeded from the server's
+// `likedByCurrentUser` flag (guide_likes join table) on every fetch so the
+// heart state survives a reload, then mutated optimistically on toggle.
+// Mirrors likedEntryIds in pages/journal.vue.
 const likedGuideIds = ref<Set<string>>(new Set());
+// IDs whose like/unlike request is in flight. Excluded from seeding so a fetch
+// that resolves mid-toggle can't overwrite the user's just-made choice.
+const pendingLikeIds = ref<Set<string>>(new Set());
 const formError = ref<string | null>(null);
 const deleteError = ref<string | null>(null);
 
@@ -171,17 +174,32 @@ function setGuideLiked(guideId: string, liked: boolean): void {
   likedGuideIds.value.delete(guideId);
 }
 
+// Re-sync the liked set from the server's per-row flag on every fetch, in both
+// directions (a like removed elsewhere clears here too) — except for IDs with a
+// toggle in flight, whose optimistic state must not be clobbered.
+function seedLikedGuides(): void {
+  for (const guide of guidesStore.guides) {
+    if (pendingLikeIds.value.has(guide.id)) {
+      continue;
+    }
+    setGuideLiked(guide.id, guide.likedByCurrentUser === true);
+  }
+}
+
 async function handleToggleLikeGuide(guide: Guide): Promise<void> {
   const wasLiked = likedGuideIds.value.has(guide.id);
   const persist = wasLiked ? guidesStore.unlikeGuide : guidesStore.likeGuide;
 
   setGuideLiked(guide.id, !wasLiked);
+  pendingLikeIds.value.add(guide.id);
   try {
     await persist(guide.id);
   } catch {
     // Rollback optimistic like state on failure so the heart matches what the
     // server actually recorded (the store leaves likeCount untouched on error).
     setGuideLiked(guide.id, wasLiked);
+  } finally {
+    pendingLikeIds.value.delete(guide.id);
   }
 }
 
@@ -190,6 +208,10 @@ function loadGuides(): void {
     console.error("[guides] failed to load guides", error);
   });
 }
+
+// Re-seed whenever the guides list is (re)populated — the initial load, a
+// retry, or any refetch — so the heart state always reflects the server.
+watch(() => guidesStore.guides, seedLikedGuides);
 
 onMounted(loadGuides);
 </script>

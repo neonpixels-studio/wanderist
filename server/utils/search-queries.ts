@@ -1,4 +1,4 @@
-import { ilike, eq, or, and } from "drizzle-orm";
+import { ilike, eq, or, and, isNull } from "drizzle-orm";
 import { getDb } from "../db/index";
 import {
   places,
@@ -141,8 +141,10 @@ export async function searchPeople(
   database: ReturnType<typeof getDb>,
   pattern: string,
 ): Promise<PersonResult[]> {
-  // People results are public profiles only (publicProfile = true), never
-  // scoped to the requesting user so the current user can discover others.
+  // People results are public, non-deleted profiles (publicProfile = true,
+  // deletedAt IS NULL), never scoped to the requesting user so the current user
+  // can discover others. Excluding soft-deleted accounts keeps a result's
+  // profile link (/u/<id>) from landing on "Profile unavailable".
   return database
     .select({
       id: users.id,
@@ -154,6 +156,7 @@ export async function searchPeople(
     .where(
       and(
         eq(userPreferences.publicProfile, true),
+        isNull(users.deletedAt),
         or(
           ilike(userPreferences.displayName, pattern),
           ilike(userPreferences.handle, pattern),

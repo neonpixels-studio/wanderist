@@ -232,7 +232,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, toRef } from "vue";
+import { computed, inject, onMounted, ref, toRef, watch } from "vue";
 import { useEntriesStore } from "~/stores/entries";
 import { useTripsStore } from "~/stores/trips";
 import type { Trip } from "~/stores/trips";
@@ -334,10 +334,13 @@ function formatTripSub(trip: Trip): string {
   return `${entryCountLabel(entryCount)} · ${trip.status}`;
 }
 
-// Local set tracking which entry IDs the user has liked this session.
-// The server is the source of truth for likeCount; this tracks the liked
-// state so the heart button shows correctly without a per-user DB column.
+// Local set tracking which entry IDs the user has liked. Seeded from the
+// server's `likedByCurrentUser` flag (entry_likes join table) on every fetch so
+// the heart state survives a reload, then mutated optimistically on toggle.
 const likedEntryIds = ref<Set<string>>(new Set());
+// IDs whose like/unlike request is in flight. Excluded from seeding so a fetch
+// that resolves mid-toggle can't overwrite the user's just-made choice.
+const pendingLikeIds = ref<Set<string>>(new Set());
 
 function setLiked(entryId: string, liked: boolean): void {
   if (liked) {
@@ -347,16 +350,31 @@ function setLiked(entryId: string, liked: boolean): void {
   likedEntryIds.value.delete(entryId);
 }
 
+// Re-sync the liked set from the server's per-row flag on every fetch, in both
+// directions (a like removed elsewhere clears here too) — except for IDs with a
+// toggle in flight, whose optimistic state must not be clobbered.
+function seedLikedEntries(): void {
+  for (const entry of entriesStore.entries) {
+    if (pendingLikeIds.value.has(entry.id)) {
+      continue;
+    }
+    setLiked(entry.id, entry.likedByCurrentUser === true);
+  }
+}
+
 async function handleToggleLike(entry: Entry): Promise<void> {
   const wasLiked = likedEntryIds.value.has(entry.id);
   const persist = wasLiked ? entriesStore.unlikeEntry : entriesStore.likeEntry;
 
   setLiked(entry.id, !wasLiked);
+  pendingLikeIds.value.add(entry.id);
   try {
     await persist(entry.id);
   } catch {
     // Rollback optimistic update on failure
     setLiked(entry.id, wasLiked);
+  } finally {
+    pendingLikeIds.value.delete(entry.id);
   }
 }
 
@@ -373,6 +391,10 @@ async function loadOnThisDay(): Promise<void> {
     onThisDayEntries.value = [];
   }
 }
+
+// Re-seed whenever the entries list is (re)populated — the initial load, a
+// retry, or any refetch — so the heart state always reflects the server.
+watch(() => entriesStore.entries, seedLikedEntries);
 
 onMounted(() => {
   // Fetch all three independently and concurrently; failures are non-fatal.

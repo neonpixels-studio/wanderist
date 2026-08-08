@@ -220,7 +220,7 @@ describe("useSearch", () => {
     expect(guide.href).toBe("/guides");
   });
 
-  it("maps people to SearchItems with user icon and @handle as title", async () => {
+  it("maps people to SearchItems with user icon, @handle title, and profile href", async () => {
     mockApiFetch.mockResolvedValue(SAMPLE_API_RESPONSE);
     const { search, results } = useSearch();
 
@@ -230,7 +230,7 @@ describe("useSearch", () => {
     expect(person.id).toBe("u-2");
     expect(person.title).toBe("@elsa_far");
     expect(person.icon).toBe("user");
-    expect(person.href).toBe("/explore");
+    expect(person.href).toBe("/u/u-2");
   });
 
   it("falls back to displayName as people title when handle is null", async () => {

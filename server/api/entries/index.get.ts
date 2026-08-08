@@ -3,6 +3,7 @@ import type { SQL } from "drizzle-orm";
 import { requireUser } from "../../utils/auth";
 import { getDb } from "../../db/index";
 import { entries, entryPhotos, entryTags, tags } from "../../db/schema";
+import { ENTRY_LIKEABLE, likedContentIds } from "../../utils/like-helpers";
 
 const VALID_TABS = ["timeline", "by-trip", "photos"] as const;
 type Tab = (typeof VALID_TABS)[number];
@@ -132,9 +133,10 @@ export default defineEventHandler(async (event) => {
   const rows = await fetchEntriesPage(database, filters, page);
   const entryIds = rows.map((row) => row.id);
 
-  const [photos, tagRows] = await Promise.all([
+  const [photos, tagRows, likedIds] = await Promise.all([
     fetchEntryPhotos(database, entryIds),
     fetchEntryTags(database, entryIds),
+    likedContentIds(database, ENTRY_LIKEABLE, entryIds, userId),
   ]);
 
   const photosByEntry = groupByEntryId(photos);
@@ -147,6 +149,7 @@ export default defineEventHandler(async (event) => {
       id: tagRow.tagId,
       name: tagRow.tagName,
     })),
+    likedByCurrentUser: likedIds.has(row.id),
   }));
 
   return { entries: result, tab, page };

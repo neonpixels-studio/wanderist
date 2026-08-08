@@ -16,6 +16,7 @@ const {
   mockOrderBy,
   mockLimit,
   mockOffset,
+  mockLikesWhere,
   mockGetQuery,
   mockEq,
   mockDesc,
@@ -25,7 +26,21 @@ const {
   const mockOrderBy = vi.fn(() => ({ limit: mockLimit }));
   const mockWhere = vi.fn(() => ({ orderBy: mockOrderBy }));
   const mockFrom = vi.fn(() => ({ where: mockWhere }));
-  const mockSelect = vi.fn(() => ({ from: mockFrom }));
+
+  // The handler issues a second select() for likedContentIds:
+  // select({ contentId }).from(guideLikes).where(...) awaited directly. That
+  // chain is distinct from the guides page chain above, so the like lookup
+  // resolves to its own rows rather than the paginated guides.
+  const mockLikesWhere = vi.fn().mockResolvedValue([]);
+  const mockLikesFrom = vi.fn(() => ({ where: mockLikesWhere }));
+
+  const mockSelect = vi.fn(() => {
+    // First select() is the guides page; any later one is the like lookup.
+    if (mockSelect.mock.calls.length === 1) {
+      return { from: mockFrom };
+    }
+    return { from: mockLikesFrom };
+  });
 
   const mockRequireUser = vi.fn().mockReturnValue("user-1");
   const mockGetQuery = vi.fn().mockReturnValue({});
@@ -40,6 +55,7 @@ const {
     mockOrderBy,
     mockLimit,
     mockOffset,
+    mockLikesWhere,
     mockGetQuery,
     mockEq,
     mockDesc,
@@ -83,6 +99,12 @@ function setRows(rows: unknown[]) {
   mockOffset.mockResolvedValue(rows);
 }
 
+// The rows likedContentIds resolves to — each `{ contentId }` marks that
+// content as liked by the current user for the like-state assertions.
+function setLikedIds(likeRows: { contentId: string }[]) {
+  mockLikesWhere.mockResolvedValue(likeRows);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -93,21 +115,27 @@ describe("GET /api/guides", () => {
     mockRequireUser.mockReturnValue("user-1");
     mockGetQuery.mockReturnValue({});
     mockOffset.mockResolvedValue([]);
+    mockLikesWhere.mockResolvedValue([]);
   });
 
-  it("returns guides scoped to the authenticated user", async () => {
-    const expectedGuides = [
+  it("returns guides scoped to the authenticated user, flagged by like state", async () => {
+    const storedGuides = [
       { id: "g-1", userId: "user-1", title: "Tokyo on foot" },
       { id: "g-2", userId: "user-1", title: "Slow coastlines" },
     ];
-    setRows(expectedGuides);
+    setRows(storedGuides);
+    // The user has liked g-1 but not g-2.
+    setLikedIds([{ contentId: "g-1" }]);
 
     const result = (await (handler as (event: object) => unknown)(
       buildEvent(),
     )) as { guides: unknown[]; page: number; hasMore: boolean };
 
     expect(result).toEqual({
-      guides: expectedGuides,
+      guides: [
+        { ...storedGuides[0], likedByCurrentUser: true },
+        { ...storedGuides[1], likedByCurrentUser: false },
+      ],
       page: 1,
       hasMore: false,
     });
@@ -201,7 +229,9 @@ describe("GET /api/guides", () => {
       buildEvent(),
     )) as { guides: unknown[]; page: number; hasMore: boolean };
 
-    expect(result.guides).toEqual(secondPageRows);
+    expect(result.guides).toEqual([
+      { ...secondPageRows[0], likedByCurrentUser: false },
+    ]);
     expect(result.page).toBe(2);
     expect(result.hasMore).toBe(false);
     expect(mockOffset).toHaveBeenCalledWith(20);

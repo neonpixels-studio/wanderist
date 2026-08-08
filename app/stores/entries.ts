@@ -23,6 +23,13 @@ export interface Entry {
   visibility: "private" | "public";
   weather: string | null;
   likeCount: number;
+  // Whether the current user has liked this entry, server-derived from the
+  // entry_likes join table (survives a reload, unlike the old session Set).
+  // Optional because the list/detail read paths and the like/unlike responses
+  // populate it, but create/update/on-this-day responses don't — a freshly
+  // created or edited entry's like state is read from the page's liked set, not
+  // this field.
+  likedByCurrentUser?: boolean;
   // JSON-serialized ISO strings from the API; not Date objects at runtime.
   createdAt: string;
   updatedAt: string;
@@ -77,13 +84,15 @@ function buildEntriesQuery(filters?: FetchEntriesFilters): string {
   return queryString ? `/api/entries?${queryString}` : "/api/entries";
 }
 
-function replaceLikeCount(
-  list: Entry[],
-  id: string,
-  likeCount: number,
-): Entry[] {
+function replaceLikeState(list: Entry[], updated: Entry): Entry[] {
   return list.map((entry) =>
-    entry.id === id ? { ...entry, likeCount } : entry,
+    entry.id === updated.id
+      ? {
+          ...entry,
+          likeCount: updated.likeCount,
+          likedByCurrentUser: updated.likedByCurrentUser,
+        }
+      : entry,
   );
 }
 
@@ -189,7 +198,7 @@ export const useEntriesStore = defineStore("entries", () => {
         method: "POST",
       });
 
-      entries.value = replaceLikeCount(entries.value, id, updated.likeCount);
+      entries.value = replaceLikeState(entries.value, updated);
 
       return updated;
     } catch (caught) {
@@ -205,7 +214,7 @@ export const useEntriesStore = defineStore("entries", () => {
         method: "DELETE",
       });
 
-      entries.value = replaceLikeCount(entries.value, id, updated.likeCount);
+      entries.value = replaceLikeState(entries.value, updated);
 
       return updated;
     } catch (caught) {

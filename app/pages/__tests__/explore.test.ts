@@ -352,6 +352,16 @@ describe("Explore page (/explore)", () => {
     expect(wrapper.findAll(".person")).toHaveLength(4);
   });
 
+  it("links each person's name to their profile route", () => {
+    const wrapper = mount(ExplorePage, globalConfig);
+    const personLinks = wrapper
+      .findAllComponents(linkStub)
+      .filter((link) => link.classes().includes("person__name"));
+    // Guards against a userId/id typo pointing every profile link at /u/undefined.
+    expect(personLinks[0].props("to")).toBe("/u/user_elsa");
+    expect(personLinks[1].props("to")).toBe("/u/user_marco");
+  });
+
   it("calls fetchAll and fetchFollowing on mount", async () => {
     mount(ExplorePage, globalConfig);
     expect(mockFetchAll).toHaveBeenCalledTimes(1);

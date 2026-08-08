@@ -267,10 +267,13 @@
               <span class="person__av">
                 <AppIcon name="user" :size="19" />
               </span>
-              <div class="person__name">
+              <NuxtLink
+                class="person__name"
+                :to="`/u/${encodeURIComponent(person.userId)}`"
+              >
                 <b>{{ personDisplayName(person) }}</b>
                 <span>{{ personSubline(person) }}</span>
-              </div>
+              </NuxtLink>
               <button
                 class="btn btn--sm"
                 :class="person.following ? 'btn--primary' : 'btn--outline'"
@@ -301,6 +304,7 @@ import type {
   DiscoverGuide,
   SuggestedPerson,
 } from "~/composables/useDiscover";
+import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
 
 const openNotifications = inject<(() => void) | undefined>(
   "openNotifications",
@@ -431,15 +435,13 @@ function tripKicker(trip: FeaturedTrip): string {
 }
 
 function tripAuthorLabel(trip: FeaturedTrip): string {
-  if (trip.ownerHandle) {
-    return `@${trip.ownerHandle.replace(/^@/, "")}`;
-  }
-  return trip.ownerDisplayName ?? "";
+  return formatHandle(trip.ownerHandle) || (trip.ownerDisplayName ?? "");
 }
 
 function guideAuthorLabel(guide: DiscoverGuide): string {
-  if (guide.ownerHandle) {
-    return `by @${guide.ownerHandle.replace(/^@/, "")}`;
+  const handle = formatHandle(guide.ownerHandle);
+  if (handle) {
+    return `by ${handle}`;
   }
   if (guide.ownerDisplayName) {
     return `by ${guide.ownerDisplayName}`;
@@ -448,13 +450,13 @@ function guideAuthorLabel(guide: DiscoverGuide): string {
 }
 
 function personDisplayName(person: SuggestedPerson): string {
-  return person.displayName ?? person.handle ?? "Wanderist traveler";
+  return person.displayName ?? person.handle ?? DEFAULT_TRAVELER_NAME;
 }
 
 function personSubline(person: SuggestedPerson): string {
   const parts: string[] = [];
   if (person.handle) {
-    parts.push(`@${person.handle.replace(/^@/, "")}`);
+    parts.push(formatHandle(person.handle));
   }
   if (person.homeBase) {
     parts.push(person.homeBase);
@@ -792,8 +794,16 @@ section.xsec {
   place-items: center;
   flex: none;
 }
+.person__name {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
 .person__name b {
   font-size: 13px;
+}
+.person__name:hover b {
+  color: var(--accent-ink);
 }
 .person__name span {
   font-size: 11px;

@@ -9,6 +9,8 @@ import {
   trips,
   tripStops,
   entries,
+  entryLikes,
+  guideLikes,
   tags,
   entryTags,
   entryPhotos,
@@ -73,6 +75,14 @@ describe("schema table exports", () => {
 
   it("entryTags table has correct SQL name", () => {
     expect(entryTags[Symbol.for("drizzle:Name")]).toBe("entry_tags");
+  });
+
+  it("entryLikes table has correct SQL name", () => {
+    expect(entryLikes[Symbol.for("drizzle:Name")]).toBe("entry_likes");
+  });
+
+  it("guideLikes table has correct SQL name", () => {
+    expect(guideLikes[Symbol.for("drizzle:Name")]).toBe("guide_likes");
   });
 
   it("entryPhotos table has correct SQL name", () => {
@@ -255,6 +265,32 @@ describe("column presence", () => {
   it("follows has followerId and followeeId", () => {
     expect(follows.followerId).toBeDefined();
     expect(follows.followeeId).toBeDefined();
+  });
+
+  it("entryLikes has entryId and userId", () => {
+    expect(entryLikes.entryId).toBeDefined();
+    expect(entryLikes.userId).toBeDefined();
+  });
+
+  it("guideLikes has guideId and userId", () => {
+    expect(guideLikes.guideId).toBeDefined();
+    expect(guideLikes.userId).toBeDefined();
+  });
+
+  it("entryLikes is keyed by the composite (entry_id, user_id)", () => {
+    const [primaryKey] = getTableConfig(entryLikes).primaryKeys;
+    expect(primaryKey.columns.map((column) => column.name)).toEqual([
+      "entry_id",
+      "user_id",
+    ]);
+  });
+
+  it("guideLikes is keyed by the composite (guide_id, user_id)", () => {
+    const [primaryKey] = getTableConfig(guideLikes).primaryKeys;
+    expect(primaryKey.columns.map((column) => column.name)).toEqual([
+      "guide_id",
+      "user_id",
+    ]);
   });
 
   it("connectedAccounts has provider, externalId, accessToken, expiresAt", () => {
@@ -440,6 +476,30 @@ const ON_DELETE_POLICY: ReadonlyArray<{
     label: "entryPhotos.mediaId",
     table: entryPhotos,
     column: "media_id",
+    expected: ON_DELETE.CASCADE,
+  },
+  {
+    label: "entryLikes.entryId",
+    table: entryLikes,
+    column: "entry_id",
+    expected: ON_DELETE.CASCADE,
+  },
+  {
+    label: "entryLikes.userId",
+    table: entryLikes,
+    column: "user_id",
+    expected: ON_DELETE.CASCADE,
+  },
+  {
+    label: "guideLikes.guideId",
+    table: guideLikes,
+    column: "guide_id",
+    expected: ON_DELETE.CASCADE,
+  },
+  {
+    label: "guideLikes.userId",
+    table: guideLikes,
+    column: "user_id",
     expected: ON_DELETE.CASCADE,
   },
   {

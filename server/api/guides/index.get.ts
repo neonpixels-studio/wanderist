@@ -2,6 +2,7 @@ import { eq, desc } from "drizzle-orm";
 import { getDb } from "../../db/index";
 import { guides } from "../../db/schema";
 import { requireUser } from "../../utils/auth";
+import { GUIDE_LIKEABLE, likedContentIds } from "../../utils/like-helpers";
 
 const PAGE_SIZE = 20;
 
@@ -49,8 +50,20 @@ export default defineEventHandler(async (event) => {
 
   const rows = await fetchGuidesPage(database, userId, page);
 
+  const likedIds = await likedContentIds(
+    database,
+    GUIDE_LIKEABLE,
+    rows.map((row) => row.id),
+    userId,
+  );
+
+  const guidesWithLikeState = rows.map((row) => ({
+    ...row,
+    likedByCurrentUser: likedIds.has(row.id),
+  }));
+
   return {
-    guides: rows,
+    guides: guidesWithLikeState,
     page,
     hasMore: rows.length === PAGE_SIZE && page < MAX_PAGE,
   };

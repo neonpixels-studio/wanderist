@@ -366,6 +366,35 @@ export const entryPhotos = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// entry_likes — (entry_id, user_id) join table backing per-user like tracking
+// for journal entries. The composite primary key makes a like idempotent and
+// cross-user: a second like from the same user hits ON CONFLICT DO NOTHING
+// rather than inflating the count, and any user (not just the author) can hold
+// a row. entries.likeCount is a denormalised cache derived from a COUNT over
+// this table (see server/utils/like-helpers.ts).
+// ---------------------------------------------------------------------------
+
+export const entryLikes = pgTable(
+  "entry_likes",
+  {
+    entryId: text("entry_id")
+      .notNull()
+      .references(() => entries.id, { onDelete: ON_DELETE.CASCADE }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: ON_DELETE.CASCADE }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.entryId, table.userId] }),
+    // PK (entry_id, user_id) covers "who liked entry X" and the per-entry
+    // COUNT via leftmost-prefix. Add user_id index for "everything user X
+    // liked" lookups (the read path's liked-by-current-user batch query).
+    index("entry_likes_user_id_idx").on(table.userId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // follows
 // ---------------------------------------------------------------------------
 
@@ -485,6 +514,30 @@ export const guides = pgTable(
       .$onUpdate(() => new Date()),
   },
   (table) => [index("guides_user_id_idx").on(table.userId)],
+);
+
+// ---------------------------------------------------------------------------
+// guide_likes — (guide_id, user_id) join table backing per-user like tracking
+// for guides. Mirrors entry_likes exactly (idempotent, cross-user composite
+// PK); guides.likeCount is the denormalised cache derived from a COUNT over
+// this table.
+// ---------------------------------------------------------------------------
+
+export const guideLikes = pgTable(
+  "guide_likes",
+  {
+    guideId: text("guide_id")
+      .notNull()
+      .references(() => guides.id, { onDelete: ON_DELETE.CASCADE }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: ON_DELETE.CASCADE }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.guideId, table.userId] }),
+    index("guide_likes_user_id_idx").on(table.userId),
+  ],
 );
 
 // ---------------------------------------------------------------------------

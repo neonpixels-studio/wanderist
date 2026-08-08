@@ -1,41 +1,28 @@
-import { eq, sql } from "drizzle-orm";
-import {
-  loadOwnedOrThrow,
-  requireRouterParam,
-} from "../../../utils/db-helpers";
+import { requireRouterParam } from "../../../utils/db-helpers";
+import { requireUser } from "../../../utils/auth";
 import { getDb } from "../../../db/index";
 import { entries } from "../../../db/schema";
-import { loadEntryRelations } from "../../../utils/entry-helpers";
+import {
+  ENTRY_LIKEABLE,
+  loadLikeableOrThrow,
+  unlikeContent,
+} from "../../../utils/like-helpers";
 
-const MIN_LIKE_COUNT = 0;
+type EntryRow = typeof entries.$inferSelect;
 
 export default defineEventHandler(async (event) => {
   const id = requireRouterParam(event, "id");
-
-  const entry = await loadOwnedOrThrow<typeof entries.$inferSelect>(
-    event,
-    entries,
-    entries.id,
-    entries.userId,
-    id,
-  );
-
+  const userId = requireUser(event);
   const database = getDb();
 
-  if (entry.likeCount <= MIN_LIKE_COUNT) {
-    const relations = await loadEntryRelations(database, id);
-    return { ...entry, ...relations };
-  }
+  await loadLikeableOrThrow(database, ENTRY_LIKEABLE, id, userId);
 
-  const updated = await database
-    .update(entries)
-    .set({
-      likeCount: sql`GREATEST(${entries.likeCount} - 1, ${MIN_LIKE_COUNT})`,
-    })
-    .where(eq(entries.id, id))
-    .returning();
+  const updated = await unlikeContent<EntryRow>(
+    database,
+    ENTRY_LIKEABLE,
+    id,
+    userId,
+  );
 
-  const relations = await loadEntryRelations(database, id);
-
-  return { ...updated[0], ...relations };
+  return { id, likeCount: updated.likeCount, likedByCurrentUser: false };
 });
