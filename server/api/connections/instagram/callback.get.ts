@@ -20,6 +20,7 @@ import {
   exchangeForLongLivedToken,
   fetchInstagramUser,
 } from "../../../utils/instagramClient";
+import { expiryFromResponse } from "../../../utils/instagramToken";
 import { encryptToken } from "../../../utils/tokenCrypto";
 
 const STATE_COOKIE_NAME = "ig_oauth_state";
@@ -104,6 +105,9 @@ export default defineEventHandler(async (event) => {
   );
 
   const encryptedToken = encryptToken(longLivedTokenResponse.access_token);
+  // Persist the token's expiry so it can be refreshed before it lapses. Shared
+  // with the refresh path so connect and refresh derive the expiry identically.
+  const expiresAt = expiryFromResponse(longLivedTokenResponse, new Date());
   const database = getDb();
 
   // Upsert on (userId, provider) to enforce one Instagram account per user.
@@ -118,12 +122,14 @@ export default defineEventHandler(async (event) => {
       provider: CONNECTED_ACCOUNT_PROVIDER.INSTAGRAM,
       externalId: instagramUser.id,
       accessToken: encryptedToken,
+      expiresAt,
     })
     .onConflictDoUpdate({
       target: [connectedAccounts.provider, connectedAccounts.externalId],
       set: {
         userId,
         accessToken: encryptedToken,
+        expiresAt,
         connectedAt: new Date(),
       },
     });

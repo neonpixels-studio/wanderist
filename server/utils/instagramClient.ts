@@ -18,6 +18,8 @@ export const INSTAGRAM_OAUTH_TOKEN_URL =
   "https://api.instagram.com/oauth/access_token";
 export const INSTAGRAM_LONG_LIVED_TOKEN_URL =
   "https://graph.instagram.com/access_token";
+export const INSTAGRAM_REFRESH_TOKEN_URL =
+  "https://graph.instagram.com/refresh_access_token";
 
 export const INSTAGRAM_SCOPES = [
   "instagram_basic",
@@ -84,7 +86,25 @@ export interface InstagramTokenResponse {
 export interface InstagramLongLivedTokenResponse {
   access_token: string;
   token_type: string;
-  expires_in: number;
+  // Optional: Instagram normally returns this for long-lived/refresh
+  // responses, but the connect and refresh paths both guard against its
+  // absence rather than storing an Invalid Date, so the type reflects that.
+  expires_in?: number;
+}
+
+/**
+ * Error carrying the HTTP status of a failed Instagram API call, so callers
+ * can distinguish an unrecoverable auth failure (400/401 — token expired or
+ * revoked, user must reconnect) from a transient one (429/5xx — retry later).
+ */
+export class InstagramApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "InstagramApiError";
+    this.status = status;
+  }
 }
 
 export interface InstagramUserResponse {
@@ -193,6 +213,34 @@ export async function exchangeForLongLivedToken(params: {
     const text = await response.text();
     throw new Error(
       `Instagram long-lived token exchange failed (${response.status}): ${text}`,
+    );
+  }
+
+  return response.json() as Promise<InstagramLongLivedTokenResponse>;
+}
+
+/**
+ * Refreshes a long-lived token, returning a fresh 60-day token. Instagram
+ * requires the current token to be valid and at least 24 hours old; a token
+ * that has already expired cannot be refreshed and yields a non-2xx response.
+ */
+export async function refreshLongLivedToken(params: {
+  accessToken: string;
+}): Promise<InstagramLongLivedTokenResponse> {
+  const query = new URLSearchParams({
+    grant_type: "ig_refresh_token",
+    access_token: params.accessToken,
+  });
+
+  const response = await fetch(
+    `${INSTAGRAM_REFRESH_TOKEN_URL}?${query.toString()}`,
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new InstagramApiError(
+      `Instagram token refresh failed (${response.status}): ${text}`,
+      response.status,
     );
   }
 

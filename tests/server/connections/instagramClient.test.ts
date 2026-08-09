@@ -7,6 +7,7 @@ import {
   buildInstagramAuthUrl,
   exchangeInstagramCode,
   exchangeForLongLivedToken,
+  refreshLongLivedToken,
   fetchInstagramUser,
   fetchInstagramMedia,
   filterGeotaggedMedia,
@@ -134,6 +135,40 @@ describe("exchangeForLongLivedToken", () => {
 
     await expect(
       exchangeForLongLivedToken({ clientSecret: "s", shortLivedToken: "t" }),
+    ).rejects.toThrow();
+  });
+});
+
+describe("refreshLongLivedToken", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+
+  it("calls the refresh endpoint with ig_refresh_token and returns the new token", async () => {
+    const refreshResponse = {
+      access_token: "refreshed-token",
+      token_type: "bearer",
+      expires_in: 5183944,
+    };
+    vi.mocked(fetch).mockResolvedValue(makeFetchResponse(refreshResponse));
+
+    const result = await refreshLongLivedToken({ accessToken: "old-token" });
+
+    expect(result.access_token).toBe("refreshed-token");
+    expect(result.expires_in).toBeGreaterThan(0);
+    const [url] = vi.mocked(fetch).mock.calls[0] as [string];
+    expect(url).toContain("refresh_access_token");
+    expect(url).toContain("grant_type=ig_refresh_token");
+    expect(url).toContain("access_token=old-token");
+  });
+
+  it("throws when the API returns a non-OK status", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      makeFetchResponse({ error: "expired" }, false, 400),
+    );
+
+    await expect(
+      refreshLongLivedToken({ accessToken: "dead-token" }),
     ).rejects.toThrow();
   });
 });

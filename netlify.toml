@@ -23,5 +23,14 @@
 [functions."purge-deleted-accounts"]
   schedule = "0 3 * * *"
 
+# Scheduled function: refreshes Instagram long-lived tokens nearing their
+# 60-day expiry so imports keep working for accounts that go quiet. See
+# netlify/functions/refresh-instagram-tokens.mts and
+# server/utils/refreshInstagramTokens.ts. Runs daily at 04:00 UTC — the
+# refresh threshold is 10 days (INSTAGRAM_REFRESH_THRESHOLD_DAYS), so daily
+# granularity renews every token with ample margin before it lapses.
+[functions."refresh-instagram-tokens"]
+  schedule = "0 4 * * *"
+
 [context.production]
   ignore = "if [ -n \"$INCOMING_HOOK_TITLE\" ]; then exit 1; else exit 0; fi"

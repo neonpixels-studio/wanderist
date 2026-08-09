@@ -468,6 +468,12 @@ export const connectedAccounts = pgTable(
     provider: connectedAccountProviderEnum("provider").notNull(),
     externalId: text("external_id").notNull(),
     accessToken: text("access_token"),
+    // When the stored long-lived access token expires. Instagram long-lived
+    // tokens last 60 days; persisting the expiry lets the token be refreshed
+    // before it lapses (see server/utils/instagramToken.ts). Nullable: rows
+    // created before this column existed, and providers that don't expose an
+    // expiry, have no value here.
+    expiresAt: timestamp("expires_at"),
     connectedAt: timestamp("connected_at").defaultNow().notNull(),
   },
   (table) => [

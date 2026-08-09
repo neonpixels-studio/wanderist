@@ -64,6 +64,13 @@
       "when": 1783113050804,
       "tag": "0009_add_likes_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785982772254,
+      "tag": "0010_add_connected_accounts_expires_at",
+      "breakpoints": true
     }
   ]
 }

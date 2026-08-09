@@ -293,10 +293,11 @@ describe("column presence", () => {
     ]);
   });
 
-  it("connectedAccounts has provider, externalId, accessToken", () => {
+  it("connectedAccounts has provider, externalId, accessToken, expiresAt", () => {
     expect(connectedAccounts.provider).toBeDefined();
     expect(connectedAccounts.externalId).toBeDefined();
     expect(connectedAccounts.accessToken).toBeDefined();
+    expect(connectedAccounts.expiresAt).toBeDefined();
   });
 
   it("userPreferences has distanceUnit, publicProfile, handle, bio", () => {

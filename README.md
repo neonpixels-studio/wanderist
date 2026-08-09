@@ -187,9 +187,16 @@ Wanderist connects to Instagram via the **Instagram Graph API** (not the depreca
 - `GET /api/connections/instagram/start` — sets a CSRF state cookie and redirects the user to Instagram's OAuth authorization page.
 - `GET /api/connections/instagram/callback` — exchanges the authorization code for a long-lived token (60-day expiry), stores the encrypted token in `connected_accounts`, then redirects to `/settings#connections`.
 - `DELETE /api/connections/instagram` — removes the row from `connected_accounts`, revoking access.
-- `POST /api/connections/instagram/import` — pulls geotagged media, stores images in Netlify Blobs, and creates journal entries with linked places. The client follows Instagram's `paging.next` up to a fixed page bound (the `INSTAGRAM_MAX_MEDIA_PAGES` constant in `server/utils/instagramClient.ts`, not an env var) so photos older than the most recent batch are still ingested; re-imports are idempotent via `media.source_id`.
+- `POST /api/connections/instagram/import` — pulls geotagged media, stores images in Netlify Blobs, and creates journal entries with linked places. Refreshes the stored token first when it is near expiry so imports self-heal. The client follows Instagram's `paging.next` up to a fixed page bound (the `INSTAGRAM_MAX_MEDIA_PAGES` constant in `server/utils/instagramClient.ts`, not an env var) so photos older than the most recent batch are still ingested; re-imports are idempotent via `media.source_id`.
 
 Access tokens are encrypted at rest using AES-256-GCM. Generate a key with `openssl rand -hex 32` and set it as `TOKEN_ENCRYPTION_KEY`.
+
+**Token refresh.** Instagram long-lived tokens expire after 60 days. The stored expiry (`connected_accounts.expires_at`) drives two refresh paths so a connection never lapses silently:
+
+- **On use** — `import.post` refreshes and re-persists the token whenever it is within `INSTAGRAM_REFRESH_THRESHOLD_DAYS` of expiry (`server/utils/instagramToken.ts`).
+- **Scheduled** — `netlify/functions/refresh-instagram-tokens.mts` (daily via `netlify.toml`) renews tokens for accounts that go quiet, so an inactive user's connection stays alive (`server/utils/refreshInstagramTokens.ts`).
+
+Because the scheduled function runs in the Netlify Functions runtime (not the Nitro bundle), it reads `DATABASE_URL` and `TOKEN_ENCRYPTION_KEY` directly from the environment — both must be set as Netlify site environment variables, the same requirement as the existing `purge-deleted-accounts` scheduled function for `DATABASE_URL`.
 
 ### Google (via Clerk)
 

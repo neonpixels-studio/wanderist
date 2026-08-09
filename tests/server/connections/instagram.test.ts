@@ -32,6 +32,8 @@ const {
   mockFilterGeotaggedMedia,
   mockEncryptToken,
   mockDecryptToken,
+  mockEnsureFreshInstagramToken,
+  MockInstagramTokenExpiredError,
   mockPutMediaBlob,
   mockToThumbnailKey,
   mockProbeImageDimensions,
@@ -106,6 +108,8 @@ const {
     mockFilterGeotaggedMedia: vi.fn().mockReturnValue([]),
     mockEncryptToken: vi.fn().mockReturnValue("encrypted-token"),
     mockDecryptToken: vi.fn().mockReturnValue("long-token"),
+    mockEnsureFreshInstagramToken: vi.fn().mockResolvedValue("long-token"),
+    MockInstagramTokenExpiredError: class extends Error {},
     mockPutMediaBlob: vi.fn().mockResolvedValue(undefined),
     // Mirrors the real suffix convention so tests can assert the derived key.
     mockToThumbnailKey: vi.fn((storageKey: string) => `${storageKey}-thumb`),
@@ -161,6 +165,18 @@ vi.mock("../../../server/utils/instagramClient", () => ({
 vi.mock("../../../server/utils/tokenCrypto", () => ({
   encryptToken: mockEncryptToken,
   decryptToken: mockDecryptToken,
+}));
+
+const MS_PER_DAY_FOR_MOCK = 24 * 60 * 60 * 1000;
+vi.mock("../../../server/utils/instagramToken", () => ({
+  ensureFreshInstagramToken: mockEnsureFreshInstagramToken,
+  InstagramTokenExpiredError: MockInstagramTokenExpiredError,
+  // Mirror the real expiryFromResponse: derive from expires_in, else fall back
+  // to Instagram's 60-day lifetime (never null).
+  expiryFromResponse: (response: { expires_in?: number }, now: Date): Date =>
+    typeof response.expires_in === "number"
+      ? new Date(now.getTime() + response.expires_in * 1000)
+      : new Date(now.getTime() + 60 * MS_PER_DAY_FOR_MOCK),
 }));
 
 vi.mock("../../../server/utils/planLimits", () => ({
@@ -411,6 +427,54 @@ describe("GET /api/connections/instagram/callback", () => {
     expect(calledValues?.provider).toBe("instagram");
     expect(calledValues?.accessToken).toBe("encrypted-token");
   });
+
+  it("persists expiresAt derived from the long-lived token's expires_in", async () => {
+    const expiresInSeconds = 5_183_944; // ~60 days
+    mockExchangeForLongLivedToken.mockResolvedValue({
+      access_token: "long-token",
+      token_type: "bearer",
+      expires_in: expiresInSeconds,
+    });
+    const before = Date.now();
+
+    await call(callbackHandler, makeEvent());
+
+    const after = Date.now();
+    const calledValues = mockDbInsertValues.mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const expiresAt = calledValues?.expiresAt as Date;
+    expect(expiresAt).toBeInstanceOf(Date);
+    expect(expiresAt.getTime()).toBeGreaterThanOrEqual(
+      before + expiresInSeconds * 1000,
+    );
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(
+      after + expiresInSeconds * 1000,
+    );
+  });
+
+  it("falls back to a ~60-day expiry when the long-lived response omits expires_in", async () => {
+    mockExchangeForLongLivedToken.mockResolvedValue({
+      access_token: "long-token",
+    });
+    const before = Date.now();
+
+    await call(callbackHandler, makeEvent());
+    const after = Date.now();
+
+    const calledValues = mockDbInsertValues.mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    const expiresAt = calledValues?.expiresAt as Date;
+    const sixtyDaysMs = 60 * 24 * 60 * 60 * 1000;
+    expect(expiresAt).toBeInstanceOf(Date);
+    // Bounded both sides so lengthening the fallback (e.g. to 600 days) fails
+    // this test, not just shortening it.
+    expect(expiresAt.getTime()).toBeGreaterThanOrEqual(before + sixtyDaysMs);
+    expect(expiresAt.getTime()).toBeLessThanOrEqual(after + sixtyDaysMs);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -532,12 +596,15 @@ describe("POST /api/connections/instagram/import", () => {
     vi.clearAllMocks();
     mockEnsureUser.mockResolvedValue("user-1");
     // Connection lookup uses .where().limit() — return the connected account row.
-    mockDbSelectLimit.mockResolvedValue([{ accessToken: "encrypted-token" }]);
+    mockDbSelectLimit.mockResolvedValue([
+      { externalId: "ig-123", accessToken: "encrypted-token", expiresAt: null },
+    ]);
     // Dedupe query uses .where() directly (no .limit) — default to no already-imported IDs.
     mockDbSelectWhere.mockImplementation(() => {
       const thenable = Promise.resolve([] as unknown[]);
       return Object.assign(thenable, { limit: mockDbSelectLimit });
     });
+    mockEnsureFreshInstagramToken.mockResolvedValue("long-token");
     mockDecryptToken.mockReturnValue("long-token");
     // clearAllMocks() wipes call records but neither resets implementations nor
     // drains the mock*Once queues, so re-establish the image-pipeline defaults
@@ -592,11 +659,26 @@ describe("POST /api/connections/instagram/import", () => {
     });
   });
 
-  it("decrypts the stored token before calling fetchInstagramMedia", async () => {
+  it("refreshes the stored token before calling fetchInstagramMedia", async () => {
     await call(importHandler, makeEvent());
 
-    expect(mockDecryptToken).toHaveBeenCalledWith("encrypted-token");
+    expect(mockEnsureFreshInstagramToken).toHaveBeenCalledWith(
+      expect.anything(),
+      "user-1",
+      { externalId: "ig-123", accessToken: "encrypted-token", expiresAt: null },
+    );
     expect(mockFetchInstagramMedia).toHaveBeenCalledWith("long-token");
+  });
+
+  it("returns 422 when the stored token is expired and cannot be refreshed", async () => {
+    mockEnsureFreshInstagramToken.mockRejectedValue(
+      new MockInstagramTokenExpiredError("expired"),
+    );
+
+    await expect(call(importHandler, makeEvent())).rejects.toMatchObject({
+      statusCode: 422,
+    });
+    expect(mockFetchInstagramMedia).not.toHaveBeenCalled();
   });
 
   it("calls fetchInstagramImage for each new geotagged item", async () => {
