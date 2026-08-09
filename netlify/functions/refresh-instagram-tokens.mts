@@ -22,9 +22,10 @@
  * stops recurring. What is fatal, and re-thrown so Netlify records the
  * invocation as failed, is: an unexpected error (e.g. the DB query throwing), a
  * missing encryption key, or a run where nothing succeeded yet a *recoverable*
- * failure occurred (a rotated app secret, a 429/5xx storm, or a broad 400
- * outage) — a real problem, not a stray revoked account. Mirrors
- * purge-deleted-accounts.mts.
+ * failure occurred (a 429/5xx storm or a broad ambiguous-400 outage) — a real
+ * problem, not a stray revoked account. Note a fleet-wide revocation (e.g. an
+ * app-secret rotation) classifies as unrecoverable, so it stays green here and
+ * is not caught by this gate. Mirrors purge-deleted-accounts.mts.
  */
 import { createDb } from "../../server/db/index";
 import { refreshExpiringInstagramTokens } from "../../server/utils/refreshInstagramTokens";

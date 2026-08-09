@@ -19,7 +19,7 @@ import { refreshLongLivedToken } from "./instagramClient";
 import { decryptToken } from "./tokenCrypto";
 import {
   INSTAGRAM_REFRESH_THRESHOLD_DAYS,
-  MAX_LOGGED_ERROR_CHARS,
+  boundedErrorMessage,
   isUnrecoverableRefreshError,
   isUnclassifiedRefresh400,
   warnUnclassifiedRefresh400,
@@ -121,10 +121,7 @@ async function refreshAccount(
     );
     return null;
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message.slice(0, MAX_LOGGED_ERROR_CHARS)
-        : "Unknown error";
+    const message = boundedErrorMessage(error);
     const unrecoverable = isUnrecoverableRefreshError(error);
     if (unrecoverable) {
       // Instagram genuinely revoked the token (OAuthException code 190) — stamp

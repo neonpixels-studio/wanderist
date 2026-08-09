@@ -183,6 +183,19 @@ export function isUnclassifiedRefresh400(error: unknown): boolean {
 export const MAX_LOGGED_ERROR_CHARS = 500;
 
 /**
+ * An error's message bounded for logging or for a returned failure. An
+ * InstagramApiError message embeds the upstream response body verbatim, so this
+ * keeps an HTML gateway page from flooding a log line. Shared by every site that
+ * logs or returns an upstream error string.
+ */
+export function boundedErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "Unknown error";
+  }
+  return error.message.slice(0, MAX_LOGGED_ERROR_CHARS);
+}
+
+/**
  * Emits the drift alarm for an unclassified refresh 400 in one shape from every
  * call site, so a single log-based alert rule matches every occurrence. Logs a
  * bounded message plus status rather than the full error object (whose message
@@ -194,13 +207,9 @@ export function warnUnclassifiedRefresh400(
   error: unknown,
 ): void {
   const status = error instanceof InstagramApiError ? error.status : undefined;
-  const message =
-    error instanceof Error
-      ? error.message.slice(0, MAX_LOGGED_ERROR_CHARS)
-      : "Unknown error";
   console.warn(
     `${source}: unclassified 400 (no Meta code) — possible error-envelope drift`,
-    { userId, status, message },
+    { userId, status, message: boundedErrorMessage(error) },
   );
 }
 
@@ -267,25 +276,6 @@ export async function markInstagramTokenExpiredBestEffort(
 }
 
 /**
- * A refresh failure is unrecoverable when Instagram genuinely revoked the token
- * (OAuthException code 190), or when our own stored expiry is already past.
- * Either way the user must reconnect; the caller turns this into a "reconnect"
- * response rather than retrying a dead token. Every other failure (an ambiguous
- * 400, 429/5xx, network) on a still-valid token is recoverable — fall back and
- * retry next run.
- */
-function isRefreshUnrecoverable(
-  error: unknown,
-  expiresAt: Date | null,
-  now: Date,
-): boolean {
-  return (
-    isUnrecoverableRefreshError(error) ||
-    isInstagramTokenExpired(expiresAt, now)
-  );
-}
-
-/**
  * Returns a usable plaintext Instagram token for the user, refreshing and
  * persisting first when the stored token is near expiry.
  *
@@ -319,16 +309,18 @@ export async function ensureFreshInstagramToken(
     if (unclassified400) {
       warnUnclassifiedRefresh400("ensureFreshInstagramToken", userId, error);
     }
-    if (isRefreshUnrecoverable(error, stored.expiresAt, now)) {
-      // Instagram genuinely revoked the token (OAuthException code 190): stamp
-      // the row expired so repeated imports inside the refresh window stop
-      // firing a live, guaranteed-to-fail refresh until the nightly job cleans
-      // it up. Gated on the revocation specifically — an already-past stored
-      // expiry needs no stamp. Best-effort so a stamp failure still surfaces the
-      // reconnect.
-      if (isUnrecoverableRefreshError(error)) {
-        await markInstagramTokenExpiredBestEffort(db, stored.externalId, now);
-      }
+    // Instagram genuinely revoked the token (OAuthException code 190): stamp the
+    // row expired so repeated imports inside the refresh window stop firing a
+    // live, guaranteed-to-fail refresh until the nightly job cleans it up. Gated
+    // on the revocation specifically — an already-past stored expiry needs no
+    // stamp. Best-effort so a stamp failure still surfaces the reconnect.
+    const revoked = isUnrecoverableRefreshError(error);
+    if (revoked) {
+      await markInstagramTokenExpiredBestEffort(db, stored.externalId, now);
+    }
+    // Unrecoverable = a genuine revocation, or our own stored expiry already
+    // past; either way the caller must prompt a reconnect rather than retry.
+    if (revoked || isInstagramTokenExpired(stored.expiresAt, now)) {
       throw new InstagramTokenExpiredError(
         "Instagram token expired and could not be refreshed",
         { cause: error },
@@ -340,7 +332,7 @@ export async function ensureFreshInstagramToken(
     if (!unclassified400) {
       console.warn(
         "ensureFreshInstagramToken: refresh failed, using existing token",
-        { userId, error },
+        { userId, error: boundedErrorMessage(error) },
       );
     }
     return currentToken;

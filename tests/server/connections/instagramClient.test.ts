@@ -18,6 +18,9 @@ import {
   INSTAGRAM_MAX_MEDIA_PAGES,
   type InstagramMediaItem,
 } from "../../../server/utils/instagramClient";
+// The real classifier, unmocked — this suite exercises the full seam from a raw
+// Meta body through refreshLongLivedToken to classification.
+import { isUnrecoverableRefreshError } from "../../../server/utils/instagramToken";
 
 function makeMediaItem(id: string): InstagramMediaItem {
   return {
@@ -215,6 +218,41 @@ describe("refreshLongLivedToken", () => {
 
     expect(error).toBeInstanceOf(InstagramApiError);
     expect((error as InstagramApiError).metaError).toBeUndefined();
+  });
+
+  it("classifies a real revocation body as unrecoverable end to end", async () => {
+    // Full seam, all real (parse + error + classifier): a raw Meta 400 body must
+    // flow through to isUnrecoverableRefreshError === true. Guards the field
+    // binding, not just the constant value.
+    vi.mocked(fetch).mockResolvedValue(
+      makeFetchResponse(
+        { error: { type: "OAuthException", code: 190, error_subcode: 463 } },
+        false,
+        400,
+      ),
+    );
+
+    const error = await refreshLongLivedToken({
+      accessToken: "dead-token",
+    }).catch((caught: unknown) => caught);
+
+    expect(isUnrecoverableRefreshError(error)).toBe(true);
+  });
+
+  it("classifies a transient 400 body as recoverable end to end", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      makeFetchResponse(
+        { error: { type: "OAuthException", code: 4, error_subcode: 1349210 } },
+        false,
+        400,
+      ),
+    );
+
+    const error = await refreshLongLivedToken({
+      accessToken: "rate-limited",
+    }).catch((caught: unknown) => caught);
+
+    expect(isUnrecoverableRefreshError(error)).toBe(false);
   });
 });
 
