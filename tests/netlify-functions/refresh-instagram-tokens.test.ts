@@ -105,6 +105,30 @@ describe("refresh-instagram-tokens scheduled function", () => {
     consoleSpy.mockRestore();
   });
 
+  it("does not throw when nothing succeeded but the only failure is an unclassified 400", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockRefreshExpiringInstagramTokens.mockResolvedValue({
+      refreshedUserIds: [],
+      refreshedCount: 0,
+      // An ambiguous 400 is retried, not evidence infra is down — a lone one on
+      // a quiet day must not mark the whole scheduled run failed.
+      failures: [
+        {
+          userId: "user-1",
+          error: "400 bad request",
+          unrecoverable: false,
+          unclassified: true,
+        },
+      ],
+      capReached: false,
+    });
+
+    const response = await handler();
+
+    expect(response.statusCode).toBe(200);
+    consoleSpy.mockRestore();
+  });
+
   it("does not throw when the only failures are revoked (unrecoverable) accounts", async () => {
     const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockRefreshExpiringInstagramTokens.mockResolvedValue({

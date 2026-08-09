@@ -208,7 +208,12 @@ describe("refreshExpiringInstagramTokens", () => {
     expect(result.refreshedUserIds).toEqual(["user-ok"]);
     expect(result.refreshedCount).toBe(1);
     expect(result.failures).toEqual([
-      { userId: "user-bad", error: "400 token revoked", unrecoverable: false },
+      {
+        userId: "user-bad",
+        error: "400 token revoked",
+        unrecoverable: false,
+        unclassified: false,
+      },
     ]);
     // Only the successful persist writes; a recoverable failure must NOT stamp
     // the row expired, or a healthy token would be dropped from the due set.
@@ -226,7 +231,12 @@ describe("refreshExpiringInstagramTokens", () => {
     expect(update).not.toHaveBeenCalled();
     expect(result.refreshedUserIds).toEqual([]);
     expect(result.failures).toEqual([
-      { userId: "user-null", error: "No stored token", unrecoverable: true },
+      {
+        userId: "user-null",
+        error: "No stored token",
+        unrecoverable: true,
+        unclassified: false,
+      },
     ]);
   });
 
@@ -245,7 +255,64 @@ describe("refreshExpiringInstagramTokens", () => {
     // The only db.update is the mark-expired write (no successful persist).
     expect(update).toHaveBeenCalledTimes(1);
     expect(result.failures).toEqual([
-      { userId: "user-revoked", error: "revoked", unrecoverable: true },
+      {
+        userId: "user-revoked",
+        error: "revoked",
+        unrecoverable: true,
+        unclassified: false,
+      },
+    ]);
+  });
+
+  it("marks the row expired and flags unrecoverable on a bare 401", async () => {
+    const { db, update } = makeDb([
+      {
+        userId: "user-401",
+        externalId: "ig-401",
+        accessToken: "encrypted:dead",
+      },
+    ]);
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("unauthorized", 401),
+    );
+
+    const result = await refreshExpiringInstagramTokens(db);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(result.failures).toEqual([
+      {
+        userId: "user-401",
+        error: "unauthorized",
+        unrecoverable: true,
+        unclassified: false,
+      },
+    ]);
+  });
+
+  it("does not disconnect on a 429 that happens to echo code 190", async () => {
+    const { db, update } = makeDb([
+      {
+        userId: "user-429",
+        externalId: "ig-429",
+        accessToken: "encrypted:valid",
+      },
+    ]);
+    // A rate-limit storm is where a code 190 in a non-400 body actually lands;
+    // the code-190 rule is gated on a 400, so this must stay recoverable.
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("rate limited", 429, { code: 190 }),
+    );
+
+    const result = await refreshExpiringInstagramTokens(db);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(result.failures).toEqual([
+      {
+        userId: "user-429",
+        error: "rate limited",
+        unrecoverable: false,
+        unclassified: false,
+      },
     ]);
   });
 
@@ -269,7 +336,12 @@ describe("refreshExpiringInstagramTokens", () => {
 
     expect(update).not.toHaveBeenCalled();
     expect(result.failures).toEqual([
-      { userId: "user-transient", error: "bad request", unrecoverable: false },
+      {
+        userId: "user-transient",
+        error: "bad request",
+        unrecoverable: false,
+        unclassified: true,
+      },
     ]);
     // The drift alarm fired for the unclassified 400.
     const warned = consoleSpy.mock.calls.some((call) =>
@@ -317,7 +389,12 @@ describe("refreshExpiringInstagramTokens", () => {
 
     expect(result.refreshedUserIds).toEqual(["user-ok"]);
     expect(result.failures).toEqual([
-      { userId: "user-revoked", error: "revoked", unrecoverable: true },
+      {
+        userId: "user-revoked",
+        error: "revoked",
+        unrecoverable: true,
+        unclassified: false,
+      },
     ]);
     expect(consoleSpy).toHaveBeenCalled();
     consoleSpy.mockRestore();

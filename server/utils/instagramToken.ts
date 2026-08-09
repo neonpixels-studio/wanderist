@@ -176,6 +176,33 @@ export function isUnclassifiedRefresh400(error: unknown): boolean {
   );
 }
 
+// Bounds the error text shipped into logs: an InstagramApiError message embeds
+// the upstream response body verbatim, so an unbounded body (an HTML error
+// page) must not flood the log line.
+const MAX_LOGGED_ERROR_CHARS = 500;
+
+/**
+ * Emits the drift alarm for an unclassified refresh 400 in one shape from every
+ * call site, so a single log-based alert rule matches every occurrence. Logs a
+ * bounded message plus status rather than the full error object (whose message
+ * embeds the raw upstream body and whose serialization drags in a stack).
+ */
+export function warnUnclassifiedRefresh400(
+  source: string,
+  userId: string,
+  error: unknown,
+): void {
+  const status = error instanceof InstagramApiError ? error.status : undefined;
+  const message =
+    error instanceof Error
+      ? error.message.slice(0, MAX_LOGGED_ERROR_CHARS)
+      : "Unknown error";
+  console.warn(
+    `${source}: unclassified 400 (no Meta code) — possible error-envelope drift`,
+    { userId, status, message },
+  );
+}
+
 /**
  * Writes a refreshed token + its new expiry to the Instagram row identified by
  * `(provider, externalId)`. Shared by the on-use path and the scheduled batch
@@ -287,12 +314,9 @@ export async function ensureFreshInstagramToken(
     // takes the unrecoverable branch, and sustained envelope drift marches
     // tokens past expiry — so logging only on the fall-through path would go
     // silent exactly when drift is happening.
-    if (isUnclassifiedRefresh400(error)) {
-      console.warn(
-        "ensureFreshInstagramToken: unclassified 400 (no Meta code) — " +
-          "possible error-envelope drift; token not disconnected on this signal",
-        { userId, error },
-      );
+    const unclassified400 = isUnclassifiedRefresh400(error);
+    if (unclassified400) {
+      warnUnclassifiedRefresh400("ensureFreshInstagramToken", userId, error);
     }
     if (isRefreshUnrecoverable(error, stored.expiresAt, now)) {
       // Instagram genuinely revoked the token (OAuthException code 190): stamp
@@ -309,10 +333,15 @@ export async function ensureFreshInstagramToken(
         { cause: error },
       );
     }
-    console.warn(
-      "ensureFreshInstagramToken: refresh failed, using existing token",
-      { userId, error },
-    );
+    // An unclassified 400 already logged its own (drift) line above; only the
+    // other recoverable failures (429/5xx/network) need this generic one, so the
+    // same error is never logged twice.
+    if (!unclassified400) {
+      console.warn(
+        "ensureFreshInstagramToken: refresh failed, using existing token",
+        { userId, error },
+      );
+    }
     return currentToken;
   }
 

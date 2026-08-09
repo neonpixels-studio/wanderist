@@ -539,7 +539,12 @@ describe("ensureFreshInstagramToken", () => {
 
     expect(token).toBe("still-valid");
     expect(update).not.toHaveBeenCalled();
-    expect(consoleSpy).toHaveBeenCalled();
+    // Assert the specific drift line fired, not merely "some warn" — a weaker
+    // check would pass even if the drift alarm were deleted.
+    const warned = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warned).toBe(true);
     consoleSpy.mockRestore();
   });
 

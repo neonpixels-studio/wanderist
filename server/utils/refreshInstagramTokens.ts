@@ -21,6 +21,7 @@ import {
   INSTAGRAM_REFRESH_THRESHOLD_DAYS,
   isUnrecoverableRefreshError,
   isUnclassifiedRefresh400,
+  warnUnclassifiedRefresh400,
   markInstagramTokenExpiredBestEffort,
   persistRefreshedInstagramToken,
   type InstagramTokenDb,
@@ -42,6 +43,11 @@ export interface InstagramRefreshFailure {
   // transient/infrastructure failures (an ambiguous 400, 429, 5xx, network) the
   // caller should treat as a real, retriable problem.
   unrecoverable: boolean;
+  // True when the failure is a 400 carrying no usable Meta `code` — recoverable,
+  // but ambiguous rather than clear infrastructure breakage. The scheduled
+  // adapter excludes these from its "nothing succeeded, infra is down" alarm so
+  // a lone ambiguous 400 doesn't mark the whole run failed.
+  unclassified: boolean;
 }
 
 export interface InstagramRefreshResult {
@@ -109,6 +115,7 @@ async function refreshAccount(
       userId: account.userId,
       error: "No stored token",
       unrecoverable: true,
+      unclassified: false,
     };
   }
   try {
@@ -128,16 +135,23 @@ async function refreshAccount(
       // transient 400 is left untouched so a still-valid token is retried.
       await markInstagramTokenExpiredBestEffort(db, account.externalId, now);
     }
-    if (isUnclassifiedRefresh400(error)) {
-      // Drift alarm: a 400 with no parseable Meta detail is kept as recoverable,
-      // but if the error envelope ever changes every revocation would land here
-      // and stop prompting reconnects — surface it loudly rather than silently.
-      console.warn(
-        "refreshExpiringInstagramTokens: unclassified 400 with no Meta detail — possible error-envelope drift",
-        { userId: account.userId, error: message },
+    const unclassified = isUnclassifiedRefresh400(error);
+    if (unclassified) {
+      // Drift alarm: a 400 with no usable Meta code is kept as recoverable, but
+      // if the error envelope ever changes every revocation would land here and
+      // stop prompting reconnects — surface it loudly rather than silently.
+      warnUnclassifiedRefresh400(
+        "refreshExpiringInstagramTokens",
+        account.userId,
+        error,
       );
     }
-    return { userId: account.userId, error: message, unrecoverable };
+    return {
+      userId: account.userId,
+      error: message,
+      unrecoverable,
+      unclassified,
+    };
   }
 }
 
