@@ -11,11 +11,17 @@ import {
   fetchInstagramUser,
   fetchInstagramMedia,
   filterGeotaggedMedia,
+  parseMetaError,
+  redactAccessToken,
+  InstagramApiError,
   INSTAGRAM_OAUTH_AUTHORIZE_URL,
   INSTAGRAM_SCOPES,
   INSTAGRAM_MAX_MEDIA_PAGES,
   type InstagramMediaItem,
 } from "../../../server/utils/instagramClient";
+// The real classifier, unmocked — this suite exercises the full seam from a raw
+// Meta body through refreshLongLivedToken to classification.
+import { isUnrecoverableRefreshError } from "../../../server/utils/instagramToken";
 
 function makeMediaItem(id: string): InstagramMediaItem {
   return {
@@ -33,6 +39,17 @@ function makeFetchResponse(body: unknown, ok = true, status = 200): Response {
     status,
     text: () => Promise.resolve(JSON.stringify(body)),
     json: () => Promise.resolve(body),
+  } as unknown as Response;
+}
+
+// A response whose body is returned verbatim (not JSON-encoded) — for asserting
+// how a genuinely non-JSON error body (an HTML gateway page) is handled.
+function makeRawTextResponse(rawBody: string, status: number): Response {
+  return {
+    ok: false,
+    status,
+    text: () => Promise.resolve(rawBody),
+    json: () => Promise.reject(new Error("not json")),
   } as unknown as Response;
 }
 
@@ -162,14 +179,202 @@ describe("refreshLongLivedToken", () => {
     expect(url).toContain("access_token=old-token");
   });
 
-  it("throws when the API returns a non-OK status", async () => {
+  it("throws an InstagramApiError carrying the parsed Meta code on a genuine revocation", async () => {
     vi.mocked(fetch).mockResolvedValue(
-      makeFetchResponse({ error: "expired" }, false, 400),
+      makeFetchResponse(
+        {
+          error: {
+            message: "Error validating access token: Session has expired",
+            type: "OAuthException",
+            code: 190,
+            error_subcode: 463,
+          },
+        },
+        false,
+        400,
+      ),
     );
 
-    await expect(
-      refreshLongLivedToken({ accessToken: "dead-token" }),
-    ).rejects.toThrow();
+    const error = await refreshLongLivedToken({
+      accessToken: "dead-token",
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(InstagramApiError);
+    expect((error as InstagramApiError).status).toBe(400);
+    expect((error as InstagramApiError).metaError).toEqual({
+      type: "OAuthException",
+      code: 190,
+      subcode: 463,
+    });
+  });
+
+  it("throws with an undefined metaError when the 400 body is a non-JSON gateway page", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      makeRawTextResponse("<html>502 Bad Gateway</html>", 400),
+    );
+
+    const error = await refreshLongLivedToken({
+      accessToken: "token",
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(InstagramApiError);
+    expect((error as InstagramApiError).metaError).toBeUndefined();
+  });
+
+  it("classifies a real revocation body as unrecoverable end to end", async () => {
+    // Full seam, all real (parse + error + classifier): a raw Meta 400 body must
+    // flow through to isUnrecoverableRefreshError === true. Guards the field
+    // binding, not just the constant value.
+    vi.mocked(fetch).mockResolvedValue(
+      makeFetchResponse(
+        { error: { type: "OAuthException", code: 190, error_subcode: 463 } },
+        false,
+        400,
+      ),
+    );
+
+    const error = await refreshLongLivedToken({
+      accessToken: "dead-token",
+    }).catch((caught: unknown) => caught);
+
+    expect(isUnrecoverableRefreshError(error)).toBe(true);
+  });
+
+  it("classifies a transient 400 body as recoverable end to end", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      makeFetchResponse(
+        { error: { type: "OAuthException", code: 4, error_subcode: 1349210 } },
+        false,
+        400,
+      ),
+    );
+
+    const error = await refreshLongLivedToken({
+      accessToken: "rate-limited",
+    }).catch((caught: unknown) => caught);
+
+    expect(isUnrecoverableRefreshError(error)).toBe(false);
+  });
+
+  it("redacts an echoed access token out of the thrown error message", async () => {
+    // An intermediary 4xx echoes the request URI — token included — in its body.
+    vi.mocked(fetch).mockResolvedValue(
+      makeRawTextResponse(
+        "<html>Blocked: GET /refresh_access_token?grant_type=ig_refresh_token&access_token=SUPERSECRETTOKEN123</html>",
+        400,
+      ),
+    );
+
+    const error = (await refreshLongLivedToken({
+      accessToken: "SUPERSECRETTOKEN123",
+    }).catch((caught: unknown) => caught)) as InstagramApiError;
+
+    expect(error.message).not.toContain("SUPERSECRETTOKEN123");
+    expect(error.message).toContain("access_token=[redacted]");
+  });
+});
+
+describe("redactAccessToken", () => {
+  it("replaces the token value while leaving surrounding text intact", () => {
+    const redacted = redactAccessToken(
+      "error at ?access_token=abc.def-123&scope=x end",
+    );
+    expect(redacted).toBe("error at ?access_token=[redacted]&scope=x end");
+  });
+
+  it("redacts every occurrence, case-insensitively", () => {
+    const redacted = redactAccessToken("Access_Token=one and access_token=two");
+    expect(redacted).not.toContain("one");
+    expect(redacted).not.toContain("two");
+  });
+
+  it("leaves a body with no access token untouched", () => {
+    expect(redactAccessToken("just an error")).toBe("just an error");
+  });
+});
+
+describe("parseMetaError", () => {
+  it("extracts type, code, and error_subcode from a Meta error envelope", () => {
+    const body = JSON.stringify({
+      error: {
+        message: "Error validating access token",
+        type: "OAuthException",
+        code: 190,
+        error_subcode: 460,
+      },
+    });
+
+    expect(parseMetaError(body)).toEqual({
+      type: "OAuthException",
+      code: 190,
+      subcode: 460,
+    });
+  });
+
+  it("returns present fields and leaves absent ones undefined", () => {
+    const body = JSON.stringify({ error: { type: "OAuthException", code: 4 } });
+
+    expect(parseMetaError(body)).toEqual({
+      type: "OAuthException",
+      code: 4,
+      subcode: undefined,
+    });
+  });
+
+  it("returns undefined for a non-JSON body", () => {
+    expect(parseMetaError("<html>502 Bad Gateway</html>")).toBeUndefined();
+  });
+
+  it("returns undefined when there is no error object", () => {
+    expect(parseMetaError(JSON.stringify({ ok: true }))).toBeUndefined();
+  });
+
+  it("returns undefined when error is a string, not an object", () => {
+    expect(
+      parseMetaError(JSON.stringify({ error: "expired" })),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined for a Meta error carrying only message/fbtrace_id", () => {
+    // A real envelope can omit type/code/subcode; with no classifiable field it
+    // must read as undefined so the caller treats it as an unclassified 400.
+    const body = JSON.stringify({
+      error: {
+        message: "An unknown error occurred",
+        fbtrace_id: "AbCdEf123",
+      },
+    });
+
+    expect(parseMetaError(body)).toBeUndefined();
+  });
+
+  it("returns undefined for an array or null error, not just a missing one", () => {
+    expect(parseMetaError(JSON.stringify({ error: [] }))).toBeUndefined();
+    expect(parseMetaError(JSON.stringify({ error: null }))).toBeUndefined();
+  });
+
+  it("returns undefined for a JSON array body", () => {
+    expect(parseMetaError(JSON.stringify([1, 2, 3]))).toBeUndefined();
+  });
+
+  it("returns undefined when the error object carries no field of the right type", () => {
+    const body = JSON.stringify({
+      error: { type: 190, code: "190", error_subcode: "463" },
+    });
+
+    expect(parseMetaError(body)).toBeUndefined();
+  });
+
+  it("keeps a usable field even when another is the wrong type", () => {
+    const body = JSON.stringify({
+      error: { type: "OAuthException", code: "190" },
+    });
+
+    expect(parseMetaError(body)).toEqual({
+      type: "OAuthException",
+      code: undefined,
+      subcode: undefined,
+    });
   });
 });
 

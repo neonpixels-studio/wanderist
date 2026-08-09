@@ -92,18 +92,107 @@ export interface InstagramLongLivedTokenResponse {
   expires_in?: number;
 }
 
+// Meta's error `code` for a dead access token — expired, revoked, or otherwise
+// invalid. Meta returns a 400 for a broad range of conditions, but only this
+// code (its error_subcode narrows the exact cause: 460 password change, 463
+// expiry, 467 invalid, etc., and its type is normally "OAuthException")
+// genuinely means the token is dead and the account must reconnect. Any other
+// 400 is transient and must not disconnect the account.
+export const META_TOKEN_REVOKED_CODE = 190;
+
 /**
- * Error carrying the HTTP status of a failed Instagram API call, so callers
- * can distinguish an unrecoverable auth failure (400/401 — token expired or
- * revoked, user must reconnect) from a transient one (429/5xx — retry later).
+ * The relevant fields Meta returns inside an error response body's `error`
+ * object. Each is optional because a non-Meta 400 (a gateway, an edge cache, a
+ * plain-text body) carries none of them — parseMetaError yields undefined in
+ * that case so the caller treats it as transient rather than a revocation.
+ */
+export interface MetaErrorDetail {
+  type?: string;
+  code?: number;
+  subcode?: number;
+}
+
+// A plain object (not an array, not null) parsed from a JSON body, or undefined
+// when the body is not JSON or not a JSON object.
+function parseJsonObject(body: string): Record<string, unknown> | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return undefined;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+// Coerces Meta's `error` object into a MetaErrorDetail, keeping only fields of
+// the expected type. An object carrying none of them is not a usable Meta
+// envelope, so it yields undefined rather than an all-undefined detail the
+// caller might misread as "Meta said something".
+function toMetaErrorDetail(
+  error: Record<string, unknown>,
+): MetaErrorDetail | undefined {
+  const detail: MetaErrorDetail = {
+    type: typeof error.type === "string" ? error.type : undefined,
+    code: typeof error.code === "number" ? error.code : undefined,
+    subcode:
+      typeof error.error_subcode === "number" ? error.error_subcode : undefined,
+  };
+  if (
+    detail.type === undefined &&
+    detail.code === undefined &&
+    detail.subcode === undefined
+  ) {
+    return undefined;
+  }
+  return detail;
+}
+
+/**
+ * Redacts an `access_token` query param out of a response body. The refresh
+ * request carries the token in the query string, and an intermediary 4xx (a
+ * WAF, proxy, or edge cache) commonly echoes the request URI — token included —
+ * in its body. That body is embedded in the thrown error's message, which is
+ * logged, so a live 60-day token would otherwise land in logs. Truncation alone
+ * doesn't help: the URI sits near the start of such a page.
+ */
+export function redactAccessToken(text: string): string {
+  return text.replace(/access_token=[^&\s"'<]+/gi, "access_token=[redacted]");
+}
+
+/**
+ * Parses Meta's error envelope (`{ error: { message, type, code,
+ * error_subcode } }`) out of a response body. Defensive: a body that is not
+ * JSON, is not an object, or lacks a well-formed `error` object yields
+ * undefined so callers classify it as transient rather than a revocation.
+ */
+export function parseMetaError(body: string): MetaErrorDetail | undefined {
+  const parsed = parseJsonObject(body);
+  const error = parsed?.error;
+  if (typeof error !== "object" || error === null || Array.isArray(error)) {
+    return undefined;
+  }
+  return toMetaErrorDetail(error as Record<string, unknown>);
+}
+
+/**
+ * Error carrying the HTTP status of a failed Instagram API call plus the parsed
+ * Meta error detail (code/subcode/type) when the body carried one, so callers
+ * can distinguish a genuine token revocation (Meta code 190 — user must
+ * reconnect) from a transient failure (an ambiguous 400, 429, 5xx — retry
+ * later) rather than disconnecting on any 400.
  */
 export class InstagramApiError extends Error {
   readonly status: number;
+  readonly metaError?: MetaErrorDetail;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, metaError?: MetaErrorDetail) {
     super(message);
     this.name = "InstagramApiError";
     this.status = status;
+    this.metaError = metaError;
   }
 }
 
@@ -237,10 +326,14 @@ export async function refreshLongLivedToken(params: {
   );
 
   if (!response.ok) {
-    const text = await response.text();
+    // Redact before the body enters the (logged) error message. A JSON Meta
+    // envelope has no access_token field, so redaction never alters what
+    // parseMetaError reads — it only scrubs an echoed request URI.
+    const text = redactAccessToken(await response.text());
     throw new InstagramApiError(
       `Instagram token refresh failed (${response.status}): ${text}`,
       response.status,
+      parseMetaError(text),
     );
   }
 

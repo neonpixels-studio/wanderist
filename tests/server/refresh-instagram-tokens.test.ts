@@ -22,17 +22,38 @@ const {
   ),
   MockInstagramApiError: class extends Error {
     status: number;
-    constructor(message: string, status: number) {
+    metaError?: { type?: string; code?: number; subcode?: number };
+    constructor(
+      message: string,
+      status: number,
+      metaError?: { type?: string; code?: number; subcode?: number },
+    ) {
       super(message);
       this.status = status;
+      this.metaError = metaError;
     }
   },
 }));
 
-vi.mock("../../server/utils/instagramClient", () => ({
+// Only the network-touching surface is mocked; META_TOKEN_REVOKED_CODE comes
+// through from the real module so this suite fails if that value drifts.
+vi.mock("../../server/utils/instagramClient", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../server/utils/instagramClient")
+  >()),
   refreshLongLivedToken: mockRefreshLongLivedToken,
   InstagramApiError: MockInstagramApiError,
 }));
+
+// A genuine Meta token revocation — the only 400 the batch treats as
+// unrecoverable and stamps expired.
+function makeRevocationError(message = "revoked") {
+  return new MockInstagramApiError(message, 400, {
+    type: "OAuthException",
+    code: 190,
+    subcode: 463,
+  });
+}
 
 vi.mock("../../server/utils/tokenCrypto", () => ({
   encryptToken: mockEncryptToken,
@@ -45,7 +66,10 @@ const {
   dueAccountsCondition,
   INSTAGRAM_REFRESH_BATCH_LIMIT,
 } = await import("../../server/utils/refreshInstagramTokens");
-import { INSTAGRAM_REFRESH_THRESHOLD_DAYS } from "../../server/utils/instagramToken";
+import {
+  INSTAGRAM_REFRESH_THRESHOLD_DAYS,
+  MAX_LOGGED_ERROR_CHARS,
+} from "../../server/utils/instagramToken";
 import { MS_PER_DAY } from "../../server/utils/accountLifecycle";
 import { PgDialect } from "drizzle-orm/pg-core";
 
@@ -187,7 +211,11 @@ describe("refreshExpiringInstagramTokens", () => {
     expect(result.refreshedUserIds).toEqual(["user-ok"]);
     expect(result.refreshedCount).toBe(1);
     expect(result.failures).toEqual([
-      { userId: "user-bad", error: "400 token revoked", unrecoverable: false },
+      {
+        userId: "user-bad",
+        error: "400 token revoked",
+        unrecoverable: false,
+      },
     ]);
     // Only the successful persist writes; a recoverable failure must NOT stamp
     // the row expired, or a healthy token would be dropped from the due set.
@@ -205,11 +233,32 @@ describe("refreshExpiringInstagramTokens", () => {
     expect(update).not.toHaveBeenCalled();
     expect(result.refreshedUserIds).toEqual([]);
     expect(result.failures).toEqual([
-      { userId: "user-null", error: "No stored token", unrecoverable: true },
+      {
+        userId: "user-null",
+        error: "No stored token",
+        unrecoverable: true,
+      },
     ]);
   });
 
-  it("marks the row expired and flags unrecoverable on a 400/401", async () => {
+  it("truncates a very long error message in the returned failure", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeDb([
+      { userId: "user-x", externalId: "ig-x", accessToken: "encrypted:t" },
+    ]);
+    // The upstream body is embedded in the error message verbatim; the batch
+    // must bound it before it lands in the returned result and the handler log.
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("y".repeat(2000), 400),
+    );
+
+    const result = await refreshExpiringInstagramTokens(db);
+
+    expect(result.failures[0]!.error).toHaveLength(MAX_LOGGED_ERROR_CHARS);
+    consoleSpy.mockRestore();
+  });
+
+  it("marks the row expired and flags unrecoverable on a genuine revocation", async () => {
     const { db, update } = makeDb([
       {
         userId: "user-revoked",
@@ -217,17 +266,103 @@ describe("refreshExpiringInstagramTokens", () => {
         accessToken: "encrypted:dead",
       },
     ]);
-    mockRefreshLongLivedToken.mockRejectedValue(
-      new MockInstagramApiError("revoked", 400),
-    );
+    mockRefreshLongLivedToken.mockRejectedValue(makeRevocationError());
 
     const result = await refreshExpiringInstagramTokens(db);
 
     // The only db.update is the mark-expired write (no successful persist).
     expect(update).toHaveBeenCalledTimes(1);
     expect(result.failures).toEqual([
-      { userId: "user-revoked", error: "revoked", unrecoverable: true },
+      {
+        userId: "user-revoked",
+        error: "revoked",
+        unrecoverable: true,
+      },
     ]);
+  });
+
+  it("marks the row expired and flags unrecoverable on a bare 401", async () => {
+    const { db, update } = makeDb([
+      {
+        userId: "user-401",
+        externalId: "ig-401",
+        accessToken: "encrypted:dead",
+      },
+    ]);
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("unauthorized", 401),
+    );
+
+    const result = await refreshExpiringInstagramTokens(db);
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(result.failures).toEqual([
+      {
+        userId: "user-401",
+        error: "unauthorized",
+        unrecoverable: true,
+      },
+    ]);
+  });
+
+  it("does not disconnect on a 429 that happens to echo code 190", async () => {
+    const { db, update } = makeDb([
+      {
+        userId: "user-429",
+        externalId: "ig-429",
+        accessToken: "encrypted:valid",
+      },
+    ]);
+    // A rate-limit storm is where a code 190 in a non-400 body actually lands;
+    // the code-190 rule is gated on a 400, so this must stay recoverable.
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("rate limited", 429, { code: 190 }),
+    );
+
+    const result = await refreshExpiringInstagramTokens(db);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(result.failures).toEqual([
+      {
+        userId: "user-429",
+        error: "rate limited",
+        unrecoverable: false,
+      },
+    ]);
+  });
+
+  it("does not stamp the row or flag unrecoverable on a non-revocation 400", async () => {
+    // A 400 with no parseable Meta detail logs a drift alarm — silence it.
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db, update } = makeDb([
+      {
+        userId: "user-transient",
+        externalId: "ig-transient",
+        accessToken: "encrypted:valid",
+      },
+    ]);
+    // A 400 with no OAuthException code-190 body is transient — the token may
+    // still be valid, so the batch must not disconnect it.
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("bad request", 400),
+    );
+
+    const result = await refreshExpiringInstagramTokens(db);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(result.failures).toEqual([
+      {
+        userId: "user-transient",
+        error: "bad request",
+        unrecoverable: false,
+      },
+    ]);
+    // The drift alarm fired for the unclassified 400.
+    const warned = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warned).toBe(true);
+    consoleSpy.mockRestore();
   });
 
   it("keeps the batch alive when the mark-expired write itself fails", async () => {
@@ -262,13 +397,17 @@ describe("refreshExpiringInstagramTokens", () => {
         token_type: "bearer",
         expires_in: 5_183_944,
       })
-      .mockRejectedValueOnce(new MockInstagramApiError("revoked", 400));
+      .mockRejectedValueOnce(makeRevocationError());
 
     const result = await refreshExpiringInstagramTokens(db);
 
     expect(result.refreshedUserIds).toEqual(["user-ok"]);
     expect(result.failures).toEqual([
-      { userId: "user-revoked", error: "revoked", unrecoverable: true },
+      {
+        userId: "user-revoked",
+        error: "revoked",
+        unrecoverable: true,
+      },
     ]);
     expect(consoleSpy).toHaveBeenCalled();
     consoleSpy.mockRestore();

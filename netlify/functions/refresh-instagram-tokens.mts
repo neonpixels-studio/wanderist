@@ -16,14 +16,16 @@
  * useRuntimeConfig() or any other Nitro auto-import — it reads DATABASE_URL
  * directly from process.env via createDb().
  *
- * Per-account failures where Instagram rejected the token (400/401 — the user
- * revoked access or it lapsed) are expected and non-fatal: they are collected,
- * logged, and the row is stamped expired so it stops recurring. What is fatal,
- * and re-thrown so Netlify records the invocation as failed, is: an unexpected
- * error (e.g. the DB query throwing), a missing encryption key, or a run where
- * nothing succeeded yet a *recoverable* failure occurred (a rotated app secret,
- * a 429/5xx storm) — a real problem, not a stray revoked account. Mirrors
- * purge-deleted-accounts.mts.
+ * Per-account failures where Instagram genuinely revoked the token (a code-190
+ * revocation or a 401 — the user revoked access or it lapsed) are expected and
+ * non-fatal: they are collected, logged, and the row is stamped expired so it
+ * stops recurring. What is fatal, and re-thrown so Netlify records the
+ * invocation as failed, is: an unexpected error (e.g. the DB query throwing), a
+ * missing encryption key, or a run where nothing succeeded yet a *recoverable*
+ * failure occurred (a 429/5xx storm or a broad ambiguous-400 outage) — a real
+ * problem, not a stray revoked account. Note a fleet-wide revocation (e.g. an
+ * app-secret rotation) classifies as unrecoverable, so it stays green here and
+ * is not caught by this gate. Mirrors purge-deleted-accounts.mts.
  */
 import { createDb } from "../../server/db/index";
 import { refreshExpiringInstagramTokens } from "../../server/utils/refreshInstagramTokens";
@@ -62,10 +64,13 @@ export const handler = async () => {
       );
     }
 
-    // Nothing renewed AND at least one recoverable failure (not a 400/401
-    // "user must reconnect") means the job itself is broken — a rotated secret
-    // or a transient outage hitting everything. Throw so Netlify marks the run
-    // failed. Runs whose only failures are revoked accounts stay green.
+    // Nothing renewed AND at least one recoverable failure (not a genuine
+    // revocation the user must reconnect) means the job itself may be broken — a
+    // rotated secret or an outage hitting everything, including a broad 400
+    // outage. Throw so Netlify marks the run failed. Runs whose only failures
+    // are revoked accounts stay green. An ambiguous 400 is recoverable, so it is
+    // included here: on a zero-success run it is worth a human glance, exactly as
+    // a 429/5xx would be.
     const recoverableFailures = result.failures.filter(
       (failure) => !failure.unrecoverable,
     );

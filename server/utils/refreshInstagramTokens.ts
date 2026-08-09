@@ -19,7 +19,10 @@ import { refreshLongLivedToken } from "./instagramClient";
 import { decryptToken } from "./tokenCrypto";
 import {
   INSTAGRAM_REFRESH_THRESHOLD_DAYS,
+  boundedErrorMessage,
   isUnrecoverableRefreshError,
+  isUnclassifiedRefresh400,
+  warnUnclassifiedRefresh400,
   markInstagramTokenExpiredBestEffort,
   persistRefreshedInstagramToken,
   type InstagramTokenDb,
@@ -36,9 +39,10 @@ export const INSTAGRAM_REFRESH_BATCH_LIMIT = 100;
 export interface InstagramRefreshFailure {
   userId: string;
   error: string;
-  // True when the failure is Instagram rejecting the token (400/401 — the user
-  // must reconnect), false for transient/infrastructure failures the caller
-  // should treat as a real problem.
+  // True when the failure is Instagram genuinely revoking the token
+  // (OAuthException code 190 — the user must reconnect), false for
+  // transient/infrastructure failures (an ambiguous 400, 429, 5xx, network) the
+  // caller should treat as a real, retriable problem.
   unrecoverable: boolean;
 }
 
@@ -117,13 +121,24 @@ async function refreshAccount(
     );
     return null;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
+    const message = boundedErrorMessage(error);
     const unrecoverable = isUnrecoverableRefreshError(error);
     if (unrecoverable) {
-      // Instagram rejected the token — stamp it expired (best-effort, so a
-      // stamp failure never aborts the batch) so it drops out of the due window
-      // next run instead of failing forever.
+      // Instagram genuinely revoked the token (OAuthException code 190) — stamp
+      // it expired (best-effort, so a stamp failure never aborts the batch) so
+      // it drops out of the due window next run instead of failing forever. A
+      // transient 400 is left untouched so a still-valid token is retried.
       await markInstagramTokenExpiredBestEffort(db, account.externalId, now);
+    }
+    if (isUnclassifiedRefresh400(error)) {
+      // Drift alarm: a 400 with no usable Meta code is kept as recoverable, but
+      // if the error envelope ever changes every revocation would land here and
+      // stop prompting reconnects — surface it loudly rather than silently.
+      warnUnclassifiedRefresh400(
+        "refreshExpiringInstagramTokens",
+        account.userId,
+        error,
+      );
     }
     return { userId: account.userId, error: message, unrecoverable };
   }

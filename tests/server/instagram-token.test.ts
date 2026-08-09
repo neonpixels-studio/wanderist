@@ -23,17 +23,40 @@ const {
   ),
   MockInstagramApiError: class extends Error {
     status: number;
-    constructor(message: string, status: number) {
+    metaError?: { type?: string; code?: number; subcode?: number };
+    constructor(
+      message: string,
+      status: number,
+      metaError?: { type?: string; code?: number; subcode?: number },
+    ) {
       super(message);
       this.status = status;
+      this.metaError = metaError;
     }
   },
 }));
 
-vi.mock("../../server/utils/instagramClient", () => ({
+// Only the network-touching surface is mocked; the classification constant
+// META_TOKEN_REVOKED_CODE comes through from the real module so this suite
+// fails if that value ever drifts.
+vi.mock("../../server/utils/instagramClient", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../server/utils/instagramClient")
+  >()),
   refreshLongLivedToken: mockRefreshLongLivedToken,
   InstagramApiError: MockInstagramApiError,
 }));
+
+// A genuine Meta token revocation: an OAuthException with code 190 (subcode
+// narrows the exact cause — 463 is "session expired"). Classified as
+// unrecoverable alongside a bare 401.
+function makeRevocationError(message = "session expired") {
+  return new MockInstagramApiError(message, 400, {
+    type: "OAuthException",
+    code: 190,
+    subcode: 463,
+  });
+}
 
 vi.mock("../../server/utils/tokenCrypto", () => ({
   encryptToken: mockEncryptToken,
@@ -43,10 +66,12 @@ vi.mock("../../server/utils/tokenCrypto", () => ({
 const {
   INSTAGRAM_REFRESH_THRESHOLD_DAYS,
   INSTAGRAM_LONG_LIVED_TOKEN_DAYS,
+  MAX_LOGGED_ERROR_CHARS,
   InstagramTokenExpiredError,
   isInstagramTokenNearExpiry,
   isInstagramTokenExpired,
   isUnrecoverableRefreshError,
+  isUnclassifiedRefresh400,
   expiryFromResponse,
   persistRefreshedInstagramToken,
   markInstagramTokenExpired,
@@ -124,15 +149,50 @@ describe("expiryFromResponse", () => {
 });
 
 describe("isUnrecoverableRefreshError", () => {
-  it("is true for a 400 Instagram API error", () => {
+  it("is true for a genuine revocation — OAuthException code 190 on a 400", () => {
+    expect(isUnrecoverableRefreshError(makeRevocationError())).toBe(true);
+  });
+
+  it("is true for code 190 regardless of the accompanying type", () => {
+    // The code alone identifies a dead token; a missing or variant type must
+    // not veto a real revocation.
     expect(
-      isUnrecoverableRefreshError(new MockInstagramApiError("expired", 400)),
+      isUnrecoverableRefreshError(
+        new MockInstagramApiError("revoked", 400, { code: 190, subcode: 458 }),
+      ),
+    ).toBe(true);
+    expect(
+      isUnrecoverableRefreshError(
+        new MockInstagramApiError("revoked", 400, {
+          type: "IGApiException",
+          code: 190,
+        }),
+      ),
     ).toBe(true);
   });
 
-  it("is true for a 401 Instagram API error", () => {
+  it("is false for a 400 that is not an OAuthException code-190 revocation", () => {
+    // A transient/ambiguous 400 must not disconnect a still-valid connection.
     expect(
-      isUnrecoverableRefreshError(new MockInstagramApiError("revoked", 401)),
+      isUnrecoverableRefreshError(
+        new MockInstagramApiError("bad request", 400),
+      ),
+    ).toBe(false);
+    expect(
+      isUnrecoverableRefreshError(
+        new MockInstagramApiError("app rate limit", 400, {
+          type: "OAuthException",
+          code: 4,
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is true for a bare 401 — an unambiguous auth rejection, no body needed", () => {
+    expect(
+      isUnrecoverableRefreshError(
+        new MockInstagramApiError("unauthorized", 401),
+      ),
     ).toBe(true);
   });
 
@@ -141,6 +201,63 @@ describe("isUnrecoverableRefreshError", () => {
       isUnrecoverableRefreshError(new MockInstagramApiError("rate", 429)),
     ).toBe(false);
     expect(isUnrecoverableRefreshError(new Error("network"))).toBe(false);
+  });
+
+  it("is false for a 5xx that happens to echo code 190 — only a 400 revokes", () => {
+    // A code 190 in a transient server-error response must not disconnect a
+    // still-valid connection; the code-190 rule is gated on a 400.
+    expect(
+      isUnrecoverableRefreshError(
+        new MockInstagramApiError("upstream", 503, { code: 190 }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is false for a 400 whose Meta detail parsed a type but no code", () => {
+    // The drift case: a partially-parsed envelope missing the one field
+    // classification depends on must not be read as a revocation.
+    expect(
+      isUnrecoverableRefreshError(
+        new MockInstagramApiError("drifted", 400, { type: "OAuthException" }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("isUnclassifiedRefresh400", () => {
+  it("is true for a 400 with no Meta detail at all", () => {
+    expect(
+      isUnclassifiedRefresh400(new MockInstagramApiError("bad request", 400)),
+    ).toBe(true);
+  });
+
+  it("is true for a 400 whose detail has a type but no code (partial parse)", () => {
+    // The exact drift finding-1 exists to catch: code renamed / retyped so it
+    // parses to undefined while other fields survive.
+    expect(
+      isUnclassifiedRefresh400(
+        new MockInstagramApiError("drifted", 400, {
+          type: "OAuthException",
+          subcode: 463,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("is false when a numeric code is present — that is classifiable", () => {
+    expect(
+      isUnclassifiedRefresh400(
+        new MockInstagramApiError("rate", 400, { code: 4 }),
+      ),
+    ).toBe(false);
+    expect(isUnclassifiedRefresh400(makeRevocationError())).toBe(false);
+  });
+
+  it("is false for a non-400 or a non-API error", () => {
+    expect(
+      isUnclassifiedRefresh400(new MockInstagramApiError("server", 503)),
+    ).toBe(false);
+    expect(isUnclassifiedRefresh400(new Error("network"))).toBe(false);
   });
 });
 
@@ -355,11 +472,9 @@ describe("ensureFreshInstagramToken", () => {
     ).rejects.toBeInstanceOf(InstagramTokenExpiredError);
   });
 
-  it("throws InstagramTokenExpiredError on a 400 even when the stored expiry is unknown", async () => {
+  it("throws InstagramTokenExpiredError on a genuine revocation even when the stored expiry is unknown", async () => {
     const { db } = makeUpdatableDb();
-    mockRefreshLongLivedToken.mockRejectedValue(
-      new MockInstagramApiError("session expired", 400),
-    );
+    mockRefreshLongLivedToken.mockRejectedValue(makeRevocationError());
 
     await expect(
       ensureFreshInstagramToken(
@@ -371,11 +486,9 @@ describe("ensureFreshInstagramToken", () => {
     ).rejects.toBeInstanceOf(InstagramTokenExpiredError);
   });
 
-  it("stamps the row expired on a 400 so repeated imports stop re-hitting Instagram", async () => {
+  it("stamps the row expired on a genuine revocation so repeated imports stop re-hitting Instagram", async () => {
     const { db, update, set } = makeUpdatableDb();
-    mockRefreshLongLivedToken.mockRejectedValue(
-      new MockInstagramApiError("session expired", 400),
-    );
+    mockRefreshLongLivedToken.mockRejectedValue(makeRevocationError());
 
     await expect(
       ensureFreshInstagramToken(
@@ -387,6 +500,211 @@ describe("ensureFreshInstagramToken", () => {
     ).rejects.toBeInstanceOf(InstagramTokenExpiredError);
     expect(update).toHaveBeenCalledTimes(1);
     expect(set).toHaveBeenCalledWith({ expiresAt: now });
+  });
+
+  it("throws InstagramTokenExpiredError and stamps the row on a bare 401", async () => {
+    const { db, update, set } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("unauthorized", 401),
+    );
+
+    await expect(
+      ensureFreshInstagramToken(
+        db,
+        "user-1",
+        { externalId: "ig-A", accessToken: "encrypted:dead", expiresAt },
+        now,
+      ),
+    ).rejects.toBeInstanceOf(InstagramTokenExpiredError);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(set).toHaveBeenCalledWith({ expiresAt: now });
+  });
+
+  it("falls back to the current token on a non-revocation 400 while the token is still valid", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db, update } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    // A 400 that is NOT an OAuthException code-190 revocation — must not
+    // disconnect a still-valid connection, and must not stamp the row expired.
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("transient bad request", 400),
+    );
+
+    const token = await ensureFreshInstagramToken(
+      db,
+      "user-1",
+      { externalId: "ig-A", accessToken: "encrypted:still-valid", expiresAt },
+      now,
+    );
+
+    expect(token).toBe("still-valid");
+    expect(update).not.toHaveBeenCalled();
+    // Assert the specific drift line fired, not merely "some warn" — a weaker
+    // check would pass even if the drift alarm were deleted.
+    const warnedDrift = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warnedDrift).toBe(true);
+    // The generic "using existing token" line must NOT also fire — an
+    // unclassified 400 logs once (the drift line), not twice.
+    const warnedGeneric = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("using existing token"),
+    );
+    expect(warnedGeneric).toBe(false);
+    consoleSpy.mockRestore();
+  });
+
+  it("logs the generic fall-back line (not a drift line) for a transient 5xx", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    // A 5xx is recoverable but not a 400, so it takes the generic path, not the
+    // drift alarm — pinning the other branch of the dedup guard.
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("upstream down", 503),
+    );
+
+    const token = await ensureFreshInstagramToken(
+      db,
+      "user-1",
+      { externalId: "ig-A", accessToken: "encrypted:still-valid", expiresAt },
+      now,
+    );
+
+    expect(token).toBe("still-valid");
+    const warnedGeneric = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("using existing token"),
+    );
+    expect(warnedGeneric).toBe(true);
+    const warnedDrift = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warnedDrift).toBe(false);
+    consoleSpy.mockRestore();
+  });
+
+  it("truncates a very long error message in the drift alarm payload", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("x".repeat(2000), 400),
+    );
+
+    await ensureFreshInstagramToken(
+      db,
+      "user-1",
+      { externalId: "ig-A", accessToken: "encrypted:still-valid", expiresAt },
+      now,
+    );
+
+    const driftCall = consoleSpy.mock.calls.find((call) =>
+      String(call[0]).includes("drift"),
+    );
+    const payload = driftCall?.[1] as { message?: string } | undefined;
+    expect(payload?.message).toHaveLength(MAX_LOGGED_ERROR_CHARS);
+    consoleSpy.mockRestore();
+  });
+
+  it("logs a drift alarm for a 400 with no parseable Meta detail", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("no meta body", 400),
+    );
+
+    await ensureFreshInstagramToken(
+      db,
+      "user-1",
+      { externalId: "ig-A", accessToken: "encrypted:still-valid", expiresAt },
+      now,
+    );
+
+    const warned = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warned).toBe(true);
+    consoleSpy.mockRestore();
+  });
+
+  it("includes the parsed metaError in the drift payload so partial-parse drift is diagnosable", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    // Partial parse: type/subcode survived, code did not — the exact case the
+    // alarm exists to catch, and the operator needs to see which one it is.
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("drift", 400, {
+        type: "OAuthException",
+        subcode: 463,
+      }),
+    );
+
+    await ensureFreshInstagramToken(
+      db,
+      "user-1",
+      { externalId: "ig-A", accessToken: "encrypted:still-valid", expiresAt },
+      now,
+    );
+
+    const driftCall = consoleSpy.mock.calls.find((call) =>
+      String(call[0]).includes("drift"),
+    );
+    const payload = driftCall?.[1] as { metaError?: { type?: string } };
+    expect(payload.metaError).toEqual({ type: "OAuthException", subcode: 463 });
+    consoleSpy.mockRestore();
+  });
+
+  it("does not log a drift alarm for a classified transient 400 (code 4)", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("app rate limit", 400, { code: 4 }),
+    );
+
+    await ensureFreshInstagramToken(
+      db,
+      "user-1",
+      { externalId: "ig-A", accessToken: "encrypted:still-valid", expiresAt },
+      now,
+    );
+
+    const warned = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warned).toBe(false);
+    consoleSpy.mockRestore();
+  });
+
+  it("throws InstagramTokenExpiredError on a non-revocation 400 once the stored expiry is already past, and still logs the drift alarm", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db, update } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() - MS_PER_DAY);
+    // Even a transient 400 is unrecoverable when our own stored expiry has
+    // already lapsed — but the row is not re-stamped (only revocation stamps).
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("transient bad request", 400),
+    );
+
+    await expect(
+      ensureFreshInstagramToken(
+        db,
+        "user-1",
+        { externalId: "ig-A", accessToken: "encrypted:dead", expiresAt },
+        now,
+      ),
+    ).rejects.toBeInstanceOf(InstagramTokenExpiredError);
+    expect(update).not.toHaveBeenCalled();
+    // The alarm must fire even though this path throws — sustained drift marches
+    // tokens past expiry, and a silent alarm there defeats its purpose.
+    const warned = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warned).toBe(true);
+    consoleSpy.mockRestore();
   });
 
   it("does not stamp the row when the already-expired token fails a non-API refresh", async () => {
