@@ -36,16 +36,20 @@ const {
   },
 }));
 
-vi.mock("../../server/utils/instagramClient", () => ({
+// Only the network-touching surface is mocked; the classification constants
+// (META_OAUTH_EXCEPTION_TYPE, META_TOKEN_REVOKED_CODE) come through from the
+// real module so this suite fails if those values ever drift.
+vi.mock("../../server/utils/instagramClient", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../server/utils/instagramClient")
+  >()),
   refreshLongLivedToken: mockRefreshLongLivedToken,
   InstagramApiError: MockInstagramApiError,
-  META_OAUTH_EXCEPTION_TYPE: "OAuthException",
-  META_TOKEN_REVOKED_CODE: 190,
 }));
 
 // A genuine Meta token revocation: an OAuthException with code 190 (subcode
-// narrows the exact cause — 463 is "session expired"). This is the only 400
-// that should classify as unrecoverable.
+// narrows the exact cause — 463 is "session expired"). Classified as
+// unrecoverable alongside a bare 401.
 function makeRevocationError(message = "session expired") {
   return new MockInstagramApiError(message, 400, {
     type: "OAuthException",
@@ -164,12 +168,12 @@ describe("isUnrecoverableRefreshError", () => {
     ).toBe(false);
   });
 
-  it("is false for a 401 without a code-190 body — only revocation counts", () => {
+  it("is true for a bare 401 — an unambiguous auth rejection, no body needed", () => {
     expect(
       isUnrecoverableRefreshError(
         new MockInstagramApiError("unauthorized", 401),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("is false for a transient 429 and for non-API errors", () => {
@@ -414,6 +418,25 @@ describe("ensureFreshInstagramToken", () => {
         db,
         "user-1",
         { externalId: "ig-A", accessToken: "encrypted:dead", expiresAt: null },
+        now,
+      ),
+    ).rejects.toBeInstanceOf(InstagramTokenExpiredError);
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(set).toHaveBeenCalledWith({ expiresAt: now });
+  });
+
+  it("throws InstagramTokenExpiredError and stamps the row on a bare 401", async () => {
+    const { db, update, set } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("unauthorized", 401),
+    );
+
+    await expect(
+      ensureFreshInstagramToken(
+        db,
+        "user-1",
+        { externalId: "ig-A", accessToken: "encrypted:dead", expiresAt },
         now,
       ),
     ).rejects.toBeInstanceOf(InstagramTokenExpiredError);

@@ -138,7 +138,7 @@ export function parseMetaError(body: string): MetaErrorDetail | undefined {
     code?: unknown;
     error_subcode?: unknown;
   };
-  return {
+  const parsedDetail: MetaErrorDetail = {
     type: typeof detail.type === "string" ? detail.type : undefined,
     code: typeof detail.code === "number" ? detail.code : undefined,
     subcode:
@@ -146,6 +146,17 @@ export function parseMetaError(body: string): MetaErrorDetail | undefined {
         ? detail.error_subcode
         : undefined,
   };
+  // An `error` object carrying none of the fields we understand (all wrong
+  // types, or an empty/array `error`) is not a usable Meta envelope — return
+  // undefined so callers treat it as transient rather than "Meta said something".
+  if (
+    parsedDetail.type === undefined &&
+    parsedDetail.code === undefined &&
+    parsedDetail.subcode === undefined
+  ) {
+    return undefined;
+  }
+  return parsedDetail;
 }
 
 /**

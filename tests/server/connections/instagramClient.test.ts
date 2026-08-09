@@ -38,6 +38,17 @@ function makeFetchResponse(body: unknown, ok = true, status = 200): Response {
   } as unknown as Response;
 }
 
+// A response whose body is returned verbatim (not JSON-encoded) — for asserting
+// how a genuinely non-JSON error body (an HTML gateway page) is handled.
+function makeRawTextResponse(rawBody: string, status: number): Response {
+  return {
+    ok: false,
+    status,
+    text: () => Promise.resolve(rawBody),
+    json: () => Promise.reject(new Error("not json")),
+  } as unknown as Response;
+}
+
 describe("buildInstagramAuthUrl", () => {
   it("includes the client_id, redirect_uri, scope, and state", () => {
     const url = buildInstagramAuthUrl({
@@ -193,9 +204,9 @@ describe("refreshLongLivedToken", () => {
     });
   });
 
-  it("throws with an undefined metaError when the 400 body is not a Meta envelope", async () => {
+  it("throws with an undefined metaError when the 400 body is a non-JSON gateway page", async () => {
     vi.mocked(fetch).mockResolvedValue(
-      makeFetchResponse("upstream gateway error", false, 400),
+      makeRawTextResponse("<html>502 Bad Gateway</html>", 400),
     );
 
     const error = await refreshLongLivedToken({
@@ -243,13 +254,21 @@ describe("parseMetaError", () => {
     expect(parseMetaError(JSON.stringify({ ok: true }))).toBeUndefined();
   });
 
-  it("ignores fields of the wrong type rather than trusting them", () => {
+  it("returns undefined when the error object carries no field of the right type", () => {
     const body = JSON.stringify({
       error: { type: 190, code: "190", error_subcode: "463" },
     });
 
+    expect(parseMetaError(body)).toBeUndefined();
+  });
+
+  it("keeps a usable field even when another is the wrong type", () => {
+    const body = JSON.stringify({
+      error: { type: "OAuthException", code: "190" },
+    });
+
     expect(parseMetaError(body)).toEqual({
-      type: undefined,
+      type: "OAuthException",
       code: undefined,
       subcode: undefined,
     });

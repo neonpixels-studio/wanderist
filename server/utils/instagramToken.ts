@@ -28,6 +28,12 @@ import { MS_PER_DAY } from "./accountLifecycle";
 
 export type InstagramTokenDb = ReturnType<typeof createDb>;
 
+// A bare 401 from the refresh endpoint is an unambiguous auth rejection — the
+// token is dead and only reconnecting fixes it. Unlike a 400 (which Meta
+// returns for many transient conditions), a 401 needs no error-code
+// disambiguation, so it stays classified as unrecoverable.
+const UNAUTHORIZED_STATUS = 401;
+
 // Refresh once a token is within this many days of its 60-day expiry. Wide
 // enough that an account syncing even monthly is always renewed before it
 // lapses, while avoiding a refresh on every single import.
@@ -122,17 +128,22 @@ function instagramAccountWhere(externalId: string) {
 }
 
 /**
- * True only when a refresh failure is a genuine token revocation from Meta's
- * side: an OAuthException with code 190 (its subcode narrows the exact cause —
- * expiry, password change, revocation — but every 190 means the token is dead
- * and only reconnecting fixes it). Every other 400 (an ambiguous validation
- * error, a transient upstream fault) is deliberately NOT classified here, so a
- * still-valid connection is never disconnected on a non-revocation 400. Shared
- * by the on-use path and the scheduled batch so both classify failures the same.
+ * True when a refresh failure means the token is dead from Instagram's side and
+ * only reconnecting fixes it. That is either a genuine revocation — an
+ * OAuthException with code 190 (its subcode narrows the exact cause: expiry,
+ * password change, revocation) — or a bare 401 (an unambiguous auth rejection).
+ * A 400 that is NOT a code-190 revocation is deliberately NOT classified here:
+ * Meta returns 400 for a broad range of transient/ambiguous conditions, so
+ * disconnecting on any 400 can drop a still-valid connection — the bug this
+ * narrowing fixes. Shared by the on-use path and the scheduled batch so both
+ * classify failures the same.
  */
 export function isUnrecoverableRefreshError(error: unknown): boolean {
   if (!(error instanceof InstagramApiError)) {
     return false;
+  }
+  if (error.status === UNAUTHORIZED_STATUS) {
+    return true;
   }
   return (
     error.metaError?.type === META_OAUTH_EXCEPTION_TYPE &&
@@ -163,10 +174,11 @@ export async function persistRefreshedInstagramToken(
 }
 
 /**
- * Stamps a row's expiry as `now`, marking its token dead. Used when Instagram
- * refuses a refresh (400/401): the row then falls out of the scheduled job's
- * "still in the future" due window instead of being retried every run, and the
- * on-use path treats it as expired so the user is prompted to reconnect.
+ * Stamps a row's expiry as `now`, marking its token dead. Used when a refresh
+ * is unrecoverable (a genuine revocation, or a 401): the row then falls out of
+ * the scheduled job's "still in the future" due window instead of being retried
+ * every run, and the on-use path treats it as expired so the user is prompted
+ * to reconnect.
  */
 export async function markInstagramTokenExpired(
   db: InstagramTokenDb,

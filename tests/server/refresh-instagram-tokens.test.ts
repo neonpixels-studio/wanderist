@@ -35,11 +35,14 @@ const {
   },
 }));
 
-vi.mock("../../server/utils/instagramClient", () => ({
+// Only the network-touching surface is mocked; the classification constants
+// come through from the real module so this suite fails if those values drift.
+vi.mock("../../server/utils/instagramClient", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../server/utils/instagramClient")
+  >()),
   refreshLongLivedToken: mockRefreshLongLivedToken,
   InstagramApiError: MockInstagramApiError,
-  META_OAUTH_EXCEPTION_TYPE: "OAuthException",
-  META_TOKEN_REVOKED_CODE: 190,
 }));
 
 // A genuine Meta token revocation — the only 400 the batch treats as
