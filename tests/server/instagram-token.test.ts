@@ -151,6 +151,24 @@ describe("isUnrecoverableRefreshError", () => {
     expect(isUnrecoverableRefreshError(makeRevocationError())).toBe(true);
   });
 
+  it("is true for code 190 regardless of the accompanying type", () => {
+    // The code alone identifies a dead token; a missing or variant type must
+    // not veto a real revocation.
+    expect(
+      isUnrecoverableRefreshError(
+        new MockInstagramApiError("revoked", 400, { code: 190, subcode: 458 }),
+      ),
+    ).toBe(true);
+    expect(
+      isUnrecoverableRefreshError(
+        new MockInstagramApiError("revoked", 400, {
+          type: "IGApiException",
+          code: 190,
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it("is false for a 400 that is not an OAuthException code-190 revocation", () => {
     // A transient/ambiguous 400 must not disconnect a still-valid connection.
     expect(

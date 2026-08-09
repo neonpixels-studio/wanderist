@@ -254,6 +254,15 @@ describe("parseMetaError", () => {
     expect(parseMetaError(JSON.stringify({ ok: true }))).toBeUndefined();
   });
 
+  it("returns undefined for an array or null error, not just a missing one", () => {
+    expect(parseMetaError(JSON.stringify({ error: [] }))).toBeUndefined();
+    expect(parseMetaError(JSON.stringify({ error: null }))).toBeUndefined();
+  });
+
+  it("returns undefined for a JSON array body", () => {
+    expect(parseMetaError(JSON.stringify([1, 2, 3]))).toBeUndefined();
+  });
+
   it("returns undefined when the error object carries no field of the right type", () => {
     const body = JSON.stringify({
       error: { type: 190, code: "190", error_subcode: "463" },

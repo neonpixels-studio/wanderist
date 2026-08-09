@@ -92,13 +92,12 @@ export interface InstagramLongLivedTokenResponse {
   expires_in?: number;
 }
 
-// Meta's OAuthException error `type`, and the `code` it uses whenever an access
-// token is expired, revoked, or otherwise invalid. Meta returns a 400 for a
-// broad range of conditions, but only an OAuthException with this code (its
-// error_subcode narrows the exact cause: 460 password change, 463 expiry, 467
-// invalid, etc.) genuinely means the token is dead and the account must
-// reconnect. Any other 400 is transient and must not disconnect the account.
-export const META_OAUTH_EXCEPTION_TYPE = "OAuthException";
+// Meta's error `code` for a dead access token — expired, revoked, or otherwise
+// invalid. Meta returns a 400 for a broad range of conditions, but only this
+// code (its error_subcode narrows the exact cause: 460 password change, 463
+// expiry, 467 invalid, etc., and its type is normally "OAuthException")
+// genuinely means the token is dead and the account must reconnect. Any other
+// 400 is transient and must not disconnect the account.
 export const META_TOKEN_REVOKED_CODE = 190;
 
 /**
@@ -113,6 +112,44 @@ export interface MetaErrorDetail {
   subcode?: number;
 }
 
+// A plain object (not an array, not null) parsed from a JSON body, or undefined
+// when the body is not JSON or not a JSON object.
+function parseJsonObject(body: string): Record<string, unknown> | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return undefined;
+  }
+  return parsed as Record<string, unknown>;
+}
+
+// Coerces Meta's `error` object into a MetaErrorDetail, keeping only fields of
+// the expected type. An object carrying none of them is not a usable Meta
+// envelope, so it yields undefined rather than an all-undefined detail the
+// caller might misread as "Meta said something".
+function toMetaErrorDetail(
+  error: Record<string, unknown>,
+): MetaErrorDetail | undefined {
+  const detail: MetaErrorDetail = {
+    type: typeof error.type === "string" ? error.type : undefined,
+    code: typeof error.code === "number" ? error.code : undefined,
+    subcode:
+      typeof error.error_subcode === "number" ? error.error_subcode : undefined,
+  };
+  if (
+    detail.type === undefined &&
+    detail.code === undefined &&
+    detail.subcode === undefined
+  ) {
+    return undefined;
+  }
+  return detail;
+}
+
 /**
  * Parses Meta's error envelope (`{ error: { message, type, code,
  * error_subcode } }`) out of a response body. Defensive: a body that is not
@@ -120,50 +157,19 @@ export interface MetaErrorDetail {
  * undefined so callers classify it as transient rather than a revocation.
  */
 export function parseMetaError(body: string): MetaErrorDetail | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
+  const parsed = parseJsonObject(body);
+  const error = parsed?.error;
+  if (typeof error !== "object" || error === null || Array.isArray(error)) {
     return undefined;
   }
-  if (typeof parsed !== "object" || parsed === null) {
-    return undefined;
-  }
-  const error = (parsed as { error?: unknown }).error;
-  if (typeof error !== "object" || error === null) {
-    return undefined;
-  }
-  const detail = error as {
-    type?: unknown;
-    code?: unknown;
-    error_subcode?: unknown;
-  };
-  const parsedDetail: MetaErrorDetail = {
-    type: typeof detail.type === "string" ? detail.type : undefined,
-    code: typeof detail.code === "number" ? detail.code : undefined,
-    subcode:
-      typeof detail.error_subcode === "number"
-        ? detail.error_subcode
-        : undefined,
-  };
-  // An `error` object carrying none of the fields we understand (all wrong
-  // types, or an empty/array `error`) is not a usable Meta envelope — return
-  // undefined so callers treat it as transient rather than "Meta said something".
-  if (
-    parsedDetail.type === undefined &&
-    parsedDetail.code === undefined &&
-    parsedDetail.subcode === undefined
-  ) {
-    return undefined;
-  }
-  return parsedDetail;
+  return toMetaErrorDetail(error as Record<string, unknown>);
 }
 
 /**
  * Error carrying the HTTP status of a failed Instagram API call plus the parsed
  * Meta error detail (code/subcode/type) when the body carried one, so callers
- * can distinguish a genuine token revocation (OAuthException code 190 — user
- * must reconnect) from a transient failure (an ambiguous 400, 429, 5xx — retry
+ * can distinguish a genuine token revocation (Meta code 190 — user must
+ * reconnect) from a transient failure (an ambiguous 400, 429, 5xx — retry
  * later) rather than disconnecting on any 400.
  */
 export class InstagramApiError extends Error {

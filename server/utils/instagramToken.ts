@@ -19,7 +19,6 @@ import { connectedAccounts, CONNECTED_ACCOUNT_PROVIDER } from "../db/schema";
 import {
   refreshLongLivedToken,
   InstagramApiError,
-  META_OAUTH_EXCEPTION_TYPE,
   META_TOKEN_REVOKED_CODE,
   type InstagramLongLivedTokenResponse,
 } from "./instagramClient";
@@ -129,9 +128,11 @@ function instagramAccountWhere(externalId: string) {
 
 /**
  * True when a refresh failure means the token is dead from Instagram's side and
- * only reconnecting fixes it. That is either a genuine revocation — an
- * OAuthException with code 190 (its subcode narrows the exact cause: expiry,
- * password change, revocation) — or a bare 401 (an unambiguous auth rejection).
+ * only reconnecting fixes it. That is either a genuine revocation — Meta code
+ * 190 (its subcode narrows the exact cause: expiry, password change,
+ * revocation) — or a bare 401 (an unambiguous auth rejection). Classification
+ * is on the code alone, not the accompanying `type`: only a dead token ever
+ * carries code 190, so a variant/absent type must not veto a real revocation.
  * A 400 that is NOT a code-190 revocation is deliberately NOT classified here:
  * Meta returns 400 for a broad range of transient/ambiguous conditions, so
  * disconnecting on any 400 can drop a still-valid connection — the bug this
@@ -145,10 +146,7 @@ export function isUnrecoverableRefreshError(error: unknown): boolean {
   if (error.status === UNAUTHORIZED_STATUS) {
     return true;
   }
-  return (
-    error.metaError?.type === META_OAUTH_EXCEPTION_TYPE &&
-    error.metaError.code === META_TOKEN_REVOKED_CODE
-  );
+  return error.metaError?.code === META_TOKEN_REVOKED_CODE;
 }
 
 /**
