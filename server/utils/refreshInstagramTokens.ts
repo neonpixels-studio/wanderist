@@ -20,6 +20,7 @@ import { decryptToken } from "./tokenCrypto";
 import {
   INSTAGRAM_REFRESH_THRESHOLD_DAYS,
   isUnrecoverableRefreshError,
+  isUnclassifiedRefresh400,
   markInstagramTokenExpiredBestEffort,
   persistRefreshedInstagramToken,
   type InstagramTokenDb,
@@ -126,6 +127,15 @@ async function refreshAccount(
       // it drops out of the due window next run instead of failing forever. A
       // transient 400 is left untouched so a still-valid token is retried.
       await markInstagramTokenExpiredBestEffort(db, account.externalId, now);
+    }
+    if (isUnclassifiedRefresh400(error)) {
+      // Drift alarm: a 400 with no parseable Meta detail is kept as recoverable,
+      // but if the error envelope ever changes every revocation would land here
+      // and stop prompting reconnects — surface it loudly rather than silently.
+      console.warn(
+        "refreshExpiringInstagramTokens: unclassified 400 with no Meta detail — possible error-envelope drift",
+        { userId: account.userId, error: message },
+      );
     }
     return { userId: account.userId, error: message, unrecoverable };
   }

@@ -33,6 +33,10 @@ export type InstagramTokenDb = ReturnType<typeof createDb>;
 // disambiguation, so it stays classified as unrecoverable.
 const UNAUTHORIZED_STATUS = 401;
 
+// The status a genuine revocation arrives with; the code-190 check is gated on
+// it so a code 190 echoed by a transient 429/5xx never disconnects.
+const BAD_REQUEST_STATUS = 400;
+
 // Refresh once a token is within this many days of its 60-day expiry. Wide
 // enough that an account syncing even monthly is always renewed before it
 // lapses, while avoiding a refresh on every single import.
@@ -130,14 +134,16 @@ function instagramAccountWhere(externalId: string) {
  * True when a refresh failure means the token is dead from Instagram's side and
  * only reconnecting fixes it. That is either a genuine revocation — Meta code
  * 190 (its subcode narrows the exact cause: expiry, password change,
- * revocation) — or a bare 401 (an unambiguous auth rejection). Classification
- * is on the code alone, not the accompanying `type`: only a dead token ever
- * carries code 190, so a variant/absent type must not veto a real revocation.
- * A 400 that is NOT a code-190 revocation is deliberately NOT classified here:
- * Meta returns 400 for a broad range of transient/ambiguous conditions, so
- * disconnecting on any 400 can drop a still-valid connection — the bug this
- * narrowing fixes. Shared by the on-use path and the scheduled batch so both
- * classify failures the same.
+ * revocation) — or a bare 401 (an unambiguous auth rejection). The code-190
+ * check is gated on a 400: a genuine revocation always arrives as a 400, so a
+ * 429/5xx that happens to echo code 190 stays recoverable rather than
+ * disconnecting on a transient fault. Classification is on the code alone, not
+ * the accompanying `type`: only a dead token ever carries code 190, so a
+ * variant/absent type must not veto a real revocation. A 400 that is NOT a
+ * code-190 revocation is deliberately NOT classified here: Meta returns 400 for
+ * a broad range of transient/ambiguous conditions, so disconnecting on any 400
+ * can drop a still-valid connection — the bug this narrowing fixes. Shared by
+ * the on-use path and the scheduled batch so both classify failures the same.
  */
 export function isUnrecoverableRefreshError(error: unknown): boolean {
   if (!(error instanceof InstagramApiError)) {
@@ -146,7 +152,25 @@ export function isUnrecoverableRefreshError(error: unknown): boolean {
   if (error.status === UNAUTHORIZED_STATUS) {
     return true;
   }
-  return error.metaError?.code === META_TOKEN_REVOKED_CODE;
+  return (
+    error.status === BAD_REQUEST_STATUS &&
+    error.metaError?.code === META_TOKEN_REVOKED_CODE
+  );
+}
+
+/**
+ * True when a refresh failure is a 400 whose body carried no parseable Meta
+ * error detail. Such a 400 is treated as recoverable (we can't prove a
+ * revocation), but it is worth a loud log: if Meta ever changes its error
+ * envelope, every revocation would silently land here and stop prompting
+ * reconnects, so this is the drift alarm the callers surface.
+ */
+export function isUnclassifiedRefresh400(error: unknown): boolean {
+  return (
+    error instanceof InstagramApiError &&
+    error.status === BAD_REQUEST_STATUS &&
+    error.metaError === undefined
+  );
 }
 
 /**
@@ -269,6 +293,13 @@ export async function ensureFreshInstagramToken(
       throw new InstagramTokenExpiredError(
         "Instagram token expired and could not be refreshed",
         { cause: error },
+      );
+    }
+    if (isUnclassifiedRefresh400(error)) {
+      console.warn(
+        "ensureFreshInstagramToken: unclassified 400 with no Meta detail — " +
+          "possible error-envelope drift; token kept, not disconnected",
+        { userId, error },
       );
     }
     console.warn(

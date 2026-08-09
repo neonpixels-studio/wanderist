@@ -36,9 +36,9 @@ const {
   },
 }));
 
-// Only the network-touching surface is mocked; the classification constants
-// (META_OAUTH_EXCEPTION_TYPE, META_TOKEN_REVOKED_CODE) come through from the
-// real module so this suite fails if those values ever drift.
+// Only the network-touching surface is mocked; the classification constant
+// META_TOKEN_REVOKED_CODE comes through from the real module so this suite
+// fails if that value ever drifts.
 vi.mock("../../server/utils/instagramClient", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("../../server/utils/instagramClient")
@@ -199,6 +199,16 @@ describe("isUnrecoverableRefreshError", () => {
       isUnrecoverableRefreshError(new MockInstagramApiError("rate", 429)),
     ).toBe(false);
     expect(isUnrecoverableRefreshError(new Error("network"))).toBe(false);
+  });
+
+  it("is false for a 5xx that happens to echo code 190 — only a 400 revokes", () => {
+    // A code 190 in a transient server-error response must not disconnect a
+    // still-valid connection; the code-190 rule is gated on a 400.
+    expect(
+      isUnrecoverableRefreshError(
+        new MockInstagramApiError("upstream", 503, { code: 190 }),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -482,6 +492,50 @@ describe("ensureFreshInstagramToken", () => {
     expect(token).toBe("still-valid");
     expect(update).not.toHaveBeenCalled();
     expect(consoleSpy).toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  it("logs a drift alarm for a 400 with no parseable Meta detail", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("no meta body", 400),
+    );
+
+    await ensureFreshInstagramToken(
+      db,
+      "user-1",
+      { externalId: "ig-A", accessToken: "encrypted:still-valid", expiresAt },
+      now,
+    );
+
+    const warned = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warned).toBe(true);
+    consoleSpy.mockRestore();
+  });
+
+  it("does not log a drift alarm for a classified transient 400 (code 4)", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("app rate limit", 400, { code: 4 }),
+    );
+
+    await ensureFreshInstagramToken(
+      db,
+      "user-1",
+      { externalId: "ig-A", accessToken: "encrypted:still-valid", expiresAt },
+      now,
+    );
+
+    const warned = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warned).toBe(false);
     consoleSpy.mockRestore();
   });
 

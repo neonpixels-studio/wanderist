@@ -35,8 +35,8 @@ const {
   },
 }));
 
-// Only the network-touching surface is mocked; the classification constants
-// come through from the real module so this suite fails if those values drift.
+// Only the network-touching surface is mocked; META_TOKEN_REVOKED_CODE comes
+// through from the real module so this suite fails if that value drifts.
 vi.mock("../../server/utils/instagramClient", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("../../server/utils/instagramClient")
@@ -250,6 +250,8 @@ describe("refreshExpiringInstagramTokens", () => {
   });
 
   it("does not stamp the row or flag unrecoverable on a non-revocation 400", async () => {
+    // A 400 with no parseable Meta detail logs a drift alarm — silence it.
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { db, update } = makeDb([
       {
         userId: "user-transient",
@@ -269,6 +271,12 @@ describe("refreshExpiringInstagramTokens", () => {
     expect(result.failures).toEqual([
       { userId: "user-transient", error: "bad request", unrecoverable: false },
     ]);
+    // The drift alarm fired for the unclassified 400.
+    const warned = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warned).toBe(true);
+    consoleSpy.mockRestore();
   });
 
   it("keeps the batch alive when the mark-expired write itself fails", async () => {

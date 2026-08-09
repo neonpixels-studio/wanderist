@@ -254,6 +254,12 @@ describe("parseMetaError", () => {
     expect(parseMetaError(JSON.stringify({ ok: true }))).toBeUndefined();
   });
 
+  it("returns undefined when error is a string, not an object", () => {
+    expect(
+      parseMetaError(JSON.stringify({ error: "expired" })),
+    ).toBeUndefined();
+  });
+
   it("returns undefined for an array or null error, not just a missing one", () => {
     expect(parseMetaError(JSON.stringify({ error: [] }))).toBeUndefined();
     expect(parseMetaError(JSON.stringify({ error: null }))).toBeUndefined();
