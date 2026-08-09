@@ -11,6 +11,8 @@ import {
   fetchInstagramUser,
   fetchInstagramMedia,
   filterGeotaggedMedia,
+  parseMetaError,
+  InstagramApiError,
   INSTAGRAM_OAUTH_AUTHORIZE_URL,
   INSTAGRAM_SCOPES,
   INSTAGRAM_MAX_MEDIA_PAGES,
@@ -162,14 +164,95 @@ describe("refreshLongLivedToken", () => {
     expect(url).toContain("access_token=old-token");
   });
 
-  it("throws when the API returns a non-OK status", async () => {
+  it("throws an InstagramApiError carrying the parsed Meta code on a genuine revocation", async () => {
     vi.mocked(fetch).mockResolvedValue(
-      makeFetchResponse({ error: "expired" }, false, 400),
+      makeFetchResponse(
+        {
+          error: {
+            message: "Error validating access token: Session has expired",
+            type: "OAuthException",
+            code: 190,
+            error_subcode: 463,
+          },
+        },
+        false,
+        400,
+      ),
     );
 
-    await expect(
-      refreshLongLivedToken({ accessToken: "dead-token" }),
-    ).rejects.toThrow();
+    const error = await refreshLongLivedToken({
+      accessToken: "dead-token",
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(InstagramApiError);
+    expect((error as InstagramApiError).status).toBe(400);
+    expect((error as InstagramApiError).metaError).toEqual({
+      type: "OAuthException",
+      code: 190,
+      subcode: 463,
+    });
+  });
+
+  it("throws with an undefined metaError when the 400 body is not a Meta envelope", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      makeFetchResponse("upstream gateway error", false, 400),
+    );
+
+    const error = await refreshLongLivedToken({
+      accessToken: "token",
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(InstagramApiError);
+    expect((error as InstagramApiError).metaError).toBeUndefined();
+  });
+});
+
+describe("parseMetaError", () => {
+  it("extracts type, code, and error_subcode from a Meta error envelope", () => {
+    const body = JSON.stringify({
+      error: {
+        message: "Error validating access token",
+        type: "OAuthException",
+        code: 190,
+        error_subcode: 460,
+      },
+    });
+
+    expect(parseMetaError(body)).toEqual({
+      type: "OAuthException",
+      code: 190,
+      subcode: 460,
+    });
+  });
+
+  it("returns present fields and leaves absent ones undefined", () => {
+    const body = JSON.stringify({ error: { type: "OAuthException", code: 4 } });
+
+    expect(parseMetaError(body)).toEqual({
+      type: "OAuthException",
+      code: 4,
+      subcode: undefined,
+    });
+  });
+
+  it("returns undefined for a non-JSON body", () => {
+    expect(parseMetaError("<html>502 Bad Gateway</html>")).toBeUndefined();
+  });
+
+  it("returns undefined when there is no error object", () => {
+    expect(parseMetaError(JSON.stringify({ ok: true }))).toBeUndefined();
+  });
+
+  it("ignores fields of the wrong type rather than trusting them", () => {
+    const body = JSON.stringify({
+      error: { type: 190, code: "190", error_subcode: "463" },
+    });
+
+    expect(parseMetaError(body)).toEqual({
+      type: undefined,
+      code: undefined,
+      subcode: undefined,
+    });
   });
 });
 

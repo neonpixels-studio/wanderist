@@ -19,6 +19,8 @@ import { connectedAccounts, CONNECTED_ACCOUNT_PROVIDER } from "../db/schema";
 import {
   refreshLongLivedToken,
   InstagramApiError,
+  META_OAUTH_EXCEPTION_TYPE,
+  META_TOKEN_REVOKED_CODE,
   type InstagramLongLivedTokenResponse,
 } from "./instagramClient";
 import { decryptToken, encryptToken } from "./tokenCrypto";
@@ -35,10 +37,6 @@ export const INSTAGRAM_REFRESH_THRESHOLD_DAYS = 10;
 // token response omits `expires_in`, so a freshly minted token always has a
 // known (non-null) expiry rather than being treated as immediately near-expiry.
 export const INSTAGRAM_LONG_LIVED_TOKEN_DAYS = 60;
-
-// Instagram answers 400/401 when a token is expired or the user revoked
-// access — unrecoverable by refresh, so the connection must be re-established.
-const UNRECOVERABLE_REFRESH_STATUSES = new Set([400, 401]);
 
 /**
  * Thrown when a stored token is already past expiry and Instagram refuses to
@@ -124,14 +122,21 @@ function instagramAccountWhere(externalId: string) {
 }
 
 /**
- * True when a refresh failure means the token is dead from Instagram's side
- * (400/401 — expired or revoked) and only reconnecting can fix it. Shared by
- * the on-use path and the scheduled batch so both classify failures the same.
+ * True only when a refresh failure is a genuine token revocation from Meta's
+ * side: an OAuthException with code 190 (its subcode narrows the exact cause —
+ * expiry, password change, revocation — but every 190 means the token is dead
+ * and only reconnecting fixes it). Every other 400 (an ambiguous validation
+ * error, a transient upstream fault) is deliberately NOT classified here, so a
+ * still-valid connection is never disconnected on a non-revocation 400. Shared
+ * by the on-use path and the scheduled batch so both classify failures the same.
  */
 export function isUnrecoverableRefreshError(error: unknown): boolean {
+  if (!(error instanceof InstagramApiError)) {
+    return false;
+  }
   return (
-    error instanceof InstagramApiError &&
-    UNRECOVERABLE_REFRESH_STATUSES.has(error.status)
+    error.metaError?.type === META_OAUTH_EXCEPTION_TYPE &&
+    error.metaError.code === META_TOKEN_REVOKED_CODE
   );
 }
 
@@ -197,11 +202,11 @@ export async function markInstagramTokenExpiredBestEffort(
 }
 
 /**
- * A refresh failure is unrecoverable when Instagram itself rejected the token
- * (400/401 — expired or revoked), or when our own stored expiry is already
- * past. Either way the user must reconnect; the caller turns this into a
- * "reconnect" response rather than retrying a dead token. Transient failures
- * (429/5xx/network) on a still-valid token are recoverable — fall back and
+ * A refresh failure is unrecoverable when Instagram genuinely revoked the token
+ * (OAuthException code 190), or when our own stored expiry is already past.
+ * Either way the user must reconnect; the caller turns this into a "reconnect"
+ * response rather than retrying a dead token. Every other failure (an ambiguous
+ * 400, 429/5xx, network) on a still-valid token is recoverable — fall back and
  * retry next run.
  */
 function isRefreshUnrecoverable(
@@ -221,9 +226,10 @@ function isRefreshUnrecoverable(
  *
  * Failure handling: a transient refresh failure on a still-valid token is
  * logged and the current token is returned (the next run retries). A failure
- * that means the token is dead — Instagram answered 400/401, or the stored
- * expiry is already past — is surfaced as InstagramTokenExpiredError so the
- * caller can prompt a reconnect instead of calling Instagram with a dead token.
+ * that means the token is dead — Instagram revoked it (OAuthException code
+ * 190), or the stored expiry is already past — is surfaced as
+ * InstagramTokenExpiredError so the caller can prompt a reconnect instead of
+ * calling Instagram with a dead token.
  */
 export async function ensureFreshInstagramToken(
   db: InstagramTokenDb,
@@ -241,11 +247,12 @@ export async function ensureFreshInstagramToken(
     refreshed = await refreshLongLivedToken({ accessToken: currentToken });
   } catch (error) {
     if (isRefreshUnrecoverable(error, stored.expiresAt, now)) {
-      // Instagram rejected the token (400/401): stamp the row expired so
-      // repeated imports inside the refresh window stop firing a live,
-      // guaranteed-to-fail refresh until the nightly job cleans it up. Gated on
-      // the API rejection specifically — an already-past stored expiry needs no
-      // stamp. Best-effort so a stamp failure still surfaces the reconnect.
+      // Instagram genuinely revoked the token (OAuthException code 190): stamp
+      // the row expired so repeated imports inside the refresh window stop
+      // firing a live, guaranteed-to-fail refresh until the nightly job cleans
+      // it up. Gated on the revocation specifically — an already-past stored
+      // expiry needs no stamp. Best-effort so a stamp failure still surfaces the
+      // reconnect.
       if (isUnrecoverableRefreshError(error)) {
         await markInstagramTokenExpiredBestEffort(db, stored.externalId, now);
       }

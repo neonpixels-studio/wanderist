@@ -92,18 +92,78 @@ export interface InstagramLongLivedTokenResponse {
   expires_in?: number;
 }
 
+// Meta's OAuthException error `type`, and the `code` it uses whenever an access
+// token is expired, revoked, or otherwise invalid. Meta returns a 400 for a
+// broad range of conditions, but only an OAuthException with this code (its
+// error_subcode narrows the exact cause: 460 password change, 463 expiry, 467
+// invalid, etc.) genuinely means the token is dead and the account must
+// reconnect. Any other 400 is transient and must not disconnect the account.
+export const META_OAUTH_EXCEPTION_TYPE = "OAuthException";
+export const META_TOKEN_REVOKED_CODE = 190;
+
 /**
- * Error carrying the HTTP status of a failed Instagram API call, so callers
- * can distinguish an unrecoverable auth failure (400/401 — token expired or
- * revoked, user must reconnect) from a transient one (429/5xx — retry later).
+ * The relevant fields Meta returns inside an error response body's `error`
+ * object. Each is optional because a non-Meta 400 (a gateway, an edge cache, a
+ * plain-text body) carries none of them — parseMetaError yields undefined in
+ * that case so the caller treats it as transient rather than a revocation.
+ */
+export interface MetaErrorDetail {
+  type?: string;
+  code?: number;
+  subcode?: number;
+}
+
+/**
+ * Parses Meta's error envelope (`{ error: { message, type, code,
+ * error_subcode } }`) out of a response body. Defensive: a body that is not
+ * JSON, is not an object, or lacks a well-formed `error` object yields
+ * undefined so callers classify it as transient rather than a revocation.
+ */
+export function parseMetaError(body: string): MetaErrorDetail | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return undefined;
+  }
+  const error = (parsed as { error?: unknown }).error;
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+  const detail = error as {
+    type?: unknown;
+    code?: unknown;
+    error_subcode?: unknown;
+  };
+  return {
+    type: typeof detail.type === "string" ? detail.type : undefined,
+    code: typeof detail.code === "number" ? detail.code : undefined,
+    subcode:
+      typeof detail.error_subcode === "number"
+        ? detail.error_subcode
+        : undefined,
+  };
+}
+
+/**
+ * Error carrying the HTTP status of a failed Instagram API call plus the parsed
+ * Meta error detail (code/subcode/type) when the body carried one, so callers
+ * can distinguish a genuine token revocation (OAuthException code 190 — user
+ * must reconnect) from a transient failure (an ambiguous 400, 429, 5xx — retry
+ * later) rather than disconnecting on any 400.
  */
 export class InstagramApiError extends Error {
   readonly status: number;
+  readonly metaError?: MetaErrorDetail;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, metaError?: MetaErrorDetail) {
     super(message);
     this.name = "InstagramApiError";
     this.status = status;
+    this.metaError = metaError;
   }
 }
 
@@ -241,6 +301,7 @@ export async function refreshLongLivedToken(params: {
     throw new InstagramApiError(
       `Instagram token refresh failed (${response.status}): ${text}`,
       response.status,
+      parseMetaError(text),
     );
   }
 

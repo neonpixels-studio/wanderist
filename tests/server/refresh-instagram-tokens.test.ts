@@ -22,9 +22,15 @@ const {
   ),
   MockInstagramApiError: class extends Error {
     status: number;
-    constructor(message: string, status: number) {
+    metaError?: { type?: string; code?: number; subcode?: number };
+    constructor(
+      message: string,
+      status: number,
+      metaError?: { type?: string; code?: number; subcode?: number },
+    ) {
       super(message);
       this.status = status;
+      this.metaError = metaError;
     }
   },
 }));
@@ -32,7 +38,19 @@ const {
 vi.mock("../../server/utils/instagramClient", () => ({
   refreshLongLivedToken: mockRefreshLongLivedToken,
   InstagramApiError: MockInstagramApiError,
+  META_OAUTH_EXCEPTION_TYPE: "OAuthException",
+  META_TOKEN_REVOKED_CODE: 190,
 }));
+
+// A genuine Meta token revocation — the only 400 the batch treats as
+// unrecoverable and stamps expired.
+function makeRevocationError(message = "revoked") {
+  return new MockInstagramApiError(message, 400, {
+    type: "OAuthException",
+    code: 190,
+    subcode: 463,
+  });
+}
 
 vi.mock("../../server/utils/tokenCrypto", () => ({
   encryptToken: mockEncryptToken,
@@ -209,7 +227,7 @@ describe("refreshExpiringInstagramTokens", () => {
     ]);
   });
 
-  it("marks the row expired and flags unrecoverable on a 400/401", async () => {
+  it("marks the row expired and flags unrecoverable on a genuine revocation", async () => {
     const { db, update } = makeDb([
       {
         userId: "user-revoked",
@@ -217,9 +235,7 @@ describe("refreshExpiringInstagramTokens", () => {
         accessToken: "encrypted:dead",
       },
     ]);
-    mockRefreshLongLivedToken.mockRejectedValue(
-      new MockInstagramApiError("revoked", 400),
-    );
+    mockRefreshLongLivedToken.mockRejectedValue(makeRevocationError());
 
     const result = await refreshExpiringInstagramTokens(db);
 
@@ -227,6 +243,28 @@ describe("refreshExpiringInstagramTokens", () => {
     expect(update).toHaveBeenCalledTimes(1);
     expect(result.failures).toEqual([
       { userId: "user-revoked", error: "revoked", unrecoverable: true },
+    ]);
+  });
+
+  it("does not stamp the row or flag unrecoverable on a non-revocation 400", async () => {
+    const { db, update } = makeDb([
+      {
+        userId: "user-transient",
+        externalId: "ig-transient",
+        accessToken: "encrypted:valid",
+      },
+    ]);
+    // A 400 with no OAuthException code-190 body is transient — the token may
+    // still be valid, so the batch must not disconnect it.
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("bad request", 400),
+    );
+
+    const result = await refreshExpiringInstagramTokens(db);
+
+    expect(update).not.toHaveBeenCalled();
+    expect(result.failures).toEqual([
+      { userId: "user-transient", error: "bad request", unrecoverable: false },
     ]);
   });
 
@@ -262,7 +300,7 @@ describe("refreshExpiringInstagramTokens", () => {
         token_type: "bearer",
         expires_in: 5_183_944,
       })
-      .mockRejectedValueOnce(new MockInstagramApiError("revoked", 400));
+      .mockRejectedValueOnce(makeRevocationError());
 
     const result = await refreshExpiringInstagramTokens(db);
 
