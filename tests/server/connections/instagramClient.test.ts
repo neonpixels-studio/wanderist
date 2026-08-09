@@ -12,6 +12,7 @@ import {
   fetchInstagramMedia,
   filterGeotaggedMedia,
   parseMetaError,
+  redactAccessToken,
   InstagramApiError,
   INSTAGRAM_OAUTH_AUTHORIZE_URL,
   INSTAGRAM_SCOPES,
@@ -253,6 +254,42 @@ describe("refreshLongLivedToken", () => {
     }).catch((caught: unknown) => caught);
 
     expect(isUnrecoverableRefreshError(error)).toBe(false);
+  });
+
+  it("redacts an echoed access token out of the thrown error message", async () => {
+    // An intermediary 4xx echoes the request URI — token included — in its body.
+    vi.mocked(fetch).mockResolvedValue(
+      makeRawTextResponse(
+        "<html>Blocked: GET /refresh_access_token?grant_type=ig_refresh_token&access_token=SUPERSECRETTOKEN123</html>",
+        400,
+      ),
+    );
+
+    const error = (await refreshLongLivedToken({
+      accessToken: "SUPERSECRETTOKEN123",
+    }).catch((caught: unknown) => caught)) as InstagramApiError;
+
+    expect(error.message).not.toContain("SUPERSECRETTOKEN123");
+    expect(error.message).toContain("access_token=[redacted]");
+  });
+});
+
+describe("redactAccessToken", () => {
+  it("replaces the token value while leaving surrounding text intact", () => {
+    const redacted = redactAccessToken(
+      "error at ?access_token=abc.def-123&scope=x end",
+    );
+    expect(redacted).toBe("error at ?access_token=[redacted]&scope=x end");
+  });
+
+  it("redacts every occurrence, case-insensitively", () => {
+    const redacted = redactAccessToken("Access_Token=one and access_token=two");
+    expect(redacted).not.toContain("one");
+    expect(redacted).not.toContain("two");
+  });
+
+  it("leaves a body with no access token untouched", () => {
+    expect(redactAccessToken("just an error")).toBe("just an error");
   });
 });
 

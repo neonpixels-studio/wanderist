@@ -206,10 +206,19 @@ export function warnUnclassifiedRefresh400(
   userId: string,
   error: unknown,
 ): void {
-  const status = error instanceof InstagramApiError ? error.status : undefined;
+  const apiError = error instanceof InstagramApiError ? error : undefined;
   console.warn(
     `${source}: unclassified 400 (no Meta code) — possible error-envelope drift`,
-    { userId, status, message: boundedErrorMessage(error) },
+    {
+      userId,
+      status: apiError?.status,
+      // Surfaces which drift this is: absent entirely (no Meta envelope) vs a
+      // partial parse where `type`/`subcode` survived but `code` did not — the
+      // exact case this alarm exists to catch. This is the only reader of the
+      // parsed `type`/`subcode`, so they earn their place in MetaErrorDetail.
+      metaError: apiError?.metaError,
+      message: boundedErrorMessage(error),
+    },
   );
 }
 

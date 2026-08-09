@@ -629,6 +629,34 @@ describe("ensureFreshInstagramToken", () => {
     consoleSpy.mockRestore();
   });
 
+  it("includes the parsed metaError in the drift payload so partial-parse drift is diagnosable", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    // Partial parse: type/subcode survived, code did not — the exact case the
+    // alarm exists to catch, and the operator needs to see which one it is.
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("drift", 400, {
+        type: "OAuthException",
+        subcode: 463,
+      }),
+    );
+
+    await ensureFreshInstagramToken(
+      db,
+      "user-1",
+      { externalId: "ig-A", accessToken: "encrypted:still-valid", expiresAt },
+      now,
+    );
+
+    const driftCall = consoleSpy.mock.calls.find((call) =>
+      String(call[0]).includes("drift"),
+    );
+    const payload = driftCall?.[1] as { metaError?: { type?: string } };
+    expect(payload.metaError).toEqual({ type: "OAuthException", subcode: 463 });
+    consoleSpy.mockRestore();
+  });
+
   it("does not log a drift alarm for a classified transient 400 (code 4)", async () => {
     const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { db } = makeUpdatableDb();

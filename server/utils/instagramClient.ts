@@ -151,6 +151,18 @@ function toMetaErrorDetail(
 }
 
 /**
+ * Redacts an `access_token` query param out of a response body. The refresh
+ * request carries the token in the query string, and an intermediary 4xx (a
+ * WAF, proxy, or edge cache) commonly echoes the request URI — token included —
+ * in its body. That body is embedded in the thrown error's message, which is
+ * logged, so a live 60-day token would otherwise land in logs. Truncation alone
+ * doesn't help: the URI sits near the start of such a page.
+ */
+export function redactAccessToken(text: string): string {
+  return text.replace(/access_token=[^&\s"'<]+/gi, "access_token=[redacted]");
+}
+
+/**
  * Parses Meta's error envelope (`{ error: { message, type, code,
  * error_subcode } }`) out of a response body. Defensive: a body that is not
  * JSON, is not an object, or lacks a well-formed `error` object yields
@@ -314,7 +326,10 @@ export async function refreshLongLivedToken(params: {
   );
 
   if (!response.ok) {
-    const text = await response.text();
+    // Redact before the body enters the (logged) error message. A JSON Meta
+    // envelope has no access_token field, so redaction never alters what
+    // parseMetaError reads — it only scrubs an echoed request URI.
+    const text = redactAccessToken(await response.text());
     throw new InstagramApiError(
       `Instagram token refresh failed (${response.status}): ${text}`,
       response.status,
