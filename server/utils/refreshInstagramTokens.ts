@@ -19,6 +19,7 @@ import { refreshLongLivedToken } from "./instagramClient";
 import { decryptToken } from "./tokenCrypto";
 import {
   INSTAGRAM_REFRESH_THRESHOLD_DAYS,
+  MAX_LOGGED_ERROR_CHARS,
   isUnrecoverableRefreshError,
   isUnclassifiedRefresh400,
   warnUnclassifiedRefresh400,
@@ -43,11 +44,6 @@ export interface InstagramRefreshFailure {
   // transient/infrastructure failures (an ambiguous 400, 429, 5xx, network) the
   // caller should treat as a real, retriable problem.
   unrecoverable: boolean;
-  // True when the failure is a 400 carrying no usable Meta `code` — recoverable,
-  // but ambiguous rather than clear infrastructure breakage. The scheduled
-  // adapter excludes these from its "nothing succeeded, infra is down" alarm so
-  // a lone ambiguous 400 doesn't mark the whole run failed.
-  unclassified: boolean;
 }
 
 export interface InstagramRefreshResult {
@@ -115,7 +111,6 @@ async function refreshAccount(
       userId: account.userId,
       error: "No stored token",
       unrecoverable: true,
-      unclassified: false,
     };
   }
   try {
@@ -126,7 +121,10 @@ async function refreshAccount(
     );
     return null;
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
+    const message =
+      error instanceof Error
+        ? error.message.slice(0, MAX_LOGGED_ERROR_CHARS)
+        : "Unknown error";
     const unrecoverable = isUnrecoverableRefreshError(error);
     if (unrecoverable) {
       // Instagram genuinely revoked the token (OAuthException code 190) — stamp
@@ -135,8 +133,7 @@ async function refreshAccount(
       // transient 400 is left untouched so a still-valid token is retried.
       await markInstagramTokenExpiredBestEffort(db, account.externalId, now);
     }
-    const unclassified = isUnclassifiedRefresh400(error);
-    if (unclassified) {
+    if (isUnclassifiedRefresh400(error)) {
       // Drift alarm: a 400 with no usable Meta code is kept as recoverable, but
       // if the error envelope ever changes every revocation would land here and
       // stop prompting reconnects — surface it loudly rather than silently.
@@ -146,12 +143,7 @@ async function refreshAccount(
         error,
       );
     }
-    return {
-      userId: account.userId,
-      error: message,
-      unrecoverable,
-      unclassified,
-    };
+    return { userId: account.userId, error: message, unrecoverable };
   }
 }
 

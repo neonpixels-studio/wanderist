@@ -66,6 +66,7 @@ vi.mock("../../server/utils/tokenCrypto", () => ({
 const {
   INSTAGRAM_REFRESH_THRESHOLD_DAYS,
   INSTAGRAM_LONG_LIVED_TOKEN_DAYS,
+  MAX_LOGGED_ERROR_CHARS,
   InstagramTokenExpiredError,
   isInstagramTokenNearExpiry,
   isInstagramTokenExpired,
@@ -541,10 +542,68 @@ describe("ensureFreshInstagramToken", () => {
     expect(update).not.toHaveBeenCalled();
     // Assert the specific drift line fired, not merely "some warn" — a weaker
     // check would pass even if the drift alarm were deleted.
-    const warned = consoleSpy.mock.calls.some((call) =>
+    const warnedDrift = consoleSpy.mock.calls.some((call) =>
       String(call[0]).includes("drift"),
     );
-    expect(warned).toBe(true);
+    expect(warnedDrift).toBe(true);
+    // The generic "using existing token" line must NOT also fire — an
+    // unclassified 400 logs once (the drift line), not twice.
+    const warnedGeneric = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("using existing token"),
+    );
+    expect(warnedGeneric).toBe(false);
+    consoleSpy.mockRestore();
+  });
+
+  it("logs the generic fall-back line (not a drift line) for a transient 5xx", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    // A 5xx is recoverable but not a 400, so it takes the generic path, not the
+    // drift alarm — pinning the other branch of the dedup guard.
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("upstream down", 503),
+    );
+
+    const token = await ensureFreshInstagramToken(
+      db,
+      "user-1",
+      { externalId: "ig-A", accessToken: "encrypted:still-valid", expiresAt },
+      now,
+    );
+
+    expect(token).toBe("still-valid");
+    const warnedGeneric = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("using existing token"),
+    );
+    expect(warnedGeneric).toBe(true);
+    const warnedDrift = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warnedDrift).toBe(false);
+    consoleSpy.mockRestore();
+  });
+
+  it("truncates a very long error message in the drift alarm payload", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeUpdatableDb();
+    const expiresAt = new Date(now.getTime() + 2 * MS_PER_DAY);
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("x".repeat(2000), 400),
+    );
+
+    await ensureFreshInstagramToken(
+      db,
+      "user-1",
+      { externalId: "ig-A", accessToken: "encrypted:still-valid", expiresAt },
+      now,
+    );
+
+    const driftCall = consoleSpy.mock.calls.find((call) =>
+      String(call[0]).includes("drift"),
+    );
+    const payload = driftCall?.[1] as { message?: string } | undefined;
+    expect(payload?.message).toHaveLength(MAX_LOGGED_ERROR_CHARS);
     consoleSpy.mockRestore();
   });
 

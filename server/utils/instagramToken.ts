@@ -176,10 +176,11 @@ export function isUnclassifiedRefresh400(error: unknown): boolean {
   );
 }
 
-// Bounds the error text shipped into logs: an InstagramApiError message embeds
-// the upstream response body verbatim, so an unbounded body (an HTML error
-// page) must not flood the log line.
-const MAX_LOGGED_ERROR_CHARS = 500;
+// Bounds the error text shipped into logs and into a returned failure's
+// `error`: an InstagramApiError message embeds the upstream response body
+// verbatim, so an unbounded body (an HTML error page) must not flood a log line.
+// Shared by the drift alarm here and the batch's per-failure message.
+export const MAX_LOGGED_ERROR_CHARS = 500;
 
 /**
  * Emits the drift alarm for an unclassified refresh 400 in one shape from every

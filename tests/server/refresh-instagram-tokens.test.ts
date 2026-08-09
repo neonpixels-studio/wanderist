@@ -66,7 +66,10 @@ const {
   dueAccountsCondition,
   INSTAGRAM_REFRESH_BATCH_LIMIT,
 } = await import("../../server/utils/refreshInstagramTokens");
-import { INSTAGRAM_REFRESH_THRESHOLD_DAYS } from "../../server/utils/instagramToken";
+import {
+  INSTAGRAM_REFRESH_THRESHOLD_DAYS,
+  MAX_LOGGED_ERROR_CHARS,
+} from "../../server/utils/instagramToken";
 import { MS_PER_DAY } from "../../server/utils/accountLifecycle";
 import { PgDialect } from "drizzle-orm/pg-core";
 
@@ -212,7 +215,6 @@ describe("refreshExpiringInstagramTokens", () => {
         userId: "user-bad",
         error: "400 token revoked",
         unrecoverable: false,
-        unclassified: false,
       },
     ]);
     // Only the successful persist writes; a recoverable failure must NOT stamp
@@ -235,9 +237,25 @@ describe("refreshExpiringInstagramTokens", () => {
         userId: "user-null",
         error: "No stored token",
         unrecoverable: true,
-        unclassified: false,
       },
     ]);
+  });
+
+  it("truncates a very long error message in the returned failure", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { db } = makeDb([
+      { userId: "user-x", externalId: "ig-x", accessToken: "encrypted:t" },
+    ]);
+    // The upstream body is embedded in the error message verbatim; the batch
+    // must bound it before it lands in the returned result and the handler log.
+    mockRefreshLongLivedToken.mockRejectedValue(
+      new MockInstagramApiError("y".repeat(2000), 400),
+    );
+
+    const result = await refreshExpiringInstagramTokens(db);
+
+    expect(result.failures[0]!.error).toHaveLength(MAX_LOGGED_ERROR_CHARS);
+    consoleSpy.mockRestore();
   });
 
   it("marks the row expired and flags unrecoverable on a genuine revocation", async () => {
@@ -259,7 +277,6 @@ describe("refreshExpiringInstagramTokens", () => {
         userId: "user-revoked",
         error: "revoked",
         unrecoverable: true,
-        unclassified: false,
       },
     ]);
   });
@@ -284,7 +301,6 @@ describe("refreshExpiringInstagramTokens", () => {
         userId: "user-401",
         error: "unauthorized",
         unrecoverable: true,
-        unclassified: false,
       },
     ]);
   });
@@ -311,7 +327,6 @@ describe("refreshExpiringInstagramTokens", () => {
         userId: "user-429",
         error: "rate limited",
         unrecoverable: false,
-        unclassified: false,
       },
     ]);
   });
@@ -340,7 +355,6 @@ describe("refreshExpiringInstagramTokens", () => {
         userId: "user-transient",
         error: "bad request",
         unrecoverable: false,
-        unclassified: true,
       },
     ]);
     // The drift alarm fired for the unclassified 400.
@@ -393,7 +407,6 @@ describe("refreshExpiringInstagramTokens", () => {
         userId: "user-revoked",
         error: "revoked",
         unrecoverable: true,
-        unclassified: false,
       },
     ]);
     expect(consoleSpy).toHaveBeenCalled();

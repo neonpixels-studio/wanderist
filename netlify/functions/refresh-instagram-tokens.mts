@@ -22,11 +22,9 @@
  * stops recurring. What is fatal, and re-thrown so Netlify records the
  * invocation as failed, is: an unexpected error (e.g. the DB query throwing), a
  * missing encryption key, or a run where nothing succeeded yet a *recoverable*
- * failure occurred (a rotated app secret, a 429/5xx storm) — a real problem, not
- * a stray revoked account. An ambiguous, unclassified 400 (no usable Meta code)
- * is excluded from that alarm: it is retried, not evidence that infrastructure
- * is down, so one such failure on a quiet day must not fail the whole run.
- * Mirrors purge-deleted-accounts.mts.
+ * failure occurred (a rotated app secret, a 429/5xx storm, or a broad 400
+ * outage) — a real problem, not a stray revoked account. Mirrors
+ * purge-deleted-accounts.mts.
  */
 import { createDb } from "../../server/db/index";
 import { refreshExpiringInstagramTokens } from "../../server/utils/refreshInstagramTokens";
@@ -65,13 +63,15 @@ export const handler = async () => {
       );
     }
 
-    // Nothing renewed AND at least one recoverable failure (not a revocation the
-    // user must reconnect, and not a lone ambiguous 400) means the job itself is
-    // broken — a rotated secret or a transient outage hitting everything. Throw
-    // so Netlify marks the run failed. Runs whose only failures are revoked
-    // accounts or unclassified 400s stay green.
+    // Nothing renewed AND at least one recoverable failure (not a genuine
+    // revocation the user must reconnect) means the job itself may be broken — a
+    // rotated secret or an outage hitting everything, including a broad 400
+    // outage. Throw so Netlify marks the run failed. Runs whose only failures
+    // are revoked accounts stay green. An ambiguous 400 is recoverable, so it is
+    // included here: on a zero-success run it is worth a human glance, exactly as
+    // a 429/5xx would be.
     const recoverableFailures = result.failures.filter(
-      (failure) => !failure.unrecoverable && !failure.unclassified,
+      (failure) => !failure.unrecoverable,
     );
     if (result.refreshedCount === 0 && recoverableFailures.length > 0) {
       throw new Error(
