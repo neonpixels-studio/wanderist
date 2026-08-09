@@ -159,17 +159,20 @@ export function isUnrecoverableRefreshError(error: unknown): boolean {
 }
 
 /**
- * True when a refresh failure is a 400 whose body carried no parseable Meta
- * error detail. Such a 400 is treated as recoverable (we can't prove a
- * revocation), but it is worth a loud log: if Meta ever changes its error
- * envelope, every revocation would silently land here and stop prompting
- * reconnects, so this is the drift alarm the callers surface.
+ * True when a refresh failure is a 400 carrying no usable Meta `code` — either
+ * no parseable Meta detail at all, or a partially-parsed envelope missing the
+ * one field classification depends on. Such a 400 is treated as recoverable (we
+ * can't prove a revocation), but it is worth a loud log: if Meta ever changes
+ * its error envelope (renames `code`, serializes it as a string, etc.), every
+ * revocation would silently land here and stop prompting reconnects. Keying on
+ * the absent `code` — not just an absent `metaError` — is what makes this catch
+ * a partial-parse drift rather than only a total-parse failure.
  */
 export function isUnclassifiedRefresh400(error: unknown): boolean {
   return (
     error instanceof InstagramApiError &&
     error.status === BAD_REQUEST_STATUS &&
-    error.metaError === undefined
+    error.metaError?.code === undefined
   );
 }
 
@@ -280,6 +283,17 @@ export async function ensureFreshInstagramToken(
   try {
     refreshed = await refreshLongLivedToken({ accessToken: currentToken });
   } catch (error) {
+    // Drift alarm first, before any branch that throws: a past-expiry row also
+    // takes the unrecoverable branch, and sustained envelope drift marches
+    // tokens past expiry — so logging only on the fall-through path would go
+    // silent exactly when drift is happening.
+    if (isUnclassifiedRefresh400(error)) {
+      console.warn(
+        "ensureFreshInstagramToken: unclassified 400 (no Meta code) — " +
+          "possible error-envelope drift; token not disconnected on this signal",
+        { userId, error },
+      );
+    }
     if (isRefreshUnrecoverable(error, stored.expiresAt, now)) {
       // Instagram genuinely revoked the token (OAuthException code 190): stamp
       // the row expired so repeated imports inside the refresh window stop
@@ -293,13 +307,6 @@ export async function ensureFreshInstagramToken(
       throw new InstagramTokenExpiredError(
         "Instagram token expired and could not be refreshed",
         { cause: error },
-      );
-    }
-    if (isUnclassifiedRefresh400(error)) {
-      console.warn(
-        "ensureFreshInstagramToken: unclassified 400 with no Meta detail — " +
-          "possible error-envelope drift; token kept, not disconnected",
-        { userId, error },
       );
     }
     console.warn(

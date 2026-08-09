@@ -260,6 +260,19 @@ describe("parseMetaError", () => {
     ).toBeUndefined();
   });
 
+  it("returns undefined for a Meta error carrying only message/fbtrace_id", () => {
+    // A real envelope can omit type/code/subcode; with no classifiable field it
+    // must read as undefined so the caller treats it as an unclassified 400.
+    const body = JSON.stringify({
+      error: {
+        message: "An unknown error occurred",
+        fbtrace_id: "AbCdEf123",
+      },
+    });
+
+    expect(parseMetaError(body)).toBeUndefined();
+  });
+
   it("returns undefined for an array or null error, not just a missing one", () => {
     expect(parseMetaError(JSON.stringify({ error: [] }))).toBeUndefined();
     expect(parseMetaError(JSON.stringify({ error: null }))).toBeUndefined();

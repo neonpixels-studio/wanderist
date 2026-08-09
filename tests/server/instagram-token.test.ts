@@ -70,6 +70,7 @@ const {
   isInstagramTokenNearExpiry,
   isInstagramTokenExpired,
   isUnrecoverableRefreshError,
+  isUnclassifiedRefresh400,
   expiryFromResponse,
   persistRefreshedInstagramToken,
   markInstagramTokenExpired,
@@ -209,6 +210,53 @@ describe("isUnrecoverableRefreshError", () => {
         new MockInstagramApiError("upstream", 503, { code: 190 }),
       ),
     ).toBe(false);
+  });
+
+  it("is false for a 400 whose Meta detail parsed a type but no code", () => {
+    // The drift case: a partially-parsed envelope missing the one field
+    // classification depends on must not be read as a revocation.
+    expect(
+      isUnrecoverableRefreshError(
+        new MockInstagramApiError("drifted", 400, { type: "OAuthException" }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("isUnclassifiedRefresh400", () => {
+  it("is true for a 400 with no Meta detail at all", () => {
+    expect(
+      isUnclassifiedRefresh400(new MockInstagramApiError("bad request", 400)),
+    ).toBe(true);
+  });
+
+  it("is true for a 400 whose detail has a type but no code (partial parse)", () => {
+    // The exact drift finding-1 exists to catch: code renamed / retyped so it
+    // parses to undefined while other fields survive.
+    expect(
+      isUnclassifiedRefresh400(
+        new MockInstagramApiError("drifted", 400, {
+          type: "OAuthException",
+          subcode: 463,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("is false when a numeric code is present — that is classifiable", () => {
+    expect(
+      isUnclassifiedRefresh400(
+        new MockInstagramApiError("rate", 400, { code: 4 }),
+      ),
+    ).toBe(false);
+    expect(isUnclassifiedRefresh400(makeRevocationError())).toBe(false);
+  });
+
+  it("is false for a non-400 or a non-API error", () => {
+    expect(
+      isUnclassifiedRefresh400(new MockInstagramApiError("server", 503)),
+    ).toBe(false);
+    expect(isUnclassifiedRefresh400(new Error("network"))).toBe(false);
   });
 });
 
@@ -539,7 +587,8 @@ describe("ensureFreshInstagramToken", () => {
     consoleSpy.mockRestore();
   });
 
-  it("throws InstagramTokenExpiredError on a non-revocation 400 once the stored expiry is already past", async () => {
+  it("throws InstagramTokenExpiredError on a non-revocation 400 once the stored expiry is already past, and still logs the drift alarm", async () => {
+    const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { db, update } = makeUpdatableDb();
     const expiresAt = new Date(now.getTime() - MS_PER_DAY);
     // Even a transient 400 is unrecoverable when our own stored expiry has
@@ -557,6 +606,13 @@ describe("ensureFreshInstagramToken", () => {
       ),
     ).rejects.toBeInstanceOf(InstagramTokenExpiredError);
     expect(update).not.toHaveBeenCalled();
+    // The alarm must fire even though this path throws — sustained drift marches
+    // tokens past expiry, and a silent alarm there defeats its purpose.
+    const warned = consoleSpy.mock.calls.some((call) =>
+      String(call[0]).includes("drift"),
+    );
+    expect(warned).toBe(true);
+    consoleSpy.mockRestore();
   });
 
   it("does not stamp the row when the already-expired token fails a non-API refresh", async () => {
