@@ -230,6 +230,38 @@ export interface InstagramMediaResponse {
   };
 }
 
+// True only when `body` is an object carrying a non-empty-string `access_token`.
+// The three token endpoints all return a 200 whose body must carry one; this is
+// the single field every token store depends on.
+function hasNonEmptyAccessToken(
+  body: unknown,
+): body is { access_token: string } {
+  if (typeof body !== "object" || body === null) {
+    return false;
+  }
+  const token = (body as { access_token?: unknown }).access_token;
+  return typeof token === "string" && token.length > 0;
+}
+
+/**
+ * Reads a token endpoint's 200 body and asserts it carries a usable
+ * `access_token` before any caller can encrypt/store it. A malformed 200 — an
+ * edge-cached page, a truncated body, an error envelope served with a 200 —
+ * would otherwise cast to `{ access_token: undefined }` and overwrite a working
+ * stored token with garbage. Fails loud instead, and deliberately omits the body
+ * from the message since a well-formed body carries a live token.
+ */
+async function readValidatedTokenResponse<T extends InstagramTokenResponse>(
+  response: Response,
+  context: string,
+): Promise<T> {
+  const body = (await response.json()) as unknown;
+  if (!hasNonEmptyAccessToken(body)) {
+    throw new Error(`${context}: 200 response missing a valid access_token`);
+  }
+  return body as T;
+}
+
 /**
  * Builds the Instagram OAuth authorization URL to redirect the user to.
  */
@@ -278,7 +310,10 @@ export async function exchangeInstagramCode(params: {
     );
   }
 
-  return response.json() as Promise<InstagramTokenResponse>;
+  return readValidatedTokenResponse<InstagramTokenResponse>(
+    response,
+    "Instagram token exchange",
+  );
 }
 
 /**
@@ -305,7 +340,10 @@ export async function exchangeForLongLivedToken(params: {
     );
   }
 
-  return response.json() as Promise<InstagramLongLivedTokenResponse>;
+  return readValidatedTokenResponse<InstagramLongLivedTokenResponse>(
+    response,
+    "Instagram long-lived token exchange",
+  );
 }
 
 /**
@@ -337,7 +375,10 @@ export async function refreshLongLivedToken(params: {
     );
   }
 
-  return response.json() as Promise<InstagramLongLivedTokenResponse>;
+  return readValidatedTokenResponse<InstagramLongLivedTokenResponse>(
+    response,
+    "Instagram token refresh",
+  );
 }
 
 /**
