@@ -62,6 +62,7 @@ export interface FetchEntriesResult {
   entries: Entry[];
   tab: string;
   page: number;
+  hasMore: boolean;
 }
 
 type FilterParam = [key: string, value: string | undefined];
