@@ -1,11 +1,12 @@
 import { eq } from "drizzle-orm";
 import {
-  assertOwnership,
+  loadOwnedOrThrow,
   optionalString,
   requireRouterParam,
 } from "../../utils/db-helpers";
 import { getDb } from "../../db/index";
 import { entries, entryPhotos, entryTags } from "../../db/schema";
+import { deleteMediaIfUnreferenced } from "../../utils/coverImageCleanup";
 import {
   generateId,
   parseOccurredAt,
@@ -16,6 +17,7 @@ import {
   type EntryVisibility,
 } from "../../utils/entry-helpers";
 
+type Entry = typeof entries.$inferSelect;
 type EntryUpdates = Partial<typeof entries.$inferInsert>;
 type DbClient = ReturnType<typeof getDb>;
 
@@ -102,10 +104,90 @@ async function replaceEntryPhotos(
   );
 }
 
+// Captured BEFORE the replace: once replaceEntryPhotos deletes the old rows
+// there is nothing left to tell us which media they pointed at.
+async function collectEntryPhotoMediaIds(
+  tx: DbClient,
+  entryId: string,
+): Promise<string[]> {
+  const rows = await tx
+    .select({ mediaId: entryPhotos.mediaId })
+    .from(entryPhotos)
+    .where(eq(entryPhotos.entryId, entryId));
+
+  return [...new Set(rows.map((row) => row.mediaId))];
+}
+
+// The media ids present before the replace but absent from the new set — the
+// ones this PATCH released. Media still referenced by the new set stays out of
+// cleanup entirely.
+function mediaIdsNoLongerReferenced(
+  previousMediaIds: string[],
+  nextMediaIds: string[],
+): string[] {
+  const nextMediaIdSet = new Set(nextMediaIds);
+  return previousMediaIds.filter((mediaId) => !nextMediaIdSet.has(mediaId));
+}
+
+// Best-effort: a failed media cleanup must not fail an otherwise-successful
+// entry update. The old media is only orphaned, not corrupt, so we log and move
+// on rather than surfacing a 500. deleteMediaIfUnreferenced re-checks live
+// references, so a media row still used by another entry photo or a trip cover
+// is left untouched. Returns false when the cleanup errored.
+async function cleanupOneReplacedMedia(
+  database: DbClient,
+  ownerId: string,
+  entryId: string,
+  mediaId: string,
+): Promise<boolean> {
+  try {
+    await deleteMediaIfUnreferenced(database, ownerId, mediaId);
+    return true;
+  } catch (cleanupError) {
+    console.error(
+      `entry patch: photo media cleanup failed for entry ${entryId}, media ${mediaId}`,
+      cleanupError,
+    );
+    return false;
+  }
+}
+
+// Runs after the entry's photo rows are replaced and the transaction has
+// committed, so the reference check does not see the row that just released the
+// media. Cleanups run concurrently and each swallows its own error, so one
+// failure never aborts the others; a summary line surfaces partial failures
+// beyond the per-media logs.
+async function cleanupReplacedPhotoMedia(
+  database: DbClient,
+  ownerId: string,
+  entryId: string,
+  mediaIds: string[],
+): Promise<void> {
+  const results = await Promise.all(
+    mediaIds.map((mediaId) =>
+      cleanupOneReplacedMedia(database, ownerId, entryId, mediaId),
+    ),
+  );
+
+  const failureCount = results.filter((succeeded) => !succeeded).length;
+
+  if (failureCount > 0) {
+    console.error(
+      `entry patch: ${failureCount} of ${mediaIds.length} photo media cleanups failed for entry ${entryId}`,
+    );
+  }
+}
+
 export default defineEventHandler(async (event) => {
   const id = requireRouterParam(event, "id");
 
-  await assertOwnership(event, entries, entries.id, entries.userId, id);
+  const entry = await loadOwnedOrThrow<Entry>(
+    event,
+    entries,
+    entries.id,
+    entries.userId,
+    id,
+  );
 
   const database = getDb();
   const body = ((await readBody(event)) ?? {}) as Record<string, unknown>;
@@ -149,37 +231,52 @@ export default defineEventHandler(async (event) => {
     });
   }
 
-  return database.transaction(async (transaction) => {
-    const txClient = transaction as unknown as DbClient;
+  const { payload, removedMediaIds } = await database.transaction(
+    async (transaction) => {
+      const txClient = transaction as unknown as DbClient;
 
-    let updated: typeof entries.$inferSelect | null = null;
+      let updated: Entry | null = null;
 
-    if (hasScalarUpdates) {
-      const rows = await txClient
-        .update(entries)
-        .set(updates)
-        .where(eq(entries.id, id))
-        .returning();
-      updated = rows[0];
-    }
+      if (hasScalarUpdates) {
+        const rows = await txClient
+          .update(entries)
+          .set(updates)
+          .where(eq(entries.id, id))
+          .returning();
+        updated = rows[0];
+      }
 
-    if (tagNames !== undefined) {
-      await replaceEntryTags(txClient, id, tagNames);
-    }
-    if (photoMediaIds !== undefined) {
-      await replaceEntryPhotos(txClient, id, photoMediaIds);
-    }
+      if (tagNames !== undefined) {
+        await replaceEntryTags(txClient, id, tagNames);
+      }
 
-    if (!updated) {
-      const rows = await txClient
-        .select()
-        .from(entries)
-        .where(eq(entries.id, id));
-      updated = rows[0];
-    }
+      let removedMediaIds: string[] = [];
+      if (photoMediaIds !== undefined) {
+        const previousMediaIds = await collectEntryPhotoMediaIds(txClient, id);
+        await replaceEntryPhotos(txClient, id, photoMediaIds);
+        removedMediaIds = mediaIdsNoLongerReferenced(
+          previousMediaIds,
+          photoMediaIds,
+        );
+      }
 
-    const relations = await loadEntryRelations(txClient, id);
+      if (!updated) {
+        const rows = await txClient
+          .select()
+          .from(entries)
+          .where(eq(entries.id, id));
+        updated = rows[0];
+      }
 
-    return { ...updated, ...relations };
-  });
+      const relations = await loadEntryRelations(txClient, id);
+
+      return { payload: { ...updated, ...relations }, removedMediaIds };
+    },
+  );
+
+  // Cleanup runs only after the transaction commits so deleteMediaIfUnreferenced
+  // sees the new photo rows and never deletes media the replace kept.
+  await cleanupReplacedPhotoMedia(database, entry.userId, id, removedMediaIds);
+
+  return payload;
 });
