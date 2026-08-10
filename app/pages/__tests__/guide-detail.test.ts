@@ -16,16 +16,26 @@ vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
 // page's fetch wiring is dead under test. Override it to run the handler once
 // and record its options so tests can assert the guide is requested by its
 // route param and that the refetch-on-id-change watcher targets the id.
-let lastAsyncDataOptions: { watch?: unknown[] } | undefined;
+// `asyncDataStatus` lets a test simulate the pre-resolution window the page
+// treats as loading.
+let lastAsyncDataOptions: { watch?: unknown[]; server?: boolean } | undefined;
+const asyncDataStatus = ref<"idle" | "pending" | "success" | "error">(
+  "success",
+);
 vi.stubGlobal(
   "useAsyncData",
-  (_key: unknown, handler: () => unknown, options?: { watch?: unknown[] }) => {
+  (
+    _key: unknown,
+    handler: () => unknown,
+    options?: { watch?: unknown[]; server?: boolean },
+  ) => {
     lastAsyncDataOptions = options;
     handler();
     return {
       data: ref(null),
       pending: ref(false),
       error: ref(null),
+      status: asyncDataStatus,
       refresh: vi.fn(),
     };
   },
@@ -60,6 +70,7 @@ describe("Guide Detail page (/guides/[id])", () => {
 
   beforeEach(() => {
     routeParams.id = "guide-1";
+    asyncDataStatus.value = "success";
     pinia = createPinia();
     setActivePinia(pinia);
 
@@ -97,6 +108,11 @@ describe("Guide Detail page (/guides/[id])", () => {
     expect(guidesStore.fetchGuideById).toHaveBeenCalledWith("guide-1");
   });
 
+  it("fetches client-only (server:false) so the token-bearing request never runs during SSR", () => {
+    mount(GuideDetailPage, buildGlobalConfig(pinia));
+    expect(lastAsyncDataOptions?.server).toBe(false);
+  });
+
   it("watches the guide id so it refetches on in-page navigation", async () => {
     mount(GuideDetailPage, buildGlobalConfig(pinia));
 
@@ -128,6 +144,20 @@ describe("Guide Detail page (/guides/[id])", () => {
 
     const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
     expect(wrapper.text()).toContain("Loading guide…");
+  });
+
+  it("shows loading (not the not-found state) before the client fetch resolves", () => {
+    // server:false means no guide exists during the pre-resolution window; the
+    // page must render loading, never flash "Guide not found" for a valid guide.
+    asyncDataStatus.value = "pending";
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = null;
+    guidesStore.isLoadingGuide = false;
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.text()).toContain("Loading guide…");
+    expect(wrapper.text()).not.toContain("Guide not found");
   });
 
   it("surfaces the store error message when a load fails", () => {

@@ -13,6 +13,16 @@ export function requireUser(event: H3Event): string {
 }
 
 /**
+ * Returns the request's authenticated user id, or null when the request is
+ * anonymous. Use on read routes that serve public resources to anonymous
+ * visitors (see server/middleware/auth.ts optional-auth paths); the route's own
+ * visibility rule decides what a null (non-owner) reader may see.
+ */
+export function optionalUser(event: H3Event): string | null {
+  return event.context.userId ?? null;
+}
+
+/**
  * True when new-user provisioning is turned off (invite-only mode).
  * Read via runtimeConfig (not process.env) so the value bakes into the server
  * bundle at build time and survives into the deployed Netlify function.
