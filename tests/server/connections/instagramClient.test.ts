@@ -121,6 +121,36 @@ describe("exchangeInstagramCode", () => {
       }),
     ).rejects.toThrow();
   });
+
+  it("throws on a 200 body missing access_token", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      makeFetchResponse({ token_type: "bearer" }),
+    );
+
+    await expect(
+      exchangeInstagramCode({
+        clientId: "c",
+        clientSecret: "s",
+        redirectUri: "r",
+        code: "code",
+      }),
+    ).rejects.toThrow(/access_token/);
+  });
+
+  it("throws on a 200 body with an empty access_token", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      makeFetchResponse({ access_token: "", token_type: "bearer" }),
+    );
+
+    await expect(
+      exchangeInstagramCode({
+        clientId: "c",
+        clientSecret: "s",
+        redirectUri: "r",
+        code: "code",
+      }),
+    ).rejects.toThrow(/access_token/);
+  });
 });
 
 describe("exchangeForLongLivedToken", () => {
@@ -154,6 +184,16 @@ describe("exchangeForLongLivedToken", () => {
       exchangeForLongLivedToken({ clientSecret: "s", shortLivedToken: "t" }),
     ).rejects.toThrow();
   });
+
+  it("throws on a 200 body missing access_token", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      makeFetchResponse({ token_type: "bearer", expires_in: 5183944 }),
+    );
+
+    await expect(
+      exchangeForLongLivedToken({ clientSecret: "s", shortLivedToken: "t" }),
+    ).rejects.toThrow(/access_token/);
+  });
 });
 
 describe("refreshLongLivedToken", () => {
@@ -177,6 +217,33 @@ describe("refreshLongLivedToken", () => {
     expect(url).toContain("refresh_access_token");
     expect(url).toContain("grant_type=ig_refresh_token");
     expect(url).toContain("access_token=old-token");
+  });
+
+  it("throws on a 200 body missing access_token without classifying it as a revocation", async () => {
+    // A malformed 200 must fail loud but NOT look like a revocation — the caller
+    // keeps the stored token and retries rather than disconnecting/overwriting.
+    vi.mocked(fetch).mockResolvedValue(
+      makeFetchResponse({ token_type: "bearer", expires_in: 5183944 }),
+    );
+
+    const error = await refreshLongLivedToken({
+      accessToken: "old-token",
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/access_token/);
+    expect(error).not.toBeInstanceOf(InstagramApiError);
+    expect(isUnrecoverableRefreshError(error)).toBe(false);
+  });
+
+  it("throws on a 200 body with an empty access_token", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      makeFetchResponse({ access_token: "", token_type: "bearer" }),
+    );
+
+    await expect(
+      refreshLongLivedToken({ accessToken: "old-token" }),
+    ).rejects.toThrow(/access_token/);
   });
 
   it("throws an InstagramApiError carrying the parsed Meta code on a genuine revocation", async () => {
