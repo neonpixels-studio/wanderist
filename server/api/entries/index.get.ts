@@ -124,7 +124,7 @@ export default defineEventHandler(async (event) => {
     const entryIdsWithPhotos = await fetchEntryIdsWithPhotos(database, userId);
 
     if (entryIdsWithPhotos.length === 0) {
-      return { entries: [], tab, page };
+      return { entries: [], tab, page, hasMore: false };
     }
 
     filters.push(inArray(entries.id, entryIdsWithPhotos));
@@ -152,5 +152,5 @@ export default defineEventHandler(async (event) => {
     likedByCurrentUser: likedIds.has(row.id),
   }));
 
-  return { entries: result, tab, page };
+  return { entries: result, tab, page, hasMore: rows.length === PAGE_SIZE };
 });

@@ -170,6 +170,64 @@ describe("GET /api/entries", () => {
     expect(result.page).toBe(1);
   });
 
+  it("reports hasMore: true when a full page of entries is returned", async () => {
+    const fullPage = Array.from({ length: 20 }, (_, index) => ({
+      id: `e-${index}`,
+      userId: "user-1",
+      title: `Entry ${index}`,
+    }));
+    mockRequireUser.mockReturnValue("user-1");
+    const mockDb = makeDbForListing(fullPage);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    const result = (await (defaultHandler as (event: unknown) => unknown)(
+      {},
+    )) as { entries: unknown[]; hasMore: boolean };
+
+    expect(result.entries).toHaveLength(20);
+    expect(result.hasMore).toBe(true);
+  });
+
+  it("reports hasMore: false when the page is short", async () => {
+    const shortPage = [{ id: "e-1", userId: "user-1", title: "Only Entry" }];
+    mockRequireUser.mockReturnValue("user-1");
+    const mockDb = makeDbForListing(shortPage);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    const result = (await (defaultHandler as (event: unknown) => unknown)(
+      {},
+    )) as { hasMore: boolean };
+
+    expect(result.hasMore).toBe(false);
+  });
+
+  it("reports hasMore: false for photos tab when no entries have photos", async () => {
+    mockRequireUser.mockReturnValue("user-1");
+    mockGetQuery.mockReturnValue({ tab: "photos" });
+
+    const selectDistinctWhereMock = vi.fn().mockResolvedValue([]);
+    const selectDistinctInnerJoinMock = vi
+      .fn()
+      .mockReturnValue({ where: selectDistinctWhereMock });
+    const selectDistinctFromMock = vi
+      .fn()
+      .mockReturnValue({ innerJoin: selectDistinctInnerJoinMock });
+    const mockDb = {
+      select: vi.fn().mockReturnValue({ from: vi.fn() }),
+      selectDistinct: vi.fn().mockReturnValue({ from: selectDistinctFromMock }),
+    };
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    const result = (await (defaultHandler as (event: unknown) => unknown)(
+      {},
+    )) as { hasMore: boolean };
+
+    expect(result.hasMore).toBe(false);
+  });
+
   it("returns empty entries for photos tab when no entries have photos", async () => {
     mockRequireUser.mockReturnValue("user-1");
     mockGetQuery.mockReturnValue({ tab: "photos" });
