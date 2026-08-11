@@ -94,4 +94,24 @@ describe("loadReadableGuide", () => {
       loadReadableGuide(fakeDbSequence([[]]), "missing", OWNER_ID),
     ).rejects.toEqual(expect.objectContaining({ statusCode: 404 }));
   });
+
+  it("returns a public guide to an anonymous (null) reader when the author is discoverable", async () => {
+    const guide = guideRow({ visibility: "public", userId: OWNER_ID });
+
+    await expect(
+      loadReadableGuide(
+        fakeDbSequence([[guide], discoverableOwner]),
+        "guide-1",
+        null,
+      ),
+    ).resolves.toEqual(guide);
+  });
+
+  it("throws 404 for a private guide requested by an anonymous (null) reader", async () => {
+    const guide = guideRow({ visibility: "private", userId: OWNER_ID });
+
+    await expect(
+      loadReadableGuide(fakeDbSequence([[guide]]), "guide-1", null),
+    ).rejects.toEqual(expect.objectContaining({ statusCode: 404 }));
+  });
 });

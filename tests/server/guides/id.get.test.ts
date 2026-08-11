@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { stubNitroGlobals } from "../test-utils";
 
 stubNitroGlobals();
+// The handler sets response cache headers; stub the Nitro auto-import so it can
+// run outside the Nuxt runtime.
+const mockSetResponseHeader = vi.fn();
+vi.stubGlobal("setResponseHeader", mockSetResponseHeader);
 
 // requireRouterParam is stubbed (it reads the event's route params); the
 // visibility rule under test lives in the real loadReadableGuide from
@@ -16,8 +20,12 @@ vi.mock("../../../server/utils/db-helpers", async (importOriginal) => {
   };
 });
 
+// Only optionalUser is mocked (not requireUser): the handler must resolve the
+// caller via optionalUser so anonymous reads are allowed. If it regresses to a
+// blanket requireUser, that import is undefined here and the handler throws —
+// failing these tests loudly rather than silently re-gating public guides.
 vi.mock("../../../server/utils/auth", () => ({
-  requireUser: vi.fn(),
+  optionalUser: vi.fn(),
 }));
 
 vi.mock("../../../server/db/index", () => ({
@@ -31,13 +39,13 @@ vi.mock("drizzle-orm", async (importOriginal) => {
 
 import { eq } from "drizzle-orm";
 import { requireRouterParam } from "../../../server/utils/db-helpers";
-import { requireUser } from "../../../server/utils/auth";
+import { optionalUser } from "../../../server/utils/auth";
 import { getDb } from "../../../server/db/index";
 import { guides } from "../../../server/db/schema";
 
 const mockEq = vi.mocked(eq);
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
-const mockRequireUser = vi.mocked(requireUser);
+const mockOptionalUser = vi.mocked(optionalUser);
 const mockGetDb = vi.mocked(getDb);
 
 // The handler may issue up to two queries (the guide lookup, then a non-owner
@@ -88,7 +96,7 @@ describe("GET /api/guides/:id", () => {
 
   it("returns a private guide to its owner, including the body", async () => {
     const guide = makeGuide({ visibility: "private", userId: OWNER_ID });
-    mockRequireUser.mockReturnValue(OWNER_ID);
+    mockOptionalUser.mockReturnValue(OWNER_ID);
     const mockDb = makeDb([[guide]]);
     mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
 
@@ -108,7 +116,7 @@ describe("GET /api/guides/:id", () => {
 
   it("returns a public guide to a non-owner when the author is discoverable", async () => {
     const guide = makeGuide({ visibility: "public", userId: OWNER_ID });
-    mockRequireUser.mockReturnValue(OTHER_ID);
+    mockOptionalUser.mockReturnValue(OTHER_ID);
     // Second response is non-empty: the author passes the discoverability check.
     mockGetDb.mockReturnValue(
       makeDb([[guide], [{ userId: OWNER_ID }]]) as unknown as ReturnType<
@@ -123,7 +131,7 @@ describe("GET /api/guides/:id", () => {
 
   it("hides a private guide from a non-owner with a 404", async () => {
     const guide = makeGuide({ visibility: "private", userId: OWNER_ID });
-    mockRequireUser.mockReturnValue(OTHER_ID);
+    mockOptionalUser.mockReturnValue(OTHER_ID);
     mockGetDb.mockReturnValue(
       makeDb([[guide]]) as unknown as ReturnType<typeof getDb>,
     );
@@ -133,7 +141,7 @@ describe("GET /api/guides/:id", () => {
 
   it("hides a public guide whose author is not discoverable with a 404", async () => {
     const guide = makeGuide({ visibility: "public", userId: OWNER_ID });
-    mockRequireUser.mockReturnValue(OTHER_ID);
+    mockOptionalUser.mockReturnValue(OTHER_ID);
     // Empty second response: the author is deleted / private / off-explore.
     mockGetDb.mockReturnValue(
       makeDb([[guide], []]) as unknown as ReturnType<typeof getDb>,
@@ -143,7 +151,7 @@ describe("GET /api/guides/:id", () => {
   });
 
   it("throws 404 when the guide does not exist", async () => {
-    mockRequireUser.mockReturnValue(OWNER_ID);
+    mockOptionalUser.mockReturnValue(OWNER_ID);
     mockGetDb.mockReturnValue(
       makeDb([[]]) as unknown as ReturnType<typeof getDb>,
     );
@@ -151,11 +159,52 @@ describe("GET /api/guides/:id", () => {
     await expect(runHandler()).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it("throws 401 when not authenticated", async () => {
-    mockRequireUser.mockImplementation(() => {
-      throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
-    });
+  it("returns a public guide to an anonymous visitor when the author is discoverable", async () => {
+    const guide = makeGuide({ visibility: "public", userId: OWNER_ID });
+    // Anonymous visitor: no session, so optionalUser resolves to null.
+    mockOptionalUser.mockReturnValue(null);
+    mockGetDb.mockReturnValue(
+      makeDb([[guide], [{ userId: OWNER_ID }]]) as unknown as ReturnType<
+        typeof getDb
+      >,
+    );
 
-    await expect(runHandler()).rejects.toMatchObject({ statusCode: 401 });
+    const result = await runHandler();
+
+    expect(result).toEqual(guide);
+  });
+
+  it("hides a private guide from an anonymous visitor with a 404", async () => {
+    const guide = makeGuide({ visibility: "private", userId: OWNER_ID });
+    mockOptionalUser.mockReturnValue(null);
+    mockGetDb.mockReturnValue(
+      makeDb([[guide]]) as unknown as ReturnType<typeof getDb>,
+    );
+
+    await expect(runHandler()).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("marks the response private/uncacheable and varies on Authorization", async () => {
+    const guide = makeGuide({ visibility: "public", userId: OWNER_ID });
+    mockOptionalUser.mockReturnValue(null);
+    mockGetDb.mockReturnValue(
+      makeDb([[guide], [{ userId: OWNER_ID }]]) as unknown as ReturnType<
+        typeof getDb
+      >,
+    );
+
+    await runHandler();
+
+    // A per-viewer body must never be served from a shared cache.
+    expect(mockSetResponseHeader).toHaveBeenCalledWith(
+      expect.anything(),
+      "Cache-Control",
+      "private, no-store",
+    );
+    expect(mockSetResponseHeader).toHaveBeenCalledWith(
+      expect.anything(),
+      "Vary",
+      "Authorization",
+    );
   });
 });

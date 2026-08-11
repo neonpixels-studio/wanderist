@@ -43,7 +43,11 @@ import { computed } from "vue";
 import { useGuidesStore } from "~/stores/guides";
 import type { GuideVisibility } from "~/stores/guides";
 
-definePageMeta({ layout: "app", middleware: "auth" });
+// No auth middleware: a public guide must open for anonymous visitors following
+// a shared link. The GET endpoint enforces visibility — a private or
+// non-discoverable guide returns 404, which this page renders as its not-found
+// state (it never redirects to /login), so private guides stay protected.
+definePageMeta({ layout: "app" });
 
 const VISIBILITY_TAG_CLASS: Record<GuideVisibility, string> = {
   public: "tag--ongoing",
@@ -55,7 +59,6 @@ const guideId = computed(() => String(route.params.id));
 
 const guidesStore = useGuidesStore();
 
-const isLoading = computed(() => guidesStore.isLoadingGuide);
 // Guard against the render window during in-page navigation (g-1 -> g-2): the
 // route id updates reactively before the refetch flips isLoadingGuide, so only
 // show currentGuide once it actually matches the id in the URL.
@@ -66,13 +69,29 @@ const guide = computed(() =>
 );
 const guideError = computed(() => guidesStore.guideError);
 
-// No .catch: like trips/[id].vue, a failed load rejects so Nuxt sets a real
-// error status on SSR; the store still records guideError / nulls currentGuide,
-// so the template renders its not-found / error state on the client.
-useAsyncData(
+// `server: false` keeps the fetch client-only, mirroring u/[id].vue: the request
+// carries the Clerk session token, which only exists on the client (Clerk runs
+// with skipServerMiddleware). Running it during SSR would hang, since Clerk's
+// getToken never resolves on the server. A failed load rejects (no .catch); the
+// store records guideError / nulls currentGuide, so the template renders its
+// not-found / error state — an anonymous visitor on a private or missing guide
+// sees "Guide not found" rather than being redirected to /login. This does mean
+// a shared link is not server-rendered (no unfurl preview); that is an accepted
+// trade for staying on the codebase's client-only-auth pattern.
+const { status: fetchStatus } = useAsyncData(
   () => `guide-detail-${guideId.value}`,
   () => guidesStore.fetchGuideById(guideId.value),
-  { watch: [guideId] },
+  { server: false, watch: [guideId] },
+);
+
+// Until the client fetch resolves, the SSR pass and hydration frame have no
+// guide yet. Treat that window as loading so a valid public guide never flashes
+// "Guide not found" (which SSR would otherwise emit) before its data arrives.
+const hasResolvedFetch = computed(
+  () => fetchStatus.value === "success" || fetchStatus.value === "error",
+);
+const isLoading = computed(
+  () => guidesStore.isLoadingGuide || !hasResolvedFetch.value,
 );
 
 const visibilityTagClass = computed(() =>

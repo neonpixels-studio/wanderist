@@ -3,6 +3,13 @@ import { requireClerkSecretKey, verifyClerkToken } from "../utils/clerk";
 
 const API_PATH_PREFIX = "/api/";
 const WEBHOOK_PATH_PREFIX = "/api/webhooks/";
+const HTTP_GET = "GET";
+
+// GET /api/guides/<id> serves a single guide, which may be public and shared
+// with anonymous visitors. Matches exactly one path segment after /guides/ so
+// it never covers the owner-only collection (/api/guides) or sub-resources like
+// /api/guides/<id>/like. The route handler still enforces visibility.
+const PUBLIC_READ_GUIDE_PATH = /^\/api\/guides\/[^/]+$/;
 
 function isApiPath(path: string): boolean {
   return path.startsWith(API_PATH_PREFIX);
@@ -10,6 +17,22 @@ function isApiPath(path: string): boolean {
 
 function isWebhookPath(path: string): boolean {
   return path.startsWith(WEBHOOK_PATH_PREFIX);
+}
+
+// event.path can carry a query string and a trailing slash; strip both before
+// matching route patterns so /api/guides/<id>, /api/guides/<id>/, and
+// /api/guides/<id>?x=1 all resolve to the same canonical route.
+function pathname(event: H3Event): string {
+  const withoutQuery = event.path.split("?")[0];
+  return withoutQuery.length > 1
+    ? withoutQuery.replace(/\/+$/, "")
+    : withoutQuery;
+}
+
+function isOptionalAuthRoute(event: H3Event): boolean {
+  return (
+    event.method === HTTP_GET && PUBLIC_READ_GUIDE_PATH.test(pathname(event))
+  );
 }
 
 function extractBearerToken(event: H3Event): string | null {
@@ -35,6 +58,20 @@ async function verifyBearerToken(event: H3Event): Promise<string> {
   }
 }
 
+// Optional auth for public read routes: a request with no Authorization header
+// is genuinely anonymous and falls through (the route's visibility rule decides
+// what it may see). A request that DOES send a token is a client that believes
+// it has a session, so a bad/expired token is an error, not anonymity — verify
+// strictly and let a failure 401 so the client refreshes or re-auths, rather
+// than silently demoting the owner to a non-owner and 404-ing their own guide.
+async function resolveOptionalUser(event: H3Event): Promise<void> {
+  const token = extractBearerToken(event);
+  if (!token) {
+    return;
+  }
+  event.context.userId = await verifyBearerToken(event);
+}
+
 export default defineEventHandler(async (event) => {
   if (!isApiPath(event.path)) {
     return;
@@ -42,6 +79,11 @@ export default defineEventHandler(async (event) => {
 
   // Webhook routes authenticate via Svix signature, not a bearer token.
   if (isWebhookPath(event.path)) {
+    return;
+  }
+
+  if (isOptionalAuthRoute(event)) {
+    await resolveOptionalUser(event);
     return;
   }
 

@@ -60,11 +60,16 @@ async function isReadableByNonOwner(
  * on explore (see isReadableByNonOwner). Anything else throws 404 (not 403) so
  * the endpoint never leaks that a guide with that id exists — mirroring how
  * loadOwnedOrThrow hides other users' rows behind a 404.
+ *
+ * `userId` is null for an anonymous visitor following a shared public-guide
+ * link. An anonymous reader is simply a non-owner (a null id never equals a
+ * guide's owner), so they clear the same public-and-discoverable bar and see
+ * nothing a signed-in non-owner couldn't.
  */
 export async function loadReadableGuide(
   database: Database,
   id: string,
-  userId: string,
+  userId: string | null,
 ): Promise<Guide> {
   const guide = await fetchGuideRow(database, id);
 
