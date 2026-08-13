@@ -80,6 +80,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, inject } from "vue";
 import type { SearchItem } from "~/composables/useSearch";
+import { escapeHtml } from "~/utils/escapeHtml";
 
 // PaletteItem extends SearchItem so search results (which always have href) fit
 // directly, while quick actions can supply either href or action (never both).
@@ -191,16 +192,42 @@ function flatIndex(groupKey: string, indexInGroup: number): number {
   return 0;
 }
 
+// A case-insensitive matcher for the current query, escaped so metacharacters
+// (e.g. "(") match literally instead of throwing. Compiled once per query rather
+// than per result on every render. No `g` flag, so exec() is stateless and safe
+// to reuse across items.
+const highlightPattern = computed<RegExp | null>(() => {
+  const trimmedQuery = query.value.trim();
+  if (!trimmedQuery) {
+    return null;
+  }
+  const literalQuery = trimmedQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(literalQuery, "i");
+});
+
+// The result goes into v-html, so titles (which can come from other users) must
+// be HTML-escaped. Match against the raw text so the match index and length stay
+// aligned with the original string (indexing a lowercased copy drifts for
+// characters whose lowercase form differs in length, e.g. "İ"). Escape each
+// slice, then wrap the already-escaped match in <mark> — the markup we add is
+// the only live HTML.
 function highlight(text: string): string {
-  const q = query.value.trim();
-  if (!q) {
-    return text;
+  const pattern = highlightPattern.value;
+  if (!pattern) {
+    return escapeHtml(text);
   }
-  const i = text.toLowerCase().indexOf(q.toLowerCase());
-  if (i < 0) {
-    return text;
+  const match = pattern.exec(text);
+  if (!match) {
+    return escapeHtml(text);
   }
-  return `${text.slice(0, i)}<mark>${text.slice(i, i + q.length)}</mark>${text.slice(i + q.length)}`;
+  const matchIndex = match.index;
+  const matchLength = match[0].length;
+  const before = escapeHtml(text.slice(0, matchIndex));
+  const highlighted = escapeHtml(
+    text.slice(matchIndex, matchIndex + matchLength),
+  );
+  const after = escapeHtml(text.slice(matchIndex + matchLength));
+  return `${before}<mark>${highlighted}</mark>${after}`;
 }
 
 function activateItem(item: PaletteItem): void {
