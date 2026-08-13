@@ -1,7 +1,19 @@
 import { count, eq, and, ne } from "drizzle-orm";
 import { getDb } from "../db/index";
-import { places, trips, media, TRIP_STATUS, PLAN } from "../db/schema";
-import { getEffectivePlan, type Plan } from "./subscriptions";
+import {
+  places,
+  trips,
+  media,
+  userPreferences,
+  TRIP_STATUS,
+  PLAN,
+  SUBSCRIPTION_STATUS,
+} from "../db/schema";
+import {
+  getEffectivePlan,
+  getSubscriptionForUser,
+  type Plan,
+} from "./subscriptions";
 
 // Single source of truth for map style values — also imported by
 // server/api/preferences.patch.ts so the "which styles exist" list and the
@@ -207,4 +219,70 @@ export async function assertPublicProfileAllowed(
     planDisplayName(plan),
     "Public traveler profile",
   );
+}
+
+/**
+ * Clears the stored `publicProfile` preference.
+ *
+ * The public read paths (profile, followers, discover, search) gate purely on
+ * this stored boolean, never on the effective plan — assertPublicProfileAllowed
+ * only guards the write path (the preferences PATCH). So once a billing change
+ * has dropped a user off the only plan that includes the public traveler profile
+ * (Nomad), a stale `true` keeps them publicly discoverable and their public
+ * guides open until this clears it, closing every read path at once.
+ *
+ * Scoped to the one user AND to rows that actually carry the flag: Stripe fires
+ * subscription.updated on renewals, card updates, and proration, so an
+ * unconditional write would dirty most users' preference rows just to set
+ * false → false.
+ */
+async function clearPublicProfile(userId: string): Promise<void> {
+  const database = getDb();
+  await database
+    .update(userPreferences)
+    .set({ publicProfile: false })
+    .where(
+      and(
+        eq(userPreferences.userId, userId),
+        eq(userPreferences.publicProfile, true),
+      ),
+    );
+}
+
+/**
+ * Revokes public discoverability when a subscription is *cancelled*
+ * (customer.subscription.deleted). Cancellation is terminal and drops the user
+ * to the free Drifter plan, which has no public profile, so the clear is
+ * unconditional.
+ */
+export async function revokePublicProfileOnCancellation(
+  userId: string,
+): Promise<void> {
+  await clearPublicProfile(userId);
+}
+
+/**
+ * Revokes public discoverability when an *active* plan change lands the user on
+ * a tier without the public traveler profile — the Nomad → Wanderer downgrade.
+ *
+ * Acts only on the ACTIVE state, because clearing the flag is irreversible (a
+ * later event can't restore a destroyed opt-in the way it restores every other
+ * paid feature). Every non-active status is therefore left alone: past_due is a
+ * recoverable dunning state, and `mapStripeSubscriptionStatus` collapses the
+ * equally-recoverable `paused` (pause_collection) — plus not-yet-terminal
+ * `incomplete`/`unpaid` — into `canceled`, indistinguishable here from a true
+ * cancellation. The genuine terminal case arrives separately as
+ * customer.subscription.deleted and is handled by revokePublicProfileOnCancellation.
+ */
+export async function revokePublicProfileOnDowngrade(
+  userId: string,
+): Promise<void> {
+  const subscription = await getSubscriptionForUser(userId);
+  if (subscription.status !== SUBSCRIPTION_STATUS.ACTIVE) {
+    return;
+  }
+  if (PLAN_LIMITS[subscription.plan].publicProfileAllowed) {
+    return;
+  }
+  await clearPublicProfile(userId);
 }
