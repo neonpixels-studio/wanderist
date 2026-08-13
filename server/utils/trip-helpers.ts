@@ -61,6 +61,21 @@ export async function loadOwnedTrip(
 }
 
 /**
+ * Throws 404 when the caller does not own `tripId`. Undefined is a no-op; any
+ * supplied id (including "") is looked up, so it can never bypass the check.
+ */
+export async function assertTripOwnershipIfPresent(
+  event: H3Event,
+  tripId: string | undefined,
+): Promise<void> {
+  if (tripId === undefined) {
+    return;
+  }
+
+  await loadOwnedTrip(event, tripId);
+}
+
+/**
  * Looks up a stop by id and verifies it belongs to the given trip. Throws 404
  * if the stop does not exist or does not belong to this trip.
  */

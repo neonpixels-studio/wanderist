@@ -11,6 +11,7 @@ import {
   upsertTags,
   loadEntryRelations,
 } from "../../utils/entry-helpers";
+import { assertTripOwnershipIfPresent } from "../../utils/trip-helpers";
 
 type DbClient = ReturnType<typeof getDb>;
 
@@ -68,6 +69,10 @@ export default defineEventHandler(async (event) => {
     body?.photoMediaIds,
     "photoMediaIds",
   );
+
+  // After synchronous validation (malformed body 400s without a DB hit),
+  // before the insert (never attach an entry to a trip the caller doesn't own).
+  await assertTripOwnershipIfPresent(event, tripId);
 
   const entryId = generateId();
 
