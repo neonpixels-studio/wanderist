@@ -7,8 +7,13 @@ import {
   userPreferences,
   TRIP_STATUS,
   PLAN,
+  SUBSCRIPTION_STATUS,
 } from "../db/schema";
-import { getEffectivePlan, type Plan } from "./subscriptions";
+import {
+  getEffectivePlan,
+  getSubscriptionForUser,
+  type Plan,
+} from "./subscriptions";
 
 // Single source of truth for map style values — also imported by
 // server/api/preferences.patch.ts so the "which styles exist" list and the
@@ -217,25 +222,39 @@ export async function assertPublicProfileAllowed(
 }
 
 /**
- * Reconciles the stored `publicProfile` preference against the user's *current*
- * entitlement, clearing it when their effective plan no longer includes the
- * public traveler profile (only Nomad does). Call after any change to billing
- * state (see the Stripe webhook handler).
+ * Clears the stored `publicProfile` preference when a billing change has
+ * *terminally* dropped the user off a plan that includes the public traveler
+ * profile (only Nomad does). Call after any change to billing state (see the
+ * Stripe webhook handler).
  *
  * assertPublicProfileAllowed only guards the write path (the preferences PATCH),
  * so a plan change made outside that path — a downgrade to Wanderer, or a
- * cancellation/lapse that collapses to Drifter — would otherwise leave the flag
+ * cancellation that drops the user to Drifter — would otherwise leave the flag
  * set. The public read paths (profile, followers, discover, search) gate purely
  * on that stored boolean, never on the effective plan, so a stale `true` keeps a
  * downgraded user publicly discoverable and their public guides open. Clearing
- * it here closes every read path at once. No-op when the plan still allows it,
- * so an upgrade or renewal never clears a valid opt-in.
+ * it here closes every read path at once.
+ *
+ * Deliberately leaves `past_due` alone: that is a recoverable dunning state, and
+ * clearing the flag is irreversible (a later successful retry would restore
+ * every other paid feature but not this destroyed opt-in). Enforcement still
+ * hides paid features during dunning via getEffectivePlan; the irreversible
+ * preference write waits for the cancellation that unpaid dunning ultimately
+ * produces. No-op when the plan still allows it, so an upgrade or renewal never
+ * clears a valid opt-in.
  */
 export async function revokePublicProfileIfPlanDisallows(
   userId: string,
 ): Promise<void> {
-  const plan = await getEffectivePlan(userId);
-  if (PLAN_LIMITS[plan].publicProfileAllowed) {
+  const subscription = await getSubscriptionForUser(userId);
+  if (subscription.status === SUBSCRIPTION_STATUS.PAST_DUE) {
+    return;
+  }
+  const entitledPlan =
+    subscription.status === SUBSCRIPTION_STATUS.ACTIVE
+      ? subscription.plan
+      : PLAN.DRIFTER;
+  if (PLAN_LIMITS[entitledPlan].publicProfileAllowed) {
     return;
   }
   const database = getDb();

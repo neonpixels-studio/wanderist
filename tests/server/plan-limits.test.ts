@@ -5,6 +5,8 @@
  * access is needed, and each test can pin the "current plan" directly.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { and, eq } from "drizzle-orm";
+import { userPreferences } from "../../server/db/schema";
 
 vi.stubGlobal(
   "createError",
@@ -21,6 +23,7 @@ vi.stubGlobal(
 
 const {
   mockGetEffectivePlan,
+  mockGetSubscriptionForUser,
   mockWhere,
   mockFrom,
   mockSelect,
@@ -41,6 +44,7 @@ const {
 
   return {
     mockGetEffectivePlan: vi.fn(),
+    mockGetSubscriptionForUser: vi.fn(),
     mockWhere,
     mockFrom,
     mockSelect,
@@ -53,6 +57,7 @@ const {
 
 vi.mock("../../server/utils/subscriptions", () => ({
   getEffectivePlan: mockGetEffectivePlan,
+  getSubscriptionForUser: mockGetSubscriptionForUser,
 }));
 
 vi.mock("../../server/db/index", () => ({
@@ -238,8 +243,19 @@ describe("assertPublicProfileAllowed", () => {
 });
 
 describe("revokePublicProfileIfPlanDisallows", () => {
-  it("clears the public-profile flag when the effective plan is Drifter (e.g. after cancellation)", async () => {
-    mockGetEffectivePlan.mockResolvedValue("drifter");
+  function setSubscription(status: string, plan: string): void {
+    mockGetSubscriptionForUser.mockResolvedValue({
+      plan,
+      status,
+      billingCycle: null,
+      trialEndsAt: null,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+    });
+  }
+
+  it("clears the public-profile flag after a cancellation (canceled → Drifter entitlement)", async () => {
+    setSubscription("canceled", "nomad");
 
     await revokePublicProfileIfPlanDisallows("user-1");
 
@@ -249,8 +265,8 @@ describe("revokePublicProfileIfPlanDisallows", () => {
     expect(mockUpdateSet).toHaveBeenCalledWith({ publicProfile: false });
   });
 
-  it("clears the public-profile flag when the effective plan is Wanderer (Nomad → Wanderer downgrade)", async () => {
-    mockGetEffectivePlan.mockResolvedValue("wanderer");
+  it("clears the public-profile flag on an active downgrade to Wanderer (Nomad → Wanderer)", async () => {
+    setSubscription("active", "wanderer");
 
     await revokePublicProfileIfPlanDisallows("user-1");
 
@@ -258,20 +274,36 @@ describe("revokePublicProfileIfPlanDisallows", () => {
     expect(mockUpdateSet).toHaveBeenCalledWith({ publicProfile: false });
   });
 
-  it("leaves the flag untouched on Nomad so an upgrade/renewal never clears a valid opt-in", async () => {
-    mockGetEffectivePlan.mockResolvedValue("nomad");
+  it("leaves the flag untouched on active Nomad so an upgrade/renewal never clears a valid opt-in", async () => {
+    setSubscription("active", "nomad");
 
     await revokePublicProfileIfPlanDisallows("user-1");
 
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
-  it("scopes the update to the given user id", async () => {
-    mockGetEffectivePlan.mockResolvedValue("drifter");
+  it("leaves the flag untouched while past_due, since dunning is recoverable and the clear is irreversible", async () => {
+    setSubscription("past_due", "nomad");
+
+    await revokePublicProfileIfPlanDisallows("user-1");
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("only clears rows for the given user that currently carry the flag", async () => {
+    setSubscription("canceled", "nomad");
 
     await revokePublicProfileIfPlanDisallows("user-42");
 
-    expect(mockGetEffectivePlan).toHaveBeenCalledWith("user-42");
-    expect(mockUpdateWhere).toHaveBeenCalledTimes(1);
+    expect(mockGetSubscriptionForUser).toHaveBeenCalledWith("user-42");
+    // Assert the full predicate: without the userId scope this would clear
+    // publicProfile for every user in the table, and without the publicProfile
+    // guard it would rewrite already-private rows on every webhook.
+    expect(mockUpdateWhere).toHaveBeenCalledWith(
+      and(
+        eq(userPreferences.userId, "user-42"),
+        eq(userPreferences.publicProfile, true),
+      ),
+    );
   });
 });

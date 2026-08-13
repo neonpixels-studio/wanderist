@@ -27,7 +27,18 @@ async function applySubscriptionSync(
   if (!userId) {
     return;
   }
-  await revokePublicProfileIfPlanDisallows(userId);
+  try {
+    await revokePublicProfileIfPlanDisallows(userId);
+  } catch (error) {
+    // Rethrow so Stripe retries (both syncs are idempotent on replay), but log
+    // first: a swallowed failure here would silently leave a downgraded user
+    // publicly discoverable once Stripe exhausts its retries.
+    console.error(
+      `Stripe webhook: public-profile reconcile failed for user ${userId}`,
+      error,
+    );
+    throw error;
+  }
 }
 
 const EVENT_SUBSCRIPTION_CREATED = "customer.subscription.created";
