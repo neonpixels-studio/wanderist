@@ -1,12 +1,44 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { ref, reactive, nextTick, unref } from "vue";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TripDetailPage from "../trips/[id].vue";
 import { useTripsStore } from "~/stores/trips";
 import type { TripDetail } from "~/stores/trips";
 
-// Override the global useRoute stub to provide a trip id for these tests.
-vi.stubGlobal("useRoute", () => ({ params: { id: "trip-1" }, query: {} }));
+// Override the global useRoute stub with a REACTIVE params object so a test can
+// change the trip id and assert the page's watched ref tracks it.
+const routeParams = reactive({ id: "trip-1" });
+vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
+
+// The global useAsyncData stub never invokes its handler and returns no status,
+// so the page's client-only fetch wiring is dead under test. Override it to run
+// the handler once and record its options so tests can assert the trip is
+// requested by its route param and that the fetch stays client-only
+// (server:false). `asyncDataStatus` lets a test simulate the pre-resolution
+// window the page treats as loading.
+let lastAsyncDataOptions: { watch?: unknown[]; server?: boolean } | undefined;
+const asyncDataStatus = ref<"idle" | "pending" | "success" | "error">(
+  "success",
+);
+vi.stubGlobal(
+  "useAsyncData",
+  (
+    _key: unknown,
+    handler: () => unknown,
+    options?: { watch?: unknown[]; server?: boolean },
+  ) => {
+    lastAsyncDataOptions = options;
+    handler();
+    return {
+      data: ref(null),
+      pending: ref(false),
+      error: ref(null),
+      status: asyncDataStatus,
+      refresh: vi.fn(),
+    };
+  },
+);
 
 const SAMPLE_DETAIL: TripDetail = {
   trip: {
@@ -88,6 +120,9 @@ describe("Trip Detail page (/trips/[id])", () => {
   let pinia: ReturnType<typeof createPinia>;
 
   beforeEach(() => {
+    routeParams.id = "trip-1";
+    asyncDataStatus.value = "success";
+    lastAsyncDataOptions = undefined;
     pinia = createPinia();
     setActivePinia(pinia);
 
@@ -230,5 +265,79 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(stopNames[0]).toBe("First");
     expect(stopNames[1]).toBe("Second");
     expect(stopNames[2]).toBe("Third");
+  });
+
+  it("requests the trip named by the route param", () => {
+    const tripsStore = useTripsStore();
+    mount(TripDetailPage, buildGlobalConfig(pinia));
+    expect(tripsStore.fetchTripById).toHaveBeenCalledWith("trip-1");
+  });
+
+  it("fetches client-only (server:false) so the token-bearing request never runs during SSR", () => {
+    mount(TripDetailPage, buildGlobalConfig(pinia));
+    expect(lastAsyncDataOptions?.server).toBe(false);
+  });
+
+  it("watches the trip id so it refetches on in-page navigation", async () => {
+    mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    // The watched source must be the trip id (not, say, the loaded trip) so the
+    // component refetches when navigating between two trips.
+    const watchedTripId = lastAsyncDataOptions?.watch?.[0];
+    expect(unref(watchedTripId)).toBe("trip-1");
+
+    routeParams.id = "trip-2";
+    await nextTick();
+
+    expect(unref(watchedTripId)).toBe("trip-2");
+  });
+
+  // server:false means the status is "idle" during SSR + the hydration frame and
+  // "pending" while the client fetch runs; both are the pre-resolution window
+  // that produced the original "Trip not found." flash, so both must read as
+  // loading, never not-found, for a valid trip.
+  it.each(["idle", "pending"] as const)(
+    "shows loading (not the not-found state) while the client fetch is %s",
+    (status) => {
+      asyncDataStatus.value = status;
+      const tripsStore = useTripsStore();
+      tripsStore.currentTripDetail = null;
+      tripsStore.isLoadingDetail = false;
+
+      const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+      expect(wrapper.find(".loading-state").exists()).toBe(true);
+      expect(wrapper.find(".empty-state").exists()).toBe(false);
+    },
+  );
+
+  it("leaves the loading state once the client fetch errors (never spins forever)", () => {
+    // "error" counts as resolved: a failed fetch must drop out of loading into
+    // the not-found/error branch. Narrowing hasResolvedFetch to only "success"
+    // would spin "Loading trip…" forever, so this case guards that boundary.
+    asyncDataStatus.value = "error";
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    tripsStore.isLoadingDetail = false;
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".loading-state").exists()).toBe(false);
+    expect(wrapper.find(".empty-state").exists()).toBe(true);
+  });
+
+  it("does not render a stale trip whose id no longer matches the route", async () => {
+    // With the fetch resolved (status success) and the store still holding the
+    // previous trip, only the id-guard keeps the page from rendering trip-1's
+    // hero under the trip-2 URL. Delete the guard and this fails.
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    expect(wrapper.find(".thero h1").text()).toContain(
+      "Iceland, the ring road",
+    );
+
+    routeParams.id = "trip-2";
+    await nextTick();
+
+    expect(wrapper.find(".thero").exists()).toBe(false);
   });
 });
