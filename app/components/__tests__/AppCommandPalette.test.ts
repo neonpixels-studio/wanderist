@@ -172,6 +172,155 @@ describe("AppCommandPalette", () => {
     expect(wrapper.find(".cmdk__t").text()).toContain("Reykjavík");
   });
 
+  it("escapes HTML in result titles so a malicious title renders inert", async () => {
+    const wrapper = mount(AppCommandPalette, {
+      props: { open: true },
+      ...globalConfig,
+    });
+
+    const payload = "<img src=x onerror=alert(1)>";
+    mockSearch.mockImplementation(() => {
+      mockResults.value = {
+        places: [{ id: "p-1", title: payload, icon: "pin", href: "/map" }],
+        trips: [],
+        entries: [],
+        guides: [],
+        people: [],
+      };
+    });
+
+    // Query substring of the payload to exercise the <mark> highlight branch.
+    await wrapper.find(".cmdk__input").setValue("img");
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    const titleEl = wrapper.find(".cmdk__t");
+    // No live <img> element is injected — the payload is inert text.
+    expect(titleEl.find("img").exists()).toBe(false);
+    expect(titleEl.element.querySelector("img")).toBeNull();
+    // The angle brackets are escaped, so the only live element is the highlight
+    // <mark> we add; the payload never becomes a tag.
+    expect(titleEl.html()).toContain("&lt;");
+    expect(titleEl.html()).toContain("&gt;");
+    expect(titleEl.html()).not.toContain("<img");
+    expect(titleEl.text()).toBe(payload);
+    // The matched substring is still wrapped in a highlight mark.
+    expect(titleEl.find("mark").text()).toBe("img");
+  });
+
+  it("escapes HTML in result titles even when the query does not match (no highlight branch)", async () => {
+    const wrapper = mount(AppCommandPalette, {
+      props: { open: true },
+      ...globalConfig,
+    });
+
+    const payload = "<img src=x onerror=alert(1)>";
+    mockSearch.mockImplementation(() => {
+      mockResults.value = {
+        places: [{ id: "p-1", title: payload, icon: "pin", href: "/map" }],
+        trips: [],
+        entries: [],
+        guides: [],
+        people: [],
+      };
+    });
+
+    // Query matches nothing in the title, so highlight() takes the no-match
+    // early return — that branch must still escape the raw title.
+    await wrapper.find(".cmdk__input").setValue("zzznomatch");
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    const titleEl = wrapper.find(".cmdk__t");
+    expect(titleEl.element.querySelector("img")).toBeNull();
+    expect(titleEl.html()).not.toContain("<img");
+    expect(titleEl.text()).toBe(payload);
+    expect(titleEl.find("mark").exists()).toBe(false);
+  });
+
+  it("escapes HTML inside the highlighted match itself", async () => {
+    const wrapper = mount(AppCommandPalette, {
+      props: { open: true },
+      ...globalConfig,
+    });
+
+    mockSearch.mockImplementation(() => {
+      mockResults.value = {
+        places: [
+          { id: "p-1", title: "Bar & <b>Grill</b>", icon: "pin", href: "/map" },
+        ],
+        trips: [],
+        entries: [],
+        guides: [],
+        people: [],
+      };
+    });
+
+    // The matched substring itself contains markup — it must be escaped, not
+    // just the slices around it, or the highlight branch reintroduces the XSS.
+    await wrapper.find(".cmdk__input").setValue("& <b>");
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    const titleEl = wrapper.find(".cmdk__t");
+    expect(titleEl.find("mark").html()).toBe("<mark>&amp; &lt;b&gt;</mark>");
+    expect(titleEl.element.querySelector("b")).toBeNull();
+    expect(titleEl.text()).toBe("Bar & <b>Grill</b>");
+  });
+
+  it("treats regex metacharacters in the query as literal text", async () => {
+    const wrapper = mount(AppCommandPalette, {
+      props: { open: true },
+      ...globalConfig,
+    });
+
+    mockSearch.mockImplementation(() => {
+      mockResults.value = {
+        places: [
+          { id: "p-1", title: "Café (Reykjavík)", icon: "pin", href: "/map" },
+        ],
+        trips: [],
+        entries: [],
+        guides: [],
+        people: [],
+      };
+    });
+
+    await wrapper.find(".cmdk__input").setValue("(rey");
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    // The "(" is escaped for regex, so it matches the literal "(Rey" substring.
+    expect(wrapper.find(".cmdk__t").find("mark").text()).toBe("(Rey");
+  });
+
+  it("renders without crashing when the query is a lone regex metacharacter", async () => {
+    const wrapper = mount(AppCommandPalette, {
+      props: { open: true },
+      ...globalConfig,
+    });
+
+    mockSearch.mockImplementation(() => {
+      mockResults.value = {
+        places: [{ id: "p-1", title: "Reykjavík", icon: "pin", href: "/map" }],
+        trips: [],
+        entries: [],
+        guides: [],
+        people: [],
+      };
+    });
+
+    // An unbalanced "(" would throw in `new RegExp("(")` without escaping,
+    // blanking the palette. It must be treated as a literal (no match here).
+    await wrapper.find(".cmdk__input").setValue("(");
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".cmdk").exists()).toBe(true);
+    expect(wrapper.find(".cmdk__t").text()).toBe("Reykjavík");
+    expect(wrapper.find(".cmdk__t").find("mark").exists()).toBe(false);
+  });
+
   it("shows results from multiple groups when API returns results in several categories", async () => {
     const wrapper = mount(AppCommandPalette, {
       props: { open: true },
