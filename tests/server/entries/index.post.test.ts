@@ -16,6 +16,10 @@ vi.mock("../../../server/db/index", () => ({
   getDb: vi.fn(),
 }));
 
+vi.mock("../../../server/utils/trip-helpers", () => ({
+  assertTripOwnershipIfPresent: vi.fn(),
+}));
+
 vi.mock("../../../server/utils/entry-helpers", () => ({
   generateId: vi.fn().mockReturnValue("generated-id"),
   parseOccurredAt: vi.fn((value: unknown) => {
@@ -57,10 +61,14 @@ vi.mock("../../../server/utils/entry-helpers", () => ({
 import { ensureUser } from "../../../server/utils/auth";
 import { getDb } from "../../../server/db/index";
 import { upsertTags } from "../../../server/utils/entry-helpers";
+import { assertTripOwnershipIfPresent } from "../../../server/utils/trip-helpers";
 
 const mockEnsureUser = vi.mocked(ensureUser);
 const mockGetDb = vi.mocked(getDb);
 const mockUpsertTags = vi.mocked(upsertTags);
+const mockAssertTripOwnershipIfPresent = vi.mocked(
+  assertTripOwnershipIfPresent,
+);
 
 function makeDbForCreate(createdEntry: Record<string, unknown>) {
   const returningMock = vi.fn().mockResolvedValue([createdEntry]);
@@ -135,6 +143,48 @@ describe("POST /api/entries", () => {
     const defaultHandler = "default" in handler ? handler.default : handler;
     const result = await (defaultHandler as (event: unknown) => unknown)({});
 
+    expect(result).toMatchObject(createdEntry);
+  });
+
+  it("throws 404 when tripId belongs to another user and does not insert", async () => {
+    mockEnsureUser.mockResolvedValue("user-1");
+    mockReadBody.mockResolvedValue({ title: "My Entry", tripId: "trip-other" });
+    const mockDb = makeDbForCreate({ id: "e-1" });
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const notFoundError = createError({
+      statusCode: 404,
+      statusMessage: "Not found",
+    });
+    mockAssertTripOwnershipIfPresent.mockRejectedValueOnce(notFoundError);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+
+    await expect(
+      (defaultHandler as (event: unknown) => unknown)({}),
+    ).rejects.toMatchObject({ statusCode: 404 });
+
+    expect(mockAssertTripOwnershipIfPresent).toHaveBeenCalledWith(
+      expect.anything(),
+      "trip-other",
+    );
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it("validates trip ownership before inserting when a tripId is supplied", async () => {
+    const createdEntry = { id: "e-1", userId: "user-1", tripId: "trip-1" };
+    mockEnsureUser.mockResolvedValue("user-1");
+    mockReadBody.mockResolvedValue({ title: "My Entry", tripId: "trip-1" });
+    const mockDb = makeDbForCreate(createdEntry);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    const result = await (defaultHandler as (event: unknown) => unknown)({});
+
+    expect(mockAssertTripOwnershipIfPresent).toHaveBeenCalledWith(
+      expect.anything(),
+      "trip-1",
+    );
     expect(result).toMatchObject(createdEntry);
   });
 

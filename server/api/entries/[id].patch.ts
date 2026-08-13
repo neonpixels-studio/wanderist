@@ -7,6 +7,7 @@ import {
 import { getDb } from "../../db/index";
 import { entries, entryPhotos, entryTags } from "../../db/schema";
 import { deleteMediaIfUnreferenced } from "../../utils/coverImageCleanup";
+import { assertTripOwnershipIfPresent } from "../../utils/trip-helpers";
 import {
   generateId,
   parseOccurredAt,
@@ -230,6 +231,11 @@ export default defineEventHandler(async (event) => {
       statusMessage: "No valid fields provided for update",
     });
   }
+
+  // After synchronous validation (malformed body 400s without a DB hit),
+  // before the transaction (never move an entry to a trip the caller doesn't
+  // own). A no-op when the patch does not touch tripId.
+  await assertTripOwnershipIfPresent(event, tripId);
 
   const { payload, removedMediaIds } = await database.transaction(
     async (transaction) => {
