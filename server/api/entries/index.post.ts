@@ -3,6 +3,7 @@ import { ensureUser } from "../../utils/auth";
 import { getDb } from "../../db/index";
 import { entries, entryPhotos, entryTags } from "../../db/schema";
 import { requireString, optionalString } from "../../utils/db-helpers";
+import { assertPhotoMediaOwned } from "../../utils/media-helpers";
 import {
   generateId,
   parseOccurredAt,
@@ -68,6 +69,10 @@ export default defineEventHandler(async (event) => {
     body?.photoMediaIds,
     "photoMediaIds",
   );
+
+  // Reject foreign/nonexistent photo media before writing anything: a media id
+  // the caller doesn't own would otherwise be attached to this entry.
+  await assertPhotoMediaOwned(database, userId, photoMediaIds);
 
   const entryId = generateId();
 

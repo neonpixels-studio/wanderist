@@ -7,6 +7,7 @@ import {
 import { getDb } from "../../db/index";
 import { entries, entryPhotos, entryTags } from "../../db/schema";
 import { deleteMediaIfUnreferenced } from "../../utils/coverImageCleanup";
+import { assertPhotoMediaOwned } from "../../utils/media-helpers";
 import {
   generateId,
   parseOccurredAt,
@@ -229,6 +230,12 @@ export default defineEventHandler(async (event) => {
       statusCode: 400,
       statusMessage: "No valid fields provided for update",
     });
+  }
+
+  // Reject foreign/nonexistent photo media before the transaction: a media id
+  // the entry owner doesn't own would otherwise replace the entry's photos.
+  if (photoMediaIds !== undefined) {
+    await assertPhotoMediaOwned(database, entry.userId, photoMediaIds);
   }
 
   const { payload, removedMediaIds } = await database.transaction(
