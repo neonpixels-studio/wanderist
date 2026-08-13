@@ -1,6 +1,13 @@
 import { count, eq, and, ne } from "drizzle-orm";
 import { getDb } from "../db/index";
-import { places, trips, media, TRIP_STATUS, PLAN } from "../db/schema";
+import {
+  places,
+  trips,
+  media,
+  userPreferences,
+  TRIP_STATUS,
+  PLAN,
+} from "../db/schema";
 import { getEffectivePlan, type Plan } from "./subscriptions";
 
 // Single source of truth for map style values — also imported by
@@ -207,4 +214,42 @@ export async function assertPublicProfileAllowed(
     planDisplayName(plan),
     "Public traveler profile",
   );
+}
+
+/**
+ * Reconciles the stored `publicProfile` preference against the user's *current*
+ * entitlement, clearing it when their effective plan no longer includes the
+ * public traveler profile (only Nomad does). Call after any change to billing
+ * state (see the Stripe webhook handler).
+ *
+ * assertPublicProfileAllowed only guards the write path (the preferences PATCH),
+ * so a plan change made outside that path — a downgrade to Wanderer, or a
+ * cancellation/lapse that collapses to Drifter — would otherwise leave the flag
+ * set. The public read paths (profile, followers, discover, search) gate purely
+ * on that stored boolean, never on the effective plan, so a stale `true` keeps a
+ * downgraded user publicly discoverable and their public guides open. Clearing
+ * it here closes every read path at once. No-op when the plan still allows it,
+ * so an upgrade or renewal never clears a valid opt-in.
+ */
+export async function revokePublicProfileIfPlanDisallows(
+  userId: string,
+): Promise<void> {
+  const plan = await getEffectivePlan(userId);
+  if (PLAN_LIMITS[plan].publicProfileAllowed) {
+    return;
+  }
+  const database = getDb();
+  // Only touch rows that actually carry the flag. Stripe fires
+  // subscription.updated on renewals, card updates, and proration, so an
+  // unconditional write would dirty most users' preference rows on every such
+  // event just to set false → false.
+  await database
+    .update(userPreferences)
+    .set({ publicProfile: false })
+    .where(
+      and(
+        eq(userPreferences.userId, userId),
+        eq(userPreferences.publicProfile, true),
+      ),
+    );
 }

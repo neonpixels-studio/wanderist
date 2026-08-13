@@ -7,8 +7,28 @@ import {
   upsertSubscriptionFromStripeSubscription,
   markSubscriptionCanceled,
 } from "../../utils/subscriptions";
+import { revokePublicProfileIfPlanDisallows } from "../../utils/planLimits";
 
 const STRIPE_SIGNATURE_HEADER = "stripe-signature";
+
+/**
+ * Runs a subscription sync (upsert or cancel) then reconciles the user's
+ * public-profile entitlement against their now-current plan — a downgrade or
+ * cancellation must revoke public discoverability, which the sync itself does
+ * not touch (see revokePublicProfileIfPlanDisallows). Skips reconciliation when
+ * the event carries no userId, exactly as the sync functions themselves no-op.
+ */
+async function applySubscriptionSync(
+  subscription: Stripe.Subscription,
+  sync: (subscription: Stripe.Subscription) => Promise<void>,
+): Promise<void> {
+  await sync(subscription);
+  const userId = subscription.metadata?.userId;
+  if (!userId) {
+    return;
+  }
+  await revokePublicProfileIfPlanDisallows(userId);
+}
 
 const EVENT_SUBSCRIPTION_CREATED = "customer.subscription.created";
 const EVENT_SUBSCRIPTION_UPDATED = "customer.subscription.updated";
@@ -53,15 +73,17 @@ export default defineEventHandler(async (event) => {
     stripeEvent.type === EVENT_SUBSCRIPTION_CREATED ||
     stripeEvent.type === EVENT_SUBSCRIPTION_UPDATED
   ) {
-    await upsertSubscriptionFromStripeSubscription(
+    await applySubscriptionSync(
       stripeEvent.data.object as Stripe.Subscription,
+      upsertSubscriptionFromStripeSubscription,
     );
     return { ok: true };
   }
 
   if (stripeEvent.type === EVENT_SUBSCRIPTION_DELETED) {
-    await markSubscriptionCanceled(
+    await applySubscriptionSync(
       stripeEvent.data.object as Stripe.Subscription,
+      markSubscriptionCanceled,
     );
     return { ok: true };
   }

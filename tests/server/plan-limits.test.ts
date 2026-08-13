@@ -19,21 +19,37 @@ vi.stubGlobal(
   },
 );
 
-const { mockGetEffectivePlan, mockWhere, mockFrom, mockSelect, mockGetDb } =
-  vi.hoisted(() => {
-    const mockWhere = vi.fn().mockResolvedValue([{ value: 0 }]);
-    const mockFrom = vi.fn(() => ({ where: mockWhere }));
-    const mockSelect = vi.fn(() => ({ from: mockFrom }));
-    const mockGetDb = vi.fn(() => ({ select: mockSelect }));
+const {
+  mockGetEffectivePlan,
+  mockWhere,
+  mockFrom,
+  mockSelect,
+  mockUpdateWhere,
+  mockUpdateSet,
+  mockUpdate,
+  mockGetDb,
+} = vi.hoisted(() => {
+  const mockWhere = vi.fn().mockResolvedValue([{ value: 0 }]);
+  const mockFrom = vi.fn(() => ({ where: mockWhere }));
+  const mockSelect = vi.fn(() => ({ from: mockFrom }));
 
-    return {
-      mockGetEffectivePlan: vi.fn(),
-      mockWhere,
-      mockFrom,
-      mockSelect,
-      mockGetDb,
-    };
-  });
+  const mockUpdateWhere = vi.fn().mockResolvedValue(undefined);
+  const mockUpdateSet = vi.fn(() => ({ where: mockUpdateWhere }));
+  const mockUpdate = vi.fn(() => ({ set: mockUpdateSet }));
+
+  const mockGetDb = vi.fn(() => ({ select: mockSelect, update: mockUpdate }));
+
+  return {
+    mockGetEffectivePlan: vi.fn(),
+    mockWhere,
+    mockFrom,
+    mockSelect,
+    mockUpdateWhere,
+    mockUpdateSet,
+    mockUpdate,
+    mockGetDb,
+  };
+});
 
 vi.mock("../../server/utils/subscriptions", () => ({
   getEffectivePlan: mockGetEffectivePlan,
@@ -52,6 +68,7 @@ const {
   assertInstagramSyncAllowed,
   assertMapStyleAllowed,
   assertPublicProfileAllowed,
+  revokePublicProfileIfPlanDisallows,
 } = await import("../../server/utils/planLimits");
 
 function setCount(value: number): void {
@@ -63,6 +80,9 @@ beforeEach(() => {
   setCount(0);
   mockFrom.mockReturnValue({ where: mockWhere });
   mockSelect.mockReturnValue({ from: mockFrom });
+  mockUpdateWhere.mockResolvedValue(undefined);
+  mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
+  mockUpdate.mockReturnValue({ set: mockUpdateSet });
 });
 
 describe("PLAN_LIMITS", () => {
@@ -214,5 +234,44 @@ describe("assertPublicProfileAllowed", () => {
     await expect(
       assertPublicProfileAllowed("user-1", true),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("revokePublicProfileIfPlanDisallows", () => {
+  it("clears the public-profile flag when the effective plan is Drifter (e.g. after cancellation)", async () => {
+    mockGetEffectivePlan.mockResolvedValue("drifter");
+
+    await revokePublicProfileIfPlanDisallows("user-1");
+
+    // Clearing this stored boolean is what removes the downgraded user from the
+    // public read paths (profile, followers, discover, search), which gate on it.
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    expect(mockUpdateSet).toHaveBeenCalledWith({ publicProfile: false });
+  });
+
+  it("clears the public-profile flag when the effective plan is Wanderer (Nomad → Wanderer downgrade)", async () => {
+    mockGetEffectivePlan.mockResolvedValue("wanderer");
+
+    await revokePublicProfileIfPlanDisallows("user-1");
+
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    expect(mockUpdateSet).toHaveBeenCalledWith({ publicProfile: false });
+  });
+
+  it("leaves the flag untouched on Nomad so an upgrade/renewal never clears a valid opt-in", async () => {
+    mockGetEffectivePlan.mockResolvedValue("nomad");
+
+    await revokePublicProfileIfPlanDisallows("user-1");
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("scopes the update to the given user id", async () => {
+    mockGetEffectivePlan.mockResolvedValue("drifter");
+
+    await revokePublicProfileIfPlanDisallows("user-42");
+
+    expect(mockGetEffectivePlan).toHaveBeenCalledWith("user-42");
+    expect(mockUpdateWhere).toHaveBeenCalledTimes(1);
   });
 });

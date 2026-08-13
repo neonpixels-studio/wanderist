@@ -11,6 +11,7 @@ const {
   mockRequireStripeWebhookSecret,
   mockUpsertSubscriptionFromStripeSubscription,
   mockMarkSubscriptionCanceled,
+  mockRevokePublicProfileIfPlanDisallows,
   mockReadRawBody,
   mockGetHeader,
 } = vi.hoisted(() => ({
@@ -20,6 +21,7 @@ const {
     .fn()
     .mockResolvedValue(undefined),
   mockMarkSubscriptionCanceled: vi.fn().mockResolvedValue(undefined),
+  mockRevokePublicProfileIfPlanDisallows: vi.fn().mockResolvedValue(undefined),
   mockReadRawBody: vi.fn(),
   mockGetHeader: vi.fn(),
 }));
@@ -33,6 +35,10 @@ vi.mock("../server/utils/subscriptions", () => ({
   upsertSubscriptionFromStripeSubscription:
     mockUpsertSubscriptionFromStripeSubscription,
   markSubscriptionCanceled: mockMarkSubscriptionCanceled,
+}));
+
+vi.mock("../server/utils/planLimits", () => ({
+  revokePublicProfileIfPlanDisallows: mockRevokePublicProfileIfPlanDisallows,
 }));
 
 Object.assign(globalThis, {
@@ -146,6 +152,11 @@ describe("stripe webhook handler", () => {
         SUBSCRIPTION_OBJECT,
       );
       expect(mockMarkSubscriptionCanceled).not.toHaveBeenCalled();
+      // A plan change can be a downgrade, so the handler reconciles the
+      // public-profile entitlement for the event's user.
+      expect(mockRevokePublicProfileIfPlanDisallows).toHaveBeenCalledWith(
+        "user-1",
+      );
       expect(result).toEqual({ ok: true });
     },
   );
@@ -164,7 +175,24 @@ describe("stripe webhook handler", () => {
       SUBSCRIPTION_OBJECT,
     );
     expect(mockUpsertSubscriptionFromStripeSubscription).not.toHaveBeenCalled();
+    // Cancellation drops the user to Drifter, so public discoverability is revoked.
+    expect(mockRevokePublicProfileIfPlanDisallows).toHaveBeenCalledWith(
+      "user-1",
+    );
     expect(result).toEqual({ ok: true });
+  });
+
+  it("skips the public-profile reconcile when the subscription carries no userId", async () => {
+    mockConstructStripeEvent.mockReturnValue({
+      type: "customer.subscription.deleted",
+      data: { object: { id: "sub_123", metadata: {} } },
+    });
+
+    await (stripeWebhookHandler as (event: object) => Promise<unknown>)(
+      buildMockEvent(),
+    );
+
+    expect(mockRevokePublicProfileIfPlanDisallows).not.toHaveBeenCalled();
   });
 
   it("acknowledges checkout.session.completed without dispatching to either sync function", async () => {
