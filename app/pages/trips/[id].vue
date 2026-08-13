@@ -320,13 +320,33 @@ const uploadError = ref<string | null>(null);
 const shareError = ref<string | null>(null);
 const coverInputRef = ref<HTMLInputElement | null>(null);
 
-const isLoading = computed(() => tripsStore.isLoadingDetail);
-const tripDetail = computed(() => tripsStore.currentTripDetail);
+// Guard against the render window during in-page navigation (trip-1 -> trip-2):
+// the route id updates reactively before the refetch flips isLoadingDetail, so
+// only show the loaded detail once it actually matches the id in the URL.
+const tripDetail = computed(() =>
+  tripsStore.currentTripDetail?.trip.id === tripId.value
+    ? tripsStore.currentTripDetail
+    : null,
+);
 
-useAsyncData(
+// `server: false` keeps the fetch client-only, mirroring guides/[id].vue and
+// u/[id].vue: the request carries the Clerk session token, which only exists on
+// the client (Clerk runs with skipServerMiddleware). Running it during SSR would
+// hang, since Clerk's getToken never resolves on the server.
+const { status: fetchStatus } = useAsyncData(
   () => `trip-detail-${tripId.value}`,
   () => tripsStore.fetchTripById(tripId.value),
-  { watch: [tripId] },
+  { server: false, watch: [tripId] },
+);
+
+// Until the client fetch resolves, the SSR pass and hydration frame have no trip
+// yet. Treat that window as loading so a valid trip never flashes "Trip not
+// found" before its data arrives.
+const hasResolvedFetch = computed(
+  () => fetchStatus.value === "success" || fetchStatus.value === "error",
+);
+const isLoading = computed(
+  () => tripsStore.isLoadingDetail || !hasResolvedFetch.value,
 );
 
 useHead(
