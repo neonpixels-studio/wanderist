@@ -11,7 +11,8 @@ const {
   mockRequireStripeWebhookSecret,
   mockUpsertSubscriptionFromStripeSubscription,
   mockMarkSubscriptionCanceled,
-  mockRevokePublicProfileIfPlanDisallows,
+  mockRevokePublicProfileOnDowngrade,
+  mockRevokePublicProfileOnCancellation,
   mockReadRawBody,
   mockGetHeader,
 } = vi.hoisted(() => ({
@@ -21,7 +22,8 @@ const {
     .fn()
     .mockResolvedValue(undefined),
   mockMarkSubscriptionCanceled: vi.fn().mockResolvedValue(undefined),
-  mockRevokePublicProfileIfPlanDisallows: vi.fn().mockResolvedValue(undefined),
+  mockRevokePublicProfileOnDowngrade: vi.fn().mockResolvedValue(undefined),
+  mockRevokePublicProfileOnCancellation: vi.fn().mockResolvedValue(undefined),
   mockReadRawBody: vi.fn(),
   mockGetHeader: vi.fn(),
 }));
@@ -41,7 +43,8 @@ vi.mock("../server/utils/subscriptions", () => ({
 }));
 
 vi.mock("../server/utils/planLimits", () => ({
-  revokePublicProfileIfPlanDisallows: mockRevokePublicProfileIfPlanDisallows,
+  revokePublicProfileOnDowngrade: mockRevokePublicProfileOnDowngrade,
+  revokePublicProfileOnCancellation: mockRevokePublicProfileOnCancellation,
 }));
 
 Object.assign(globalThis, {
@@ -155,11 +158,10 @@ describe("stripe webhook handler", () => {
         SUBSCRIPTION_OBJECT,
       );
       expect(mockMarkSubscriptionCanceled).not.toHaveBeenCalled();
-      // A plan change can be a downgrade, so the handler reconciles the
-      // public-profile entitlement for the event's user.
-      expect(mockRevokePublicProfileIfPlanDisallows).toHaveBeenCalledWith(
-        "user-1",
-      );
+      // A plan change can be an active downgrade (Nomad → Wanderer), so the
+      // handler reconciles the public-profile entitlement for the event's user.
+      expect(mockRevokePublicProfileOnDowngrade).toHaveBeenCalledWith("user-1");
+      expect(mockRevokePublicProfileOnCancellation).not.toHaveBeenCalled();
       // The reconcile re-reads the row the sync just wrote, so it MUST run
       // after the sync — otherwise every downgrade reads the pre-downgrade plan
       // and no-ops.
@@ -167,7 +169,7 @@ describe("stripe webhook handler", () => {
         mockUpsertSubscriptionFromStripeSubscription.mock
           .invocationCallOrder[0],
       ).toBeLessThan(
-        mockRevokePublicProfileIfPlanDisallows.mock.invocationCallOrder[0],
+        mockRevokePublicProfileOnDowngrade.mock.invocationCallOrder[0],
       );
       expect(result).toEqual({ ok: true });
     },
@@ -187,10 +189,12 @@ describe("stripe webhook handler", () => {
       SUBSCRIPTION_OBJECT,
     );
     expect(mockUpsertSubscriptionFromStripeSubscription).not.toHaveBeenCalled();
-    // Cancellation drops the user to Drifter, so public discoverability is revoked.
-    expect(mockRevokePublicProfileIfPlanDisallows).toHaveBeenCalledWith(
+    // Cancellation drops the user to Drifter, so public discoverability is
+    // revoked via the cancellation reconcile (not the downgrade one).
+    expect(mockRevokePublicProfileOnCancellation).toHaveBeenCalledWith(
       "user-1",
     );
+    expect(mockRevokePublicProfileOnDowngrade).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: true });
   });
 
@@ -207,7 +211,7 @@ describe("stripe webhook handler", () => {
     expect(
       mockMarkSubscriptionCanceled.mock.invocationCallOrder[0],
     ).toBeLessThan(
-      mockRevokePublicProfileIfPlanDisallows.mock.invocationCallOrder[0],
+      mockRevokePublicProfileOnCancellation.mock.invocationCallOrder[0],
     );
   });
 
@@ -221,7 +225,8 @@ describe("stripe webhook handler", () => {
       buildMockEvent(),
     );
 
-    expect(mockRevokePublicProfileIfPlanDisallows).not.toHaveBeenCalled();
+    expect(mockRevokePublicProfileOnCancellation).not.toHaveBeenCalled();
+    expect(mockRevokePublicProfileOnDowngrade).not.toHaveBeenCalled();
   });
 
   it("propagates a reconcile failure so Stripe retries and logs the user id", async () => {
@@ -229,7 +234,7 @@ describe("stripe webhook handler", () => {
       type: "customer.subscription.updated",
       data: { object: SUBSCRIPTION_OBJECT },
     });
-    mockRevokePublicProfileIfPlanDisallows.mockRejectedValueOnce(
+    mockRevokePublicProfileOnDowngrade.mockRejectedValueOnce(
       new Error("db down"),
     );
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -259,6 +264,8 @@ describe("stripe webhook handler", () => {
 
     expect(mockUpsertSubscriptionFromStripeSubscription).not.toHaveBeenCalled();
     expect(mockMarkSubscriptionCanceled).not.toHaveBeenCalled();
+    expect(mockRevokePublicProfileOnDowngrade).not.toHaveBeenCalled();
+    expect(mockRevokePublicProfileOnCancellation).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: true });
   });
 
@@ -274,6 +281,8 @@ describe("stripe webhook handler", () => {
 
     expect(mockUpsertSubscriptionFromStripeSubscription).not.toHaveBeenCalled();
     expect(mockMarkSubscriptionCanceled).not.toHaveBeenCalled();
+    expect(mockRevokePublicProfileOnDowngrade).not.toHaveBeenCalled();
+    expect(mockRevokePublicProfileOnCancellation).not.toHaveBeenCalled();
     expect(result).toEqual({ ok: true });
   });
 });

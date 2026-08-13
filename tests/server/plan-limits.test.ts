@@ -66,10 +66,6 @@ const {
 vi.mock("../../server/utils/subscriptions", () => ({
   getEffectivePlan: mockGetEffectivePlan,
   getSubscriptionForUser: mockGetSubscriptionForUser,
-  // Pure entitlement rule — mirror the real one so the revoke branch is
-  // exercised for real; its own behaviour is covered in subscriptions-util.test.
-  entitledPlan: (subscription: { status: string; plan: string }) =>
-    subscription.status === "active" ? subscription.plan : "drifter",
 }));
 
 vi.mock("../../server/db/index", () => ({
@@ -85,7 +81,8 @@ const {
   assertInstagramSyncAllowed,
   assertMapStyleAllowed,
   assertPublicProfileAllowed,
-  revokePublicProfileIfPlanDisallows,
+  revokePublicProfileOnCancellation,
+  revokePublicProfileOnDowngrade,
 } = await import("../../server/utils/planLimits");
 
 function setCount(value: number): void {
@@ -254,33 +251,49 @@ describe("assertPublicProfileAllowed", () => {
   });
 });
 
-describe("revokePublicProfileIfPlanDisallows", () => {
-  function setSubscription(status: SubscriptionStatus, plan: Plan): void {
-    mockGetSubscriptionForUser.mockResolvedValue({
-      plan,
-      status,
-      billingCycle: null,
-      trialEndsAt: null,
-      currentPeriodEnd: null,
-      cancelAtPeriodEnd: false,
-    });
-  }
+function setSubscription(status: SubscriptionStatus, plan: Plan): void {
+  mockGetSubscriptionForUser.mockResolvedValue({
+    plan,
+    status,
+    billingCycle: null,
+    trialEndsAt: null,
+    currentPeriodEnd: null,
+    cancelAtPeriodEnd: false,
+  });
+}
 
-  it("clears the public-profile flag after a cancellation (canceled → Drifter entitlement)", async () => {
-    setSubscription(SUBSCRIPTION_STATUS.CANCELED, PLAN.NOMAD);
+describe("revokePublicProfileOnCancellation", () => {
+  it("clears the public-profile flag unconditionally (cancellation → Drifter)", async () => {
+    await revokePublicProfileOnCancellation("user-1");
 
-    await revokePublicProfileIfPlanDisallows("user-1");
-
-    // Clearing this stored boolean is what removes the downgraded user from the
-    // public read paths (profile, followers, discover, search), which gate on it.
+    // Clearing this stored boolean is what removes the user from the public read
+    // paths (profile, followers, discover, search), which gate on it. No row
+    // read is needed — cancellation is terminal.
+    expect(mockGetSubscriptionForUser).not.toHaveBeenCalled();
     expect(mockUpdate).toHaveBeenCalledTimes(1);
     expect(mockUpdateSet).toHaveBeenCalledWith({ publicProfile: false });
   });
 
-  it("clears the public-profile flag on an active downgrade to Wanderer (Nomad → Wanderer)", async () => {
+  it("only clears rows for the given user that currently carry the flag", async () => {
+    await revokePublicProfileOnCancellation("user-42");
+
+    // Assert the full predicate: without the userId scope this would clear
+    // publicProfile for every user in the table, and without the publicProfile
+    // guard it would rewrite already-private rows on every webhook.
+    expect(mockUpdateWhere).toHaveBeenCalledWith(
+      and(
+        eq(userPreferences.userId, "user-42"),
+        eq(userPreferences.publicProfile, true),
+      ),
+    );
+  });
+});
+
+describe("revokePublicProfileOnDowngrade", () => {
+  it("clears the flag on an active downgrade to Wanderer (Nomad → Wanderer)", async () => {
     setSubscription(SUBSCRIPTION_STATUS.ACTIVE, PLAN.WANDERER);
 
-    await revokePublicProfileIfPlanDisallows("user-1");
+    await revokePublicProfileOnDowngrade("user-1");
 
     expect(mockUpdate).toHaveBeenCalledTimes(1);
     expect(mockUpdateSet).toHaveBeenCalledWith({ publicProfile: false });
@@ -289,28 +302,41 @@ describe("revokePublicProfileIfPlanDisallows", () => {
   it("leaves the flag untouched on active Nomad so an upgrade/renewal never clears a valid opt-in", async () => {
     setSubscription(SUBSCRIPTION_STATUS.ACTIVE, PLAN.NOMAD);
 
-    await revokePublicProfileIfPlanDisallows("user-1");
+    await revokePublicProfileOnDowngrade("user-1");
 
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
-  it("leaves the flag untouched while past_due, since dunning is recoverable and the clear is irreversible", async () => {
-    setSubscription(SUBSCRIPTION_STATUS.PAST_DUE, PLAN.NOMAD);
-
-    await revokePublicProfileIfPlanDisallows("user-1");
-
-    expect(mockUpdate).not.toHaveBeenCalled();
-  });
-
-  it("only clears rows for the given user that currently carry the flag", async () => {
+  it("preserves a paused Nomad's opt-in (paused collapses to canceled but is recoverable)", async () => {
+    // The finding this guards: mapStripeSubscriptionStatus collapses the
+    // recoverable `paused` (pause_collection) into `canceled`. A Nomad who pauses
+    // must keep their public-profile opt-in, since the clear is irreversible.
     setSubscription(SUBSCRIPTION_STATUS.CANCELED, PLAN.NOMAD);
 
-    await revokePublicProfileIfPlanDisallows("user-42");
+    await revokePublicProfileOnDowngrade("user-1");
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("never acts on a non-active status even when the stored plan disallows the profile (the ACTIVE guard is load-bearing)", async () => {
+    // past_due/paused/incomplete all reach here as a non-active status. Even
+    // paired with a disallowing plan, the .updated path must not perform the
+    // irreversible clear — only the terminal .deleted event does. Uses Wanderer
+    // (disallows) so this fails if the ACTIVE guard is removed, rather than
+    // passing for the wrong reason on a plan that happens to allow the profile.
+    setSubscription(SUBSCRIPTION_STATUS.PAST_DUE, PLAN.WANDERER);
+
+    await revokePublicProfileOnDowngrade("user-1");
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("scopes the read to the given user id", async () => {
+    setSubscription(SUBSCRIPTION_STATUS.ACTIVE, PLAN.WANDERER);
+
+    await revokePublicProfileOnDowngrade("user-42");
 
     expect(mockGetSubscriptionForUser).toHaveBeenCalledWith("user-42");
-    // Assert the full predicate: without the userId scope this would clear
-    // publicProfile for every user in the table, and without the publicProfile
-    // guard it would rewrite already-private rows on every webhook.
     expect(mockUpdateWhere).toHaveBeenCalledWith(
       and(
         eq(userPreferences.userId, "user-42"),

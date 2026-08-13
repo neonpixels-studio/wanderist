@@ -8,20 +8,26 @@ import {
   markSubscriptionCanceled,
   getUserIdFromSubscription,
 } from "../../utils/subscriptions";
-import { revokePublicProfileIfPlanDisallows } from "../../utils/planLimits";
+import {
+  revokePublicProfileOnCancellation,
+  revokePublicProfileOnDowngrade,
+} from "../../utils/planLimits";
 
 const STRIPE_SIGNATURE_HEADER = "stripe-signature";
 
 /**
  * Runs a subscription sync (upsert or cancel) then reconciles the user's
- * public-profile entitlement against their now-current plan — a downgrade or
- * cancellation must revoke public discoverability, which the sync itself does
- * not touch (see revokePublicProfileIfPlanDisallows). Skips reconciliation when
- * the event carries no userId, exactly as the sync functions themselves no-op.
+ * public-profile entitlement — a downgrade or cancellation must revoke public
+ * discoverability, which the sync itself does not touch (see
+ * revokePublicProfileOnDowngrade / revokePublicProfileOnCancellation). The
+ * reconcile re-reads the row the sync just wrote, so it must run after it. Skips
+ * reconciliation when the event carries no userId, exactly as the sync
+ * functions themselves no-op.
  */
 async function applySubscriptionSync(
   subscription: Stripe.Subscription,
   sync: (subscription: Stripe.Subscription) => Promise<void>,
+  reconcilePublicProfile: (userId: string) => Promise<void>,
 ): Promise<void> {
   await sync(subscription);
   const userId = getUserIdFromSubscription(subscription);
@@ -29,7 +35,7 @@ async function applySubscriptionSync(
     return;
   }
   try {
-    await revokePublicProfileIfPlanDisallows(userId);
+    await reconcilePublicProfile(userId);
   } catch (error) {
     // Rethrow so Stripe retries (both syncs are idempotent on replay), but log
     // first: a swallowed failure here would silently leave a downgraded user
@@ -88,6 +94,7 @@ export default defineEventHandler(async (event) => {
     await applySubscriptionSync(
       stripeEvent.data.object as Stripe.Subscription,
       upsertSubscriptionFromStripeSubscription,
+      revokePublicProfileOnDowngrade,
     );
     return { ok: true };
   }
@@ -96,6 +103,7 @@ export default defineEventHandler(async (event) => {
     await applySubscriptionSync(
       stripeEvent.data.object as Stripe.Subscription,
       markSubscriptionCanceled,
+      revokePublicProfileOnCancellation,
     );
     return { ok: true };
   }
