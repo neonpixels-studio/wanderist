@@ -35,6 +35,9 @@ vi.mock("../server/utils/subscriptions", () => ({
   upsertSubscriptionFromStripeSubscription:
     mockUpsertSubscriptionFromStripeSubscription,
   markSubscriptionCanceled: mockMarkSubscriptionCanceled,
+  getUserIdFromSubscription: (subscription: {
+    metadata?: { userId?: string };
+  }) => subscription.metadata?.userId ?? null,
 }));
 
 vi.mock("../server/utils/planLimits", () => ({
@@ -157,6 +160,15 @@ describe("stripe webhook handler", () => {
       expect(mockRevokePublicProfileIfPlanDisallows).toHaveBeenCalledWith(
         "user-1",
       );
+      // The reconcile re-reads the row the sync just wrote, so it MUST run
+      // after the sync — otherwise every downgrade reads the pre-downgrade plan
+      // and no-ops.
+      expect(
+        mockUpsertSubscriptionFromStripeSubscription.mock
+          .invocationCallOrder[0],
+      ).toBeLessThan(
+        mockRevokePublicProfileIfPlanDisallows.mock.invocationCallOrder[0],
+      );
       expect(result).toEqual({ ok: true });
     },
   );
@@ -182,6 +194,23 @@ describe("stripe webhook handler", () => {
     expect(result).toEqual({ ok: true });
   });
 
+  it("runs markSubscriptionCanceled before the public-profile reconcile", async () => {
+    mockConstructStripeEvent.mockReturnValue({
+      type: "customer.subscription.deleted",
+      data: { object: SUBSCRIPTION_OBJECT },
+    });
+
+    await (stripeWebhookHandler as (event: object) => Promise<unknown>)(
+      buildMockEvent(),
+    );
+
+    expect(
+      mockMarkSubscriptionCanceled.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      mockRevokePublicProfileIfPlanDisallows.mock.invocationCallOrder[0],
+    );
+  });
+
   it("skips the public-profile reconcile when the subscription carries no userId", async () => {
     mockConstructStripeEvent.mockReturnValue({
       type: "customer.subscription.deleted",
@@ -193,6 +222,29 @@ describe("stripe webhook handler", () => {
     );
 
     expect(mockRevokePublicProfileIfPlanDisallows).not.toHaveBeenCalled();
+  });
+
+  it("propagates a reconcile failure so Stripe retries and logs the user id", async () => {
+    mockConstructStripeEvent.mockReturnValue({
+      type: "customer.subscription.updated",
+      data: { object: SUBSCRIPTION_OBJECT },
+    });
+    mockRevokePublicProfileIfPlanDisallows.mockRejectedValueOnce(
+      new Error("db down"),
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      (stripeWebhookHandler as (event: object) => Promise<unknown>)(
+        buildMockEvent(),
+      ),
+    ).rejects.toThrow("db down");
+    // The sync itself still ran; only the follow-up reconcile failed.
+    expect(mockUpsertSubscriptionFromStripeSubscription).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining("user-1"),
+      expect.any(Error),
+    );
   });
 
   it("acknowledges checkout.session.completed without dispatching to either sync function", async () => {

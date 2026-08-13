@@ -6,6 +6,7 @@ import {
 import {
   upsertSubscriptionFromStripeSubscription,
   markSubscriptionCanceled,
+  getUserIdFromSubscription,
 } from "../../utils/subscriptions";
 import { revokePublicProfileIfPlanDisallows } from "../../utils/planLimits";
 
@@ -23,7 +24,7 @@ async function applySubscriptionSync(
   sync: (subscription: Stripe.Subscription) => Promise<void>,
 ): Promise<void> {
   await sync(subscription);
-  const userId = subscription.metadata?.userId;
+  const userId = getUserIdFromSubscription(subscription);
   if (!userId) {
     return;
   }

@@ -99,19 +99,27 @@ export async function getSubscriptionForUser(
 }
 
 /**
- * Returns the plan tier `userId` is entitled to use right now, for plan-limit
- * enforcement. A `past_due` or `canceled` row has no live entitlement, so
- * this collapses to the free Drifter plan even though `getSubscriptionForUser`
- * (used for display) still reports the real plan on the row. Treating
- * past_due the same as canceled (no grace period) is a product decision —
- * see the PR description for the human to confirm before launch.
+ * The plan tier a subscription entitles its user to right now: the row's plan
+ * while ACTIVE, otherwise the free Drifter plan. A `past_due` or `canceled` row
+ * has no live entitlement even though `getSubscriptionForUser` (used for
+ * display) still reports the real plan. Treating past_due the same as canceled
+ * (no grace period) is a product decision — see the PR description for the human
+ * to confirm before launch. Kept as one pure helper so every "what is this user
+ * entitled to" decision reads from a single rule and can't drift.
  */
-export async function getEffectivePlan(userId: string): Promise<Plan> {
-  const subscription = await getSubscriptionForUser(userId);
+export function entitledPlan(subscription: UserSubscription): Plan {
   if (subscription.status !== SUBSCRIPTION_STATUS.ACTIVE) {
     return PLAN.DRIFTER;
   }
   return subscription.plan;
+}
+
+/**
+ * Returns the plan tier `userId` is entitled to use right now, for plan-limit
+ * enforcement — the DB-backed form of `entitledPlan`.
+ */
+export async function getEffectivePlan(userId: string): Promise<Plan> {
+  return entitledPlan(await getSubscriptionForUser(userId));
 }
 
 /**
@@ -130,6 +138,18 @@ export async function getStripeCustomerIdForUser(
     .where(eq(subscriptions.userId, userId))
     .limit(1);
   return rows[0]?.stripeCustomerId ?? null;
+}
+
+/**
+ * The sync key (`metadata.userId`, set by createCheckoutSession) an event is
+ * attributable to, or null when it carries none. Single source for the
+ * extraction so the webhook handler and both sync functions stay in step if
+ * attribution ever changes (e.g. a fallback customer-ID lookup).
+ */
+export function getUserIdFromSubscription(
+  subscription: Stripe.Subscription,
+): string | null {
+  return subscription.metadata?.userId ?? null;
 }
 
 type SubscriptionIdRow = {
@@ -194,7 +214,7 @@ function isStaleEvent(
 export async function upsertSubscriptionFromStripeSubscription(
   subscription: Stripe.Subscription,
 ): Promise<void> {
-  const userId = subscription.metadata?.userId;
+  const userId = getUserIdFromSubscription(subscription);
   if (!userId) {
     return;
   }
@@ -269,7 +289,7 @@ export async function upsertSubscriptionFromStripeSubscription(
 export async function markSubscriptionCanceled(
   subscription: Stripe.Subscription,
 ): Promise<void> {
-  const userId = subscription.metadata?.userId;
+  const userId = getUserIdFromSubscription(subscription);
   if (!userId) {
     return;
   }

@@ -12,6 +12,7 @@ import {
 import {
   getEffectivePlan,
   getSubscriptionForUser,
+  entitledPlan,
   type Plan,
 } from "./subscriptions";
 
@@ -239,9 +240,13 @@ export async function assertPublicProfileAllowed(
  * clearing the flag is irreversible (a later successful retry would restore
  * every other paid feature but not this destroyed opt-in). Enforcement still
  * hides paid features during dunning via getEffectivePlan; the irreversible
- * preference write waits for the cancellation that unpaid dunning ultimately
- * produces. No-op when the plan still allows it, so an upgrade or renewal never
- * clears a valid opt-in.
+ * preference write waits for the cancellation that unpaid dunning produces.
+ * NOTE: that relies on Stripe being configured to *cancel* subscriptions after
+ * all retries fail — under "leave as-is"/"mark uncollectible" a subscription
+ * sits at past_due indefinitely, no `.deleted` event fires, and the flag is
+ * never cleared. See the PR description; gating the read paths on the effective
+ * plan is the durable follow-up. No-op when the plan still allows it, so an
+ * upgrade or renewal never clears a valid opt-in.
  */
 export async function revokePublicProfileIfPlanDisallows(
   userId: string,
@@ -250,11 +255,7 @@ export async function revokePublicProfileIfPlanDisallows(
   if (subscription.status === SUBSCRIPTION_STATUS.PAST_DUE) {
     return;
   }
-  const entitledPlan =
-    subscription.status === SUBSCRIPTION_STATUS.ACTIVE
-      ? subscription.plan
-      : PLAN.DRIFTER;
-  if (PLAN_LIMITS[entitledPlan].publicProfileAllowed) {
+  if (PLAN_LIMITS[entitledPlan(subscription)].publicProfileAllowed) {
     return;
   }
   const database = getDb();

@@ -6,7 +6,15 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { userPreferences } from "../../server/db/schema";
+import {
+  userPreferences,
+  PLAN,
+  SUBSCRIPTION_STATUS,
+} from "../../server/db/schema";
+import type {
+  Plan,
+  SubscriptionStatus,
+} from "../../server/utils/subscriptions";
 
 vi.stubGlobal(
   "createError",
@@ -58,6 +66,10 @@ const {
 vi.mock("../../server/utils/subscriptions", () => ({
   getEffectivePlan: mockGetEffectivePlan,
   getSubscriptionForUser: mockGetSubscriptionForUser,
+  // Pure entitlement rule — mirror the real one so the revoke branch is
+  // exercised for real; its own behaviour is covered in subscriptions-util.test.
+  entitledPlan: (subscription: { status: string; plan: string }) =>
+    subscription.status === "active" ? subscription.plan : "drifter",
 }));
 
 vi.mock("../../server/db/index", () => ({
@@ -243,7 +255,7 @@ describe("assertPublicProfileAllowed", () => {
 });
 
 describe("revokePublicProfileIfPlanDisallows", () => {
-  function setSubscription(status: string, plan: string): void {
+  function setSubscription(status: SubscriptionStatus, plan: Plan): void {
     mockGetSubscriptionForUser.mockResolvedValue({
       plan,
       status,
@@ -255,7 +267,7 @@ describe("revokePublicProfileIfPlanDisallows", () => {
   }
 
   it("clears the public-profile flag after a cancellation (canceled → Drifter entitlement)", async () => {
-    setSubscription("canceled", "nomad");
+    setSubscription(SUBSCRIPTION_STATUS.CANCELED, PLAN.NOMAD);
 
     await revokePublicProfileIfPlanDisallows("user-1");
 
@@ -266,7 +278,7 @@ describe("revokePublicProfileIfPlanDisallows", () => {
   });
 
   it("clears the public-profile flag on an active downgrade to Wanderer (Nomad → Wanderer)", async () => {
-    setSubscription("active", "wanderer");
+    setSubscription(SUBSCRIPTION_STATUS.ACTIVE, PLAN.WANDERER);
 
     await revokePublicProfileIfPlanDisallows("user-1");
 
@@ -275,7 +287,7 @@ describe("revokePublicProfileIfPlanDisallows", () => {
   });
 
   it("leaves the flag untouched on active Nomad so an upgrade/renewal never clears a valid opt-in", async () => {
-    setSubscription("active", "nomad");
+    setSubscription(SUBSCRIPTION_STATUS.ACTIVE, PLAN.NOMAD);
 
     await revokePublicProfileIfPlanDisallows("user-1");
 
@@ -283,7 +295,7 @@ describe("revokePublicProfileIfPlanDisallows", () => {
   });
 
   it("leaves the flag untouched while past_due, since dunning is recoverable and the clear is irreversible", async () => {
-    setSubscription("past_due", "nomad");
+    setSubscription(SUBSCRIPTION_STATUS.PAST_DUE, PLAN.NOMAD);
 
     await revokePublicProfileIfPlanDisallows("user-1");
 
@@ -291,7 +303,7 @@ describe("revokePublicProfileIfPlanDisallows", () => {
   });
 
   it("only clears rows for the given user that currently carry the flag", async () => {
-    setSubscription("canceled", "nomad");
+    setSubscription(SUBSCRIPTION_STATUS.CANCELED, PLAN.NOMAD);
 
     await revokePublicProfileIfPlanDisallows("user-42");
 
