@@ -6,9 +6,47 @@ import {
 import {
   upsertSubscriptionFromStripeSubscription,
   markSubscriptionCanceled,
+  getUserIdFromSubscription,
 } from "../../utils/subscriptions";
+import {
+  revokePublicProfileOnCancellation,
+  revokePublicProfileOnDowngrade,
+} from "../../utils/planLimits";
 
 const STRIPE_SIGNATURE_HEADER = "stripe-signature";
+
+/**
+ * Runs a subscription sync (upsert or cancel) then reconciles the user's
+ * public-profile entitlement — a downgrade or cancellation must revoke public
+ * discoverability, which the sync itself does not touch (see
+ * revokePublicProfileOnDowngrade / revokePublicProfileOnCancellation). The
+ * reconcile re-reads the row the sync just wrote, so it must run after it. Skips
+ * reconciliation when the event carries no userId, exactly as the sync
+ * functions themselves no-op.
+ */
+async function applySubscriptionSync(
+  subscription: Stripe.Subscription,
+  sync: (subscription: Stripe.Subscription) => Promise<void>,
+  reconcilePublicProfile: (userId: string) => Promise<void>,
+): Promise<void> {
+  await sync(subscription);
+  const userId = getUserIdFromSubscription(subscription);
+  if (!userId) {
+    return;
+  }
+  try {
+    await reconcilePublicProfile(userId);
+  } catch (error) {
+    // Rethrow so Stripe retries (both syncs are idempotent on replay), but log
+    // first: a swallowed failure here would silently leave a downgraded user
+    // publicly discoverable once Stripe exhausts its retries.
+    console.error(
+      `Stripe webhook: public-profile reconcile failed for user ${userId}`,
+      error,
+    );
+    throw error;
+  }
+}
 
 const EVENT_SUBSCRIPTION_CREATED = "customer.subscription.created";
 const EVENT_SUBSCRIPTION_UPDATED = "customer.subscription.updated";
@@ -53,15 +91,19 @@ export default defineEventHandler(async (event) => {
     stripeEvent.type === EVENT_SUBSCRIPTION_CREATED ||
     stripeEvent.type === EVENT_SUBSCRIPTION_UPDATED
   ) {
-    await upsertSubscriptionFromStripeSubscription(
+    await applySubscriptionSync(
       stripeEvent.data.object as Stripe.Subscription,
+      upsertSubscriptionFromStripeSubscription,
+      revokePublicProfileOnDowngrade,
     );
     return { ok: true };
   }
 
   if (stripeEvent.type === EVENT_SUBSCRIPTION_DELETED) {
-    await markSubscriptionCanceled(
+    await applySubscriptionSync(
       stripeEvent.data.object as Stripe.Subscription,
+      markSubscriptionCanceled,
+      revokePublicProfileOnCancellation,
     );
     return { ok: true };
   }

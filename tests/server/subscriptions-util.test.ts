@@ -68,12 +68,28 @@ vi.mock("../../server/utils/stripe", () => ({
 
 const {
   mapStripeSubscriptionStatus,
+  entitledPlan,
+  getUserIdFromSubscription,
   getSubscriptionForUser,
   getEffectivePlan,
   getStripeCustomerIdForUser,
   upsertSubscriptionFromStripeSubscription,
   markSubscriptionCanceled,
 } = await import("../../server/utils/subscriptions");
+
+function buildSubscriptionRow(
+  status: string,
+  plan: string,
+): Parameters<typeof entitledPlan>[0] {
+  return {
+    plan,
+    status,
+    billingCycle: null,
+    trialEndsAt: null,
+    currentPeriodEnd: null,
+    cancelAtPeriodEnd: false,
+  } as Parameters<typeof entitledPlan>[0];
+}
 
 function resetDbMocks() {
   mockSelectLimit.mockResolvedValue([]);
@@ -122,6 +138,42 @@ describe("mapStripeSubscriptionStatus", () => {
     ] as const) {
       expect(mapStripeSubscriptionStatus(status)).toBe("canceled");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// entitledPlan
+// ---------------------------------------------------------------------------
+
+describe("entitledPlan", () => {
+  it("returns the row's plan while active", () => {
+    expect(entitledPlan(buildSubscriptionRow("active", "nomad"))).toBe("nomad");
+  });
+
+  it("collapses past_due and canceled to the free Drifter plan (no grace period)", () => {
+    expect(entitledPlan(buildSubscriptionRow("past_due", "nomad"))).toBe(
+      "drifter",
+    );
+    expect(entitledPlan(buildSubscriptionRow("canceled", "nomad"))).toBe(
+      "drifter",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getUserIdFromSubscription
+// ---------------------------------------------------------------------------
+
+describe("getUserIdFromSubscription", () => {
+  it("returns the metadata userId when present", () => {
+    expect(
+      getUserIdFromSubscription({ metadata: { userId: "user-9" } } as never),
+    ).toBe("user-9");
+  });
+
+  it("returns null when metadata carries no userId", () => {
+    expect(getUserIdFromSubscription({ metadata: {} } as never)).toBeNull();
+    expect(getUserIdFromSubscription({} as never)).toBeNull();
   });
 });
 

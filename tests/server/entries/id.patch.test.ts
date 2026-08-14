@@ -46,6 +46,10 @@ vi.mock("../../../server/utils/media-helpers", () => ({
   assertPhotoMediaOwned: vi.fn(),
 }));
 
+vi.mock("../../../server/utils/trip-helpers", () => ({
+  assertTripOwnershipIfPresent: vi.fn(),
+}));
+
 vi.mock("../../../server/utils/entry-helpers", () => ({
   generateId: vi.fn().mockReturnValue("generated-id"),
   parseOccurredAt: vi.fn((value: unknown) => {
@@ -96,12 +100,16 @@ import {
 import { getDb } from "../../../server/db/index";
 import { deleteMediaIfUnreferenced } from "../../../server/utils/coverImageCleanup";
 import { assertPhotoMediaOwned } from "../../../server/utils/media-helpers";
+import { assertTripOwnershipIfPresent } from "../../../server/utils/trip-helpers";
 
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
 const mockLoadOwnedOrThrow = vi.mocked(loadOwnedOrThrow);
 const mockGetDb = vi.mocked(getDb);
 const mockDeleteMediaIfUnreferenced = vi.mocked(deleteMediaIfUnreferenced);
 const mockAssertPhotoMediaOwned = vi.mocked(assertPhotoMediaOwned);
+const mockAssertTripOwnershipIfPresent = vi.mocked(
+  assertTripOwnershipIfPresent,
+);
 
 function makeDbForPatch(updatedEntry: Record<string, unknown>) {
   const returningMock = vi.fn().mockResolvedValue([updatedEntry]);
@@ -262,6 +270,43 @@ describe("PATCH /api/entries/:id", () => {
       mockLoadOwnedOrThrow,
       handler,
     );
+  });
+
+  it("throws 404 when tripId belongs to another user and does not open a transaction", async () => {
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({ tripId: "trip-other" });
+    const mockDb = makeDbForPatch({ id: "e-1", userId: "user-1" });
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const notFoundError = createError({
+      statusCode: 404,
+      statusMessage: "Not found",
+    });
+    mockAssertTripOwnershipIfPresent.mockRejectedValueOnce(notFoundError);
+
+    await expect(invokeHandler({})).rejects.toMatchObject({ statusCode: 404 });
+
+    expect(mockAssertTripOwnershipIfPresent).toHaveBeenCalledWith(
+      expect.anything(),
+      "trip-other",
+    );
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it("validates trip ownership before updating when a tripId is supplied", async () => {
+    const updatedEntry = { id: "e-1", userId: "user-1", tripId: "trip-1" };
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({ tripId: "trip-1" });
+    const mockDb = makeDbForPatch(updatedEntry);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const result = await invokeHandler({});
+
+    expect(mockAssertTripOwnershipIfPresent).toHaveBeenCalledWith(
+      expect.anything(),
+      "trip-1",
+    );
+    expect(result).toMatchObject(updatedEntry);
   });
 
   it("updates the entry title successfully", async () => {

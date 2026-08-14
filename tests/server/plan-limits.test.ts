@@ -5,6 +5,16 @@
  * access is needed, and each test can pin the "current plan" directly.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { and, eq } from "drizzle-orm";
+import {
+  userPreferences,
+  PLAN,
+  SUBSCRIPTION_STATUS,
+} from "../../server/db/schema";
+import type {
+  Plan,
+  SubscriptionStatus,
+} from "../../server/utils/subscriptions";
 
 vi.stubGlobal(
   "createError",
@@ -19,24 +29,43 @@ vi.stubGlobal(
   },
 );
 
-const { mockGetEffectivePlan, mockWhere, mockFrom, mockSelect, mockGetDb } =
-  vi.hoisted(() => {
-    const mockWhere = vi.fn().mockResolvedValue([{ value: 0 }]);
-    const mockFrom = vi.fn(() => ({ where: mockWhere }));
-    const mockSelect = vi.fn(() => ({ from: mockFrom }));
-    const mockGetDb = vi.fn(() => ({ select: mockSelect }));
+const {
+  mockGetEffectivePlan,
+  mockGetSubscriptionForUser,
+  mockWhere,
+  mockFrom,
+  mockSelect,
+  mockUpdateWhere,
+  mockUpdateSet,
+  mockUpdate,
+  mockGetDb,
+} = vi.hoisted(() => {
+  const mockWhere = vi.fn().mockResolvedValue([{ value: 0 }]);
+  const mockFrom = vi.fn(() => ({ where: mockWhere }));
+  const mockSelect = vi.fn(() => ({ from: mockFrom }));
 
-    return {
-      mockGetEffectivePlan: vi.fn(),
-      mockWhere,
-      mockFrom,
-      mockSelect,
-      mockGetDb,
-    };
-  });
+  const mockUpdateWhere = vi.fn().mockResolvedValue(undefined);
+  const mockUpdateSet = vi.fn(() => ({ where: mockUpdateWhere }));
+  const mockUpdate = vi.fn(() => ({ set: mockUpdateSet }));
+
+  const mockGetDb = vi.fn(() => ({ select: mockSelect, update: mockUpdate }));
+
+  return {
+    mockGetEffectivePlan: vi.fn(),
+    mockGetSubscriptionForUser: vi.fn(),
+    mockWhere,
+    mockFrom,
+    mockSelect,
+    mockUpdateWhere,
+    mockUpdateSet,
+    mockUpdate,
+    mockGetDb,
+  };
+});
 
 vi.mock("../../server/utils/subscriptions", () => ({
   getEffectivePlan: mockGetEffectivePlan,
+  getSubscriptionForUser: mockGetSubscriptionForUser,
 }));
 
 vi.mock("../../server/db/index", () => ({
@@ -52,6 +81,8 @@ const {
   assertInstagramSyncAllowed,
   assertMapStyleAllowed,
   assertPublicProfileAllowed,
+  revokePublicProfileOnCancellation,
+  revokePublicProfileOnDowngrade,
 } = await import("../../server/utils/planLimits");
 
 function setCount(value: number): void {
@@ -63,6 +94,9 @@ beforeEach(() => {
   setCount(0);
   mockFrom.mockReturnValue({ where: mockWhere });
   mockSelect.mockReturnValue({ from: mockFrom });
+  mockUpdateWhere.mockResolvedValue(undefined);
+  mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
+  mockUpdate.mockReturnValue({ set: mockUpdateSet });
 });
 
 describe("PLAN_LIMITS", () => {
@@ -214,5 +248,100 @@ describe("assertPublicProfileAllowed", () => {
     await expect(
       assertPublicProfileAllowed("user-1", true),
     ).resolves.toBeUndefined();
+  });
+});
+
+function setSubscription(status: SubscriptionStatus, plan: Plan): void {
+  mockGetSubscriptionForUser.mockResolvedValue({
+    plan,
+    status,
+    billingCycle: null,
+    trialEndsAt: null,
+    currentPeriodEnd: null,
+    cancelAtPeriodEnd: false,
+  });
+}
+
+describe("revokePublicProfileOnCancellation", () => {
+  it("clears the public-profile flag unconditionally (cancellation → Drifter)", async () => {
+    await revokePublicProfileOnCancellation("user-1");
+
+    // Clearing this stored boolean is what removes the user from the public read
+    // paths (profile, followers, discover, search), which gate on it. No row
+    // read is needed — cancellation is terminal.
+    expect(mockGetSubscriptionForUser).not.toHaveBeenCalled();
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    expect(mockUpdateSet).toHaveBeenCalledWith({ publicProfile: false });
+  });
+
+  it("only clears rows for the given user that currently carry the flag", async () => {
+    await revokePublicProfileOnCancellation("user-42");
+
+    // Assert the full predicate: without the userId scope this would clear
+    // publicProfile for every user in the table, and without the publicProfile
+    // guard it would rewrite already-private rows on every webhook.
+    expect(mockUpdateWhere).toHaveBeenCalledWith(
+      and(
+        eq(userPreferences.userId, "user-42"),
+        eq(userPreferences.publicProfile, true),
+      ),
+    );
+  });
+});
+
+describe("revokePublicProfileOnDowngrade", () => {
+  it("clears the flag on an active downgrade to Wanderer (Nomad → Wanderer)", async () => {
+    setSubscription(SUBSCRIPTION_STATUS.ACTIVE, PLAN.WANDERER);
+
+    await revokePublicProfileOnDowngrade("user-1");
+
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    expect(mockUpdateSet).toHaveBeenCalledWith({ publicProfile: false });
+  });
+
+  it("leaves the flag untouched on active Nomad so an upgrade/renewal never clears a valid opt-in", async () => {
+    setSubscription(SUBSCRIPTION_STATUS.ACTIVE, PLAN.NOMAD);
+
+    await revokePublicProfileOnDowngrade("user-1");
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("preserves a paused Nomad's opt-in (paused collapses to canceled but is recoverable)", async () => {
+    // The finding this guards: mapStripeSubscriptionStatus collapses the
+    // recoverable `paused` (pause_collection) into `canceled`. A Nomad who pauses
+    // must keep their public-profile opt-in, since the clear is irreversible.
+    setSubscription(SUBSCRIPTION_STATUS.CANCELED, PLAN.NOMAD);
+
+    await revokePublicProfileOnDowngrade("user-1");
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("never acts on a non-active status even when the stored plan disallows the profile (the ACTIVE guard is load-bearing)", async () => {
+    // past_due/paused/incomplete all reach here as a non-active status. Even
+    // paired with a disallowing plan, the .updated path must not perform the
+    // irreversible clear — only the terminal .deleted event does. Uses Wanderer
+    // (disallows) so this fails if the ACTIVE guard is removed, rather than
+    // passing for the wrong reason on a plan that happens to allow the profile.
+    setSubscription(SUBSCRIPTION_STATUS.PAST_DUE, PLAN.WANDERER);
+
+    await revokePublicProfileOnDowngrade("user-1");
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("scopes the read to the given user id", async () => {
+    setSubscription(SUBSCRIPTION_STATUS.ACTIVE, PLAN.WANDERER);
+
+    await revokePublicProfileOnDowngrade("user-42");
+
+    expect(mockGetSubscriptionForUser).toHaveBeenCalledWith("user-42");
+    expect(mockUpdateWhere).toHaveBeenCalledWith(
+      and(
+        eq(userPreferences.userId, "user-42"),
+        eq(userPreferences.publicProfile, true),
+      ),
+    );
   });
 });
