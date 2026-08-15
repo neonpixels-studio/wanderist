@@ -42,6 +42,10 @@ vi.mock("../../../server/utils/coverImageCleanup", () => ({
   deleteMediaIfUnreferenced: vi.fn(),
 }));
 
+vi.mock("../../../server/utils/media-helpers", () => ({
+  assertPhotoMediaOwned: vi.fn(),
+}));
+
 vi.mock("../../../server/utils/trip-helpers", () => ({
   assertTripOwnershipIfPresent: vi.fn(),
 }));
@@ -95,12 +99,14 @@ import {
 } from "../../../server/utils/db-helpers";
 import { getDb } from "../../../server/db/index";
 import { deleteMediaIfUnreferenced } from "../../../server/utils/coverImageCleanup";
+import { assertPhotoMediaOwned } from "../../../server/utils/media-helpers";
 import { assertTripOwnershipIfPresent } from "../../../server/utils/trip-helpers";
 
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
 const mockLoadOwnedOrThrow = vi.mocked(loadOwnedOrThrow);
 const mockGetDb = vi.mocked(getDb);
 const mockDeleteMediaIfUnreferenced = vi.mocked(deleteMediaIfUnreferenced);
+const mockAssertPhotoMediaOwned = vi.mocked(assertPhotoMediaOwned);
 const mockAssertTripOwnershipIfPresent = vi.mocked(
   assertTripOwnershipIfPresent,
 );
@@ -318,6 +324,34 @@ describe("PATCH /api/entries/:id", () => {
 
     expect(result).toMatchObject(updatedEntry);
     expect(mockDb._txClient.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws 404 and runs no transaction when a photoMediaId is not owned", async () => {
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({ photoMediaIds: ["foreign-media"] });
+    const mockDb = makeDbForPhotoPatch({ id: "e-1", userId: "user-1" }, []);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+    mockAssertPhotoMediaOwned.mockRejectedValueOnce(
+      createError({ statusCode: 404, statusMessage: "Photo media not found" }),
+    );
+
+    await expect(invokeHandler({})).rejects.toMatchObject({ statusCode: 404 });
+    expect(mockAssertPhotoMediaOwned).toHaveBeenCalledWith(mockDb, "user-1", [
+      "foreign-media",
+    ]);
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it("does not validate photo ownership when photos are not part of the patch", async () => {
+    const updatedEntry = { id: "e-1", userId: "user-1", title: "Only title" };
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({ title: "Only title" });
+    const mockDb = makeDbForPatch(updatedEntry);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    await invokeHandler({});
+
+    expect(mockAssertPhotoMediaOwned).not.toHaveBeenCalled();
   });
 
   it("cleans up photo media the PATCH removed, scoped to the entry owner", async () => {

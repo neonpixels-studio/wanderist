@@ -16,6 +16,10 @@ vi.mock("../../../server/db/index", () => ({
   getDb: vi.fn(),
 }));
 
+vi.mock("../../../server/utils/media-helpers", () => ({
+  assertPhotoMediaOwned: vi.fn(),
+}));
+
 vi.mock("../../../server/utils/trip-helpers", () => ({
   assertTripOwnershipIfPresent: vi.fn(),
 }));
@@ -61,11 +65,13 @@ vi.mock("../../../server/utils/entry-helpers", () => ({
 import { ensureUser } from "../../../server/utils/auth";
 import { getDb } from "../../../server/db/index";
 import { upsertTags } from "../../../server/utils/entry-helpers";
+import { assertPhotoMediaOwned } from "../../../server/utils/media-helpers";
 import { assertTripOwnershipIfPresent } from "../../../server/utils/trip-helpers";
 
 const mockEnsureUser = vi.mocked(ensureUser);
 const mockGetDb = vi.mocked(getDb);
 const mockUpsertTags = vi.mocked(upsertTags);
+const mockAssertPhotoMediaOwned = vi.mocked(assertPhotoMediaOwned);
 const mockAssertTripOwnershipIfPresent = vi.mocked(
   assertTripOwnershipIfPresent,
 );
@@ -120,6 +126,29 @@ describe("POST /api/entries", () => {
     await expect(
       (defaultHandler as (event: unknown) => unknown)({}),
     ).rejects.toMatchObject({ statusCode: 401 });
+  });
+
+  it("throws 404 and inserts nothing when a photoMediaId is not owned", async () => {
+    mockEnsureUser.mockResolvedValue("user-1");
+    mockReadBody.mockResolvedValue({
+      title: "My Entry",
+      photoMediaIds: ["foreign-media"],
+    });
+    const mockDb = makeDbForCreate({ id: "e-1" });
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+    mockAssertPhotoMediaOwned.mockRejectedValueOnce(
+      createError({ statusCode: 404, statusMessage: "Photo media not found" }),
+    );
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+
+    await expect(
+      (defaultHandler as (event: unknown) => unknown)({}),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(mockAssertPhotoMediaOwned).toHaveBeenCalledWith(mockDb, "user-1", [
+      "foreign-media",
+    ]);
+    expect(mockDb.insert).not.toHaveBeenCalled();
   });
 
   it("creates an entry with only required fields", async () => {

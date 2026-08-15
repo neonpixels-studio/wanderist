@@ -7,6 +7,7 @@ import {
 import { getDb } from "../../db/index";
 import { entries, entryPhotos, entryTags } from "../../db/schema";
 import { deleteMediaIfUnreferenced } from "../../utils/coverImageCleanup";
+import { assertPhotoMediaOwned } from "../../utils/media-helpers";
 import { assertTripOwnershipIfPresent } from "../../utils/trip-helpers";
 import {
   generateId,
@@ -236,6 +237,12 @@ export default defineEventHandler(async (event) => {
   // before the transaction (never move an entry to a trip the caller doesn't
   // own). A no-op when the patch does not touch tripId.
   await assertTripOwnershipIfPresent(event, tripId);
+
+  // Reject foreign/nonexistent photo media before the transaction: a media id
+  // the entry owner doesn't own would otherwise replace the entry's photos.
+  if (photoMediaIds !== undefined) {
+    await assertPhotoMediaOwned(database, entry.userId, photoMediaIds);
+  }
 
   const { payload, removedMediaIds } = await database.transaction(
     async (transaction) => {
