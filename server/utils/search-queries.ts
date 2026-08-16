@@ -1,4 +1,4 @@
-import { ilike, eq, or, and, isNull } from "drizzle-orm";
+import { ilike, eq, or, and } from "drizzle-orm";
 import { getDb } from "../db/index";
 import {
   places,
@@ -8,7 +8,7 @@ import {
   users,
   userPreferences,
 } from "../db/schema";
-import { entitledToPublicProfileCondition } from "./publicVisibility";
+import { publiclyVisibleAuthorCondition } from "./publicVisibility";
 
 const SEARCH_RESULT_LIMIT = 5;
 
@@ -142,12 +142,13 @@ export async function searchPeople(
   database: ReturnType<typeof getDb>,
   pattern: string,
 ): Promise<PersonResult[]> {
-  // People results are public, non-deleted profiles (publicProfile = true,
-  // deletedAt IS NULL), never scoped to the requesting user so the current user
-  // can discover others. Excluding soft-deleted accounts keeps a result's
-  // profile link (/u/<id>) from landing on "Profile unavailable".
-  // entitledToPublicProfileCondition also drops a lapsed/paused subscriber
-  // whose stored opt-in still reads true.
+  // People results are public, non-deleted, effectively-entitled profiles,
+  // never scoped to the requesting user so the current user can discover others.
+  // publiclyVisibleAuthorCondition is the shared gate (live account + public
+  // opt-in + effective entitlement); excluding soft-deleted accounts keeps a
+  // result's profile link (/u/<id>) from landing on "Profile unavailable", and
+  // the entitlement term drops a lapsed/paused subscriber whose stored opt-in
+  // still reads true.
   return database
     .select({
       id: users.id,
@@ -158,9 +159,7 @@ export async function searchPeople(
     .innerJoin(userPreferences, eq(users.id, userPreferences.userId))
     .where(
       and(
-        eq(userPreferences.publicProfile, true),
-        isNull(users.deletedAt),
-        entitledToPublicProfileCondition(),
+        publiclyVisibleAuthorCondition(),
         or(
           ilike(userPreferences.displayName, pattern),
           ilike(userPreferences.handle, pattern),

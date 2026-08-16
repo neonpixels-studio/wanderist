@@ -18,9 +18,10 @@
  * defined once and cannot drift between them.
  */
 
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
   subscriptions,
+  users,
   userPreferences,
   SUBSCRIPTION_STATUS,
 } from "../db/schema";
@@ -68,16 +69,37 @@ export function subscriptionEntitlesPublicProfile(subscription: {
  * Drifter users have no subscriptions row and are correctly excluded. The SQL
  * twin of subscriptionEntitlesPublicProfile.
  */
-export function entitledToPublicProfileCondition() {
+export function entitledToPublicProfileCondition(
+  plans: readonly Plan[] = PUBLIC_PROFILE_PLANS,
+) {
   // No tier grants the public profile → nobody is discoverable. Return a false
   // literal rather than building `inArray(..., [])`, which drizzle can't emit as
-  // valid SQL and which would otherwise 500 every discover/search request.
-  if (PUBLIC_PROFILE_PLANS.length === 0) {
+  // valid SQL and which would otherwise 500 every discover/search request. The
+  // `plans` parameter defaults to the real set and exists so this branch is
+  // reachable in a unit test.
+  if (plans.length === 0) {
     return sql`false`;
   }
   return sql`exists (select 1 from ${subscriptions} where ${and(
     eq(subscriptions.userId, userPreferences.userId),
     eq(subscriptions.status, SUBSCRIPTION_STATUS.ACTIVE),
-    inArray(subscriptions.plan, [...PUBLIC_PROFILE_PLANS]),
+    inArray(subscriptions.plan, [...plans]),
   )})`;
+}
+
+/**
+ * The predicate that makes a profile owner publicly visible at all: their
+ * account is live (not soft-deleted), they opted their profile public, and
+ * their effective plan still entitles them to it. The single source for the
+ * "public + not deleted + entitled" gate — `fetchFollowers` and `searchPeople`
+ * use it directly, and `discoverableAuthorCondition` layers `showOnExplore` on
+ * top (followers and search are look-ups of an existing connection, not
+ * algorithmic explore promotion, so they intentionally omit that term).
+ */
+export function publiclyVisibleAuthorCondition() {
+  return and(
+    isNull(users.deletedAt),
+    eq(userPreferences.publicProfile, true),
+    entitledToPublicProfileCondition(),
+  );
 }

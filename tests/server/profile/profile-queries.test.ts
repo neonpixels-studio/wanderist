@@ -25,7 +25,7 @@ import {
   PLAN,
   SUBSCRIPTION_STATUS,
 } from "../../../server/db/schema";
-import { entitledToPublicProfileCondition } from "../../../server/utils/publicVisibility";
+import { publiclyVisibleAuthorCondition } from "../../../server/utils/publicVisibility";
 
 // requireViewableProfile throws via createError; stub the Nitro globals so it
 // resolves outside the Nuxt runtime.
@@ -200,12 +200,7 @@ describe("fetchFollowers", () => {
     // These predicates are the whole privacy contract: they keep private and
     // soft-deleted accounts out of another user's followers list.
     expect(built.where).toHaveBeenCalledWith(
-      and(
-        eq(follows.followeeId, "user-1"),
-        eq(userPreferences.publicProfile, true),
-        entitledToPublicProfileCondition(),
-        isNull(users.deletedAt),
-      ),
+      and(eq(follows.followeeId, "user-1"), publiclyVisibleAuthorCondition()),
     );
   });
 

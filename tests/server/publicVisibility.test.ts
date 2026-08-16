@@ -7,8 +7,12 @@
  * public, while active/trialing subscribers on the public tier are.
  */
 import { describe, it, expect } from "vitest";
-import { PgDialect } from "drizzle-orm/pg-core";
-import { PLAN, SUBSCRIPTION_STATUS } from "../../server/db/schema";
+import { PgDialect, getTableConfig } from "drizzle-orm/pg-core";
+import {
+  PLAN,
+  SUBSCRIPTION_STATUS,
+  subscriptions,
+} from "../../server/db/schema";
 import { mapStripeSubscriptionStatus } from "../../server/utils/subscriptions";
 import type { Stripe } from "stripe";
 import {
@@ -48,6 +52,27 @@ describe("entitledToPublicProfileCondition (rendered SQL)", () => {
     // so widening the public-tier set to include another plan forces a
     // deliberate edit here rather than silently staying green.
     expect(rendered.params).toEqual([SUBSCRIPTION_STATUS.ACTIVE, PLAN.NOMAD]);
+  });
+
+  it("renders a constant false when no tier grants the public profile", () => {
+    // The empty-set guard (a defaulted `plans` param makes it reachable): with
+    // no public tier, everyone is non-discoverable rather than 500-ing on an
+    // `inArray(..., [])` that drizzle can't emit.
+    const empty = new PgDialect().sqlToQuery(
+      entitledToPublicProfileCondition([]),
+    );
+    expect(empty.sql).toBe("false");
+    expect(empty.params).toEqual([]);
+  });
+
+  it("relies on subscriptions being keyed 1:1 on user_id", () => {
+    // fetchProfileRow reads entitlement from a single left-joined subscriptions
+    // row (no ORDER BY); that is only deterministic because user_id is the PK.
+    // Lock the invariant so adding a billing-history row breaks loudly here.
+    const userIdColumn = getTableConfig(subscriptions).columns.find(
+      (column) => column.name === "user_id",
+    );
+    expect(userIdColumn?.primary).toBe(true);
   });
 });
 

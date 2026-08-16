@@ -12,7 +12,7 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { getDb } from "../db/index";
 import { follows, subscriptions, users, userPreferences } from "../db/schema";
 import {
-  entitledToPublicProfileCondition,
+  publiclyVisibleAuthorCondition,
   subscriptionEntitlesPublicProfile,
 } from "./publicVisibility";
 
@@ -165,12 +165,7 @@ export async function fetchFollowers(
     .innerJoin(users, eq(follows.followerId, users.id))
     .innerJoin(userPreferences, eq(follows.followerId, userPreferences.userId))
     .where(
-      and(
-        eq(follows.followeeId, userId),
-        eq(userPreferences.publicProfile, true),
-        entitledToPublicProfileCondition(),
-        isNull(users.deletedAt),
-      ),
+      and(eq(follows.followeeId, userId), publiclyVisibleAuthorCondition()),
     )
     .orderBy(desc(follows.createdAt))
     .limit(FOLLOWERS_PAGE_SIZE + 1);

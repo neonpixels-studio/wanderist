@@ -6,7 +6,7 @@
  * module-level singletons. Auth scoping is enforced here, not in the handlers.
  */
 
-import { count, desc, eq, isNull, sql, and, notInArray } from "drizzle-orm";
+import { count, desc, eq, sql, and, notInArray } from "drizzle-orm";
 import type { getDb } from "../db/index";
 import {
   trips,
@@ -17,7 +17,7 @@ import {
   guides,
   VISIBILITY,
 } from "../db/schema";
-import { entitledToPublicProfileCondition } from "./publicVisibility";
+import { publiclyVisibleAuthorCondition } from "./publicVisibility";
 
 export type Database = ReturnType<typeof getDb>;
 
@@ -30,16 +30,15 @@ export type Database = ReturnType<typeof getDb>;
  * Callers `and()` it with their own table-specific conditions (e.g. the
  * relevant `visibility = public`).
  *
- * `publicProfile` is the stored opt-in; entitledToPublicProfileCondition adds
- * the *effective* check so a lapsed/paused subscriber whose opt-in still reads
- * true is not surfaced.
+ * Layers `showOnExplore` on top of publiclyVisibleAuthorCondition (live account
+ * + public opt-in + effective entitlement), which is the shared gate the
+ * followers and search read paths also use — explore additionally requires the
+ * author to have opted into promotion.
  */
 export function discoverableAuthorCondition() {
   return and(
-    isNull(users.deletedAt),
-    eq(userPreferences.publicProfile, true),
+    publiclyVisibleAuthorCondition(),
     eq(userPreferences.showOnExplore, true),
-    entitledToPublicProfileCondition(),
   );
 }
 

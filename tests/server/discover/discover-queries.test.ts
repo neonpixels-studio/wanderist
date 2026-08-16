@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { and, eq, isNull, notInArray } from "drizzle-orm";
+import { and, eq, notInArray } from "drizzle-orm";
 import {
   fetchFeaturedTrips,
   fetchTrendingPlaces,
@@ -14,7 +14,7 @@ import {
   discoverableAuthorCondition,
 } from "../../../server/utils/discover-queries";
 import type { Database } from "../../../server/utils/discover-queries";
-import { entitledToPublicProfileCondition } from "../../../server/utils/publicVisibility";
+import { publiclyVisibleAuthorCondition } from "../../../server/utils/publicVisibility";
 import {
   trips,
   users,
@@ -327,13 +327,11 @@ describe("fetchSuggestedPeople", () => {
 // ---------------------------------------------------------------------------
 
 describe("effective public-profile gating", () => {
-  it("discoverableAuthorCondition requires effective entitlement", () => {
+  it("discoverableAuthorCondition layers showOnExplore on the shared visibility gate", () => {
     expect(discoverableAuthorCondition()).toEqual(
       and(
-        isNull(users.deletedAt),
-        eq(userPreferences.publicProfile, true),
+        publiclyVisibleAuthorCondition(),
         eq(userPreferences.showOnExplore, true),
-        entitledToPublicProfileCondition(),
       ),
     );
   });

@@ -27,7 +27,7 @@ import {
   users,
   userPreferences,
 } from "../../../server/db/schema";
-import { entitledToPublicProfileCondition } from "../../../server/utils/publicVisibility";
+import { publiclyVisibleAuthorCondition } from "../../../server/utils/publicVisibility";
 import {
   searchPlaces,
   searchTrips,
@@ -285,9 +285,7 @@ describe("searchPeople", () => {
 
     expect(chain._where).toHaveBeenCalledWith(
       and(
-        eq(userPreferences.publicProfile, true),
-        isNull(users.deletedAt),
-        entitledToPublicProfileCondition(),
+        publiclyVisibleAuthorCondition(),
         or(
           ilike(userPreferences.displayName, "%elsa%"),
           ilike(userPreferences.handle, "%elsa%"),
