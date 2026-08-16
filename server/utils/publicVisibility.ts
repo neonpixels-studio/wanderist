@@ -32,9 +32,11 @@ import type { Plan, SubscriptionStatus } from "./subscriptions";
  * straight from PLAN_LIMITS so this read-path gate and the write-path guard
  * (assertPublicProfileAllowed) can never disagree about which tiers are public.
  */
-export const PUBLIC_PROFILE_PLANS: Plan[] = (
-  Object.keys(PLAN_LIMITS) as Plan[]
-).filter((plan) => PLAN_LIMITS[plan].publicProfileAllowed);
+export const PUBLIC_PROFILE_PLANS: readonly Plan[] = Object.freeze(
+  (Object.keys(PLAN_LIMITS) as Plan[]).filter(
+    (plan) => PLAN_LIMITS[plan].publicProfileAllowed,
+  ),
+);
 
 /**
  * Whether a user is *effectively* entitled to a public traveler profile right
@@ -67,9 +69,15 @@ export function subscriptionEntitlesPublicProfile(subscription: {
  * twin of subscriptionEntitlesPublicProfile.
  */
 export function entitledToPublicProfileCondition() {
+  // No tier grants the public profile → nobody is discoverable. Return a false
+  // literal rather than building `inArray(..., [])`, which drizzle can't emit as
+  // valid SQL and which would otherwise 500 every discover/search request.
+  if (PUBLIC_PROFILE_PLANS.length === 0) {
+    return sql`false`;
+  }
   return sql`exists (select 1 from ${subscriptions} where ${and(
     eq(subscriptions.userId, userPreferences.userId),
     eq(subscriptions.status, SUBSCRIPTION_STATUS.ACTIVE),
-    inArray(subscriptions.plan, PUBLIC_PROFILE_PLANS),
+    inArray(subscriptions.plan, [...PUBLIC_PROFILE_PLANS]),
   )})`;
 }

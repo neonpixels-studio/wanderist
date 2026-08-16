@@ -62,8 +62,12 @@ export interface PublicPerson {
  *
  * The subscriptions table is left-joined (not inner) so a free user with no
  * subscription row still resolves; a null status/plan yields effectivelyPublic
- * false via subscriptionEntitlesPublicProfile. The raw subscription fields are
- * consumed here and never returned, so a viewer never learns another user's
+ * false via subscriptionEntitlesPublicProfile. subscriptions.userId is the
+ * table's primary key (1:1 with users), so this join contributes at most one
+ * row and the entitlement read here matches the EXISTS in
+ * entitledToPublicProfileCondition that the collection paths use — no ORDER BY
+ * is needed to make the single row deterministic. The raw subscription fields
+ * are consumed here and never returned, so a viewer never learns another user's
  * billing status.
  *
  * The follower-count subquery is served by the `follows_followee_id_idx` index.

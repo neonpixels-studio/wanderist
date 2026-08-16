@@ -21,9 +21,9 @@ describe("PUBLIC_PROFILE_PLANS", () => {
   it("is exactly the tiers whose limits include the public traveler profile", () => {
     // Nomad is the only tier that advertises the public profile; deriving the
     // set from PLAN_LIMITS keeps this gate aligned with the write-path guard.
-    expect(PUBLIC_PROFILE_PLANS).toContain(PLAN.NOMAD);
-    expect(PUBLIC_PROFILE_PLANS).not.toContain(PLAN.WANDERER);
-    expect(PUBLIC_PROFILE_PLANS).not.toContain(PLAN.DRIFTER);
+    // Asserted as an exact list so promoting another tier to public forces a
+    // deliberate edit here.
+    expect(PUBLIC_PROFILE_PLANS).toEqual([PLAN.NOMAD]);
   });
 });
 
@@ -44,12 +44,10 @@ describe("entitledToPublicProfileCondition (rendered SQL)", () => {
   it("requires an active subscription on a public tier", () => {
     expect(rendered.sql).toContain('"subscriptions"."status"');
     expect(rendered.sql).toContain('"subscriptions"."plan"');
-    // Bound params: ACTIVE status, then the public-tier plan(s). A change that
-    // dropped the status filter or widened the plan set would shift these.
-    expect(rendered.params).toEqual([
-      SUBSCRIPTION_STATUS.ACTIVE,
-      ...PUBLIC_PROFILE_PLANS,
-    ]);
+    // Bound params asserted as literals (not derived from the same constant),
+    // so widening the public-tier set to include another plan forces a
+    // deliberate edit here rather than silently staying green.
+    expect(rendered.params).toEqual([SUBSCRIPTION_STATUS.ACTIVE, PLAN.NOMAD]);
   });
 });
 
