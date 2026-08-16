@@ -19,9 +19,15 @@ vi.mock("drizzle-orm", async (importOriginal) => {
   };
 });
 
-import { eq, ilike, isNull } from "drizzle-orm";
+import { eq, ilike, isNull, and, or } from "drizzle-orm";
 import { getDb } from "../../../server/db/index";
-import { entries, guides, users } from "../../../server/db/schema";
+import {
+  entries,
+  guides,
+  users,
+  userPreferences,
+} from "../../../server/db/schema";
+import { entitledToPublicProfileCondition } from "../../../server/utils/publicVisibility";
 import {
   searchPlaces,
   searchTrips,
@@ -268,6 +274,26 @@ describe("searchPeople", () => {
         "%test%",
       ),
     ).resolves.toEqual([]);
+  });
+
+  it("gates people results on effective public-profile entitlement", async () => {
+    const chain = makeQueryChain([]);
+
+    // A lapsed/paused subscriber whose stored opt-in still reads true must not
+    // surface in people search — the entitlement predicate closes that leak.
+    await searchPeople(chain as unknown as ReturnType<typeof getDb>, "%elsa%");
+
+    expect(chain._where).toHaveBeenCalledWith(
+      and(
+        eq(userPreferences.publicProfile, true),
+        isNull(users.deletedAt),
+        entitledToPublicProfileCondition(),
+        or(
+          ilike(userPreferences.displayName, "%elsa%"),
+          ilike(userPreferences.handle, "%elsa%"),
+        ),
+      ),
+    );
   });
 });
 

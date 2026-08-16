@@ -10,7 +10,11 @@
 
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import type { getDb } from "../db/index";
-import { follows, users, userPreferences } from "../db/schema";
+import { follows, subscriptions, users, userPreferences } from "../db/schema";
+import {
+  entitledToPublicProfileCondition,
+  subscriptionEntitlesPublicProfile,
+} from "./publicVisibility";
 
 export type Database = ReturnType<typeof getDb>;
 
@@ -29,7 +33,12 @@ export interface ProfileRow {
   handle: string | null;
   homeBase: string | null;
   bio: string | null;
+  // The stored opt-in flag as saved in settings.
   publicProfile: boolean;
+  // The opt-in AND the owner's effective plan still entitling them to a public
+  // profile. This is the field visibility is enforced on — a lapsed/paused
+  // subscriber keeps publicProfile `true` but is no longer effectivelyPublic.
+  effectivelyPublic: boolean;
   followerCount: number;
   followingCount: number;
   placeCount: number;
@@ -47,8 +56,15 @@ export interface PublicPerson {
  * soft-deleted. The preferences table is left-joined (not inner-joined) so a
  * user who has never opened settings still resolves a row and can view their
  * own profile; `publicProfile` coalesces to false, so that profile stays
- * private to everyone else until they opt in. The flag is returned so the
- * caller (requireViewableProfile) can enforce visibility.
+ * private to everyone else until they opt in. Both the opt-in and the derived
+ * `effectivelyPublic` are returned so the caller (requireViewableProfile) can
+ * enforce visibility on the effective entitlement.
+ *
+ * The subscriptions table is left-joined (not inner) so a free user with no
+ * subscription row still resolves; a null status/plan yields effectivelyPublic
+ * false via subscriptionEntitlesPublicProfile. The raw subscription fields are
+ * consumed here and never returned, so a viewer never learns another user's
+ * billing status.
  *
  * The follower-count subquery is served by the `follows_followee_id_idx` index.
  */
@@ -64,6 +80,8 @@ export async function fetchProfileRow(
       homeBase: userPreferences.homeBase,
       bio: userPreferences.bio,
       publicProfile: sql<boolean>`coalesce(${userPreferences.publicProfile}, false)`,
+      subscriptionStatus: subscriptions.status,
+      subscriptionPlan: subscriptions.plan,
       // Counts exclude soft-deleted counterparties: a follower/followee whose
       // account is pending purge (deleted_at set) should not inflate the totals,
       // so the count stays consistent with what the followers list can show.
@@ -86,6 +104,7 @@ export async function fetchProfileRow(
     })
     .from(users)
     .leftJoin(userPreferences, eq(users.id, userPreferences.userId))
+    .leftJoin(subscriptions, eq(users.id, subscriptions.userId))
     .where(and(eq(users.id, userId), isNull(users.deletedAt)))
     .limit(1);
 
@@ -95,8 +114,15 @@ export async function fetchProfileRow(
     return null;
   }
 
+  const { subscriptionStatus, subscriptionPlan, ...profile } = row;
+  const entitled = subscriptionEntitlesPublicProfile({
+    plan: subscriptionPlan,
+    status: subscriptionStatus,
+  });
+
   return {
-    ...row,
+    ...profile,
+    effectivelyPublic: profile.publicProfile && entitled,
     followerCount: Number(row.followerCount),
     followingCount: Number(row.followingCount),
     placeCount: Number(row.placeCount),
@@ -138,6 +164,7 @@ export async function fetchFollowers(
       and(
         eq(follows.followeeId, userId),
         eq(userPreferences.publicProfile, true),
+        entitledToPublicProfileCondition(),
         isNull(users.deletedAt),
       ),
     )
@@ -167,8 +194,10 @@ export async function requireViewableProfile(
     throw createError({ statusCode: 404, statusMessage: "Profile not found" });
   }
 
-  // A non-public profile is visible only to its owner — never leak it to others.
-  if (!profile.publicProfile && currentUserId !== targetUserId) {
+  // A profile that isn't effectively public (never opted in, or opted in but
+  // the subscription that entitled it has lapsed) is visible only to its owner
+  // — never leak it to others.
+  if (!profile.effectivelyPublic && currentUserId !== targetUserId) {
     throw createError({ statusCode: 404, statusMessage: "Profile not found" });
   }
 

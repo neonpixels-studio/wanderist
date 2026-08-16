@@ -8,6 +8,7 @@ import {
   users,
   userPreferences,
 } from "../db/schema";
+import { entitledToPublicProfileCondition } from "./publicVisibility";
 
 const SEARCH_RESULT_LIMIT = 5;
 
@@ -145,6 +146,8 @@ export async function searchPeople(
   // deletedAt IS NULL), never scoped to the requesting user so the current user
   // can discover others. Excluding soft-deleted accounts keeps a result's
   // profile link (/u/<id>) from landing on "Profile unavailable".
+  // entitledToPublicProfileCondition also drops a lapsed/paused subscriber
+  // whose stored opt-in still reads true.
   return database
     .select({
       id: users.id,
@@ -157,6 +160,7 @@ export async function searchPeople(
       and(
         eq(userPreferences.publicProfile, true),
         isNull(users.deletedAt),
+        entitledToPublicProfileCondition(),
         or(
           ilike(userPreferences.displayName, pattern),
           ilike(userPreferences.handle, pattern),

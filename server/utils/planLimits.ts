@@ -224,12 +224,12 @@ export async function assertPublicProfileAllowed(
 /**
  * Clears the stored `publicProfile` preference.
  *
- * The public read paths (profile, followers, discover, search) gate purely on
- * this stored boolean, never on the effective plan — assertPublicProfileAllowed
- * only guards the write path (the preferences PATCH). So once a billing change
- * has dropped a user off the only plan that includes the public traveler profile
- * (Nomad), a stale `true` keeps them publicly discoverable and their public
- * guides open until this clears it, closing every read path at once.
+ * The public read paths (profile, followers, discover, search) now also gate on
+ * effective entitlement (see server/utils/publicVisibility.ts), so a stale
+ * `true` on a lapsed/paused/downgraded plan no longer leaks discoverability on
+ * its own. Clearing the flag here is still worthwhile: it keeps the stored
+ * preference honest (settings shows the real state) and it is the terminal
+ * cleanup when a user drops off the public-profile tier for good.
  *
  * Scoped to the one user AND to rows that actually carry the flag: Stripe fires
  * subscription.updated on renewals, card updates, and proration, so an

@@ -5,13 +5,24 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { and, eq, isNull, notInArray } from "drizzle-orm";
 import {
   fetchFeaturedTrips,
   fetchTrendingPlaces,
   fetchGuides,
   fetchSuggestedPeople,
+  discoverableAuthorCondition,
 } from "../../../server/utils/discover-queries";
 import type { Database } from "../../../server/utils/discover-queries";
+import { entitledToPublicProfileCondition } from "../../../server/utils/publicVisibility";
+import {
+  trips,
+  places,
+  users,
+  userPreferences,
+  guides,
+  VISIBILITY,
+} from "../../../server/db/schema";
 
 // ---------------------------------------------------------------------------
 // Helpers to build mock DB query chains
@@ -33,7 +44,7 @@ function buildSelectChain(rows: unknown[]) {
     .mockReturnValue({ where, innerJoin: vi.fn().mockReturnValue({ where }) });
   const from = vi.fn().mockReturnValue({ innerJoin, where });
   const select = vi.fn().mockReturnValue({ from });
-  return { select, result };
+  return { select, result, where };
 }
 
 // ---------------------------------------------------------------------------
@@ -304,5 +315,102 @@ describe("fetchSuggestedPeople", () => {
 
     expect(result[0]?.placeCount).toBe(510);
     expect(typeof result[0]?.placeCount).toBe("number");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Effective public-profile gating
+//
+// Every explore surface must gate on effective entitlement, not just the stored
+// publicProfile opt-in — otherwise a lapsed/paused Nomad whose opt-in still
+// reads true stays surfaced. These assert the entitlement predicate is present
+// in each query's WHERE; dropping it would silently reopen the leak.
+// ---------------------------------------------------------------------------
+
+describe("effective public-profile gating", () => {
+  it("discoverableAuthorCondition requires effective entitlement", () => {
+    expect(discoverableAuthorCondition()).toEqual(
+      and(
+        isNull(users.deletedAt),
+        eq(userPreferences.publicProfile, true),
+        eq(userPreferences.showOnExplore, true),
+        entitledToPublicProfileCondition(),
+      ),
+    );
+  });
+
+  it("fetchFeaturedTrips gates on effective entitlement", async () => {
+    const chain = buildSelectChain([]);
+
+    await fetchFeaturedTrips(chain as unknown as Database);
+
+    expect(chain.where).toHaveBeenCalledWith(
+      and(
+        eq(trips.visibility, VISIBILITY.PUBLIC),
+        eq(userPreferences.publicProfile, true),
+        eq(userPreferences.showOnExplore, true),
+        isNull(users.deletedAt),
+        entitledToPublicProfileCondition(),
+      ),
+    );
+  });
+
+  it("fetchTrendingPlaces gates on effective entitlement", async () => {
+    const chain = buildSelectChain([]);
+
+    await fetchTrendingPlaces(chain as unknown as Database, null);
+
+    expect(chain.where).toHaveBeenCalledWith(
+      and(
+        eq(userPreferences.publicProfile, true),
+        eq(userPreferences.showOnExplore, true),
+        isNull(users.deletedAt),
+        entitledToPublicProfileCondition(),
+      ),
+    );
+  });
+
+  it("fetchGuides gates on effective entitlement", async () => {
+    const chain = buildSelectChain([]);
+
+    await fetchGuides(chain as unknown as Database);
+
+    expect(chain.where).toHaveBeenCalledWith(
+      and(
+        eq(guides.visibility, VISIBILITY.PUBLIC),
+        discoverableAuthorCondition(),
+      ),
+    );
+  });
+
+  it("fetchSuggestedPeople gates on effective entitlement", async () => {
+    const capturedWhere = vi.fn().mockReturnValue({
+      orderBy: vi
+        .fn()
+        .mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+    });
+    let callCount = 0;
+    const from = vi.fn().mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return { where: vi.fn().mockResolvedValue([{ followeeId: "user-2" }]) };
+      }
+      return { innerJoin: vi.fn().mockReturnValue({ where: capturedWhere }) };
+    });
+    const database = {
+      select: vi.fn().mockReturnValue({ from }),
+    } as unknown as Database;
+
+    await fetchSuggestedPeople(database, "user-1");
+
+    expect(capturedWhere).toHaveBeenCalledWith(
+      and(
+        eq(userPreferences.publicProfile, true),
+        eq(userPreferences.showOnExplore, true),
+        isNull(users.deletedAt),
+        entitledToPublicProfileCondition(),
+        notInArray(users.id, ["user-2", "user-1"]),
+      ),
+    );
   });
 });

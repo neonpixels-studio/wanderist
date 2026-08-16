@@ -17,6 +17,7 @@ import {
   guides,
   VISIBILITY,
 } from "../db/schema";
+import { entitledToPublicProfileCondition } from "./publicVisibility";
 
 export type Database = ReturnType<typeof getDb>;
 
@@ -28,12 +29,17 @@ export type Database = ReturnType<typeof getDb>;
  * explore — a guide must never stay readable by id after its author fails this.
  * Callers `and()` it with their own table-specific conditions (e.g. the
  * relevant `visibility = public`).
+ *
+ * `publicProfile` is the stored opt-in; entitledToPublicProfileCondition adds
+ * the *effective* check so a lapsed/paused subscriber whose opt-in still reads
+ * true is not surfaced.
  */
 export function discoverableAuthorCondition() {
   return and(
     isNull(users.deletedAt),
     eq(userPreferences.publicProfile, true),
     eq(userPreferences.showOnExplore, true),
+    entitledToPublicProfileCondition(),
   );
 }
 
@@ -109,6 +115,7 @@ export async function fetchFeaturedTrips(
         eq(userPreferences.publicProfile, true),
         eq(userPreferences.showOnExplore, true),
         isNull(users.deletedAt),
+        entitledToPublicProfileCondition(),
       ),
     )
     .orderBy(desc(trips.createdAt))
@@ -144,6 +151,7 @@ export async function fetchTrendingPlaces(
     eq(userPreferences.publicProfile, true),
     eq(userPreferences.showOnExplore, true),
     isNull(users.deletedAt),
+    entitledToPublicProfileCondition(),
   );
 
   const filterCondition = category
@@ -231,6 +239,7 @@ export async function fetchSuggestedPeople(
     eq(userPreferences.publicProfile, true),
     eq(userPreferences.showOnExplore, true),
     isNull(users.deletedAt),
+    entitledToPublicProfileCondition(),
     notInArray(users.id, [...followedIds, currentUserId]),
   );
 

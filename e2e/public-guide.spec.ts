@@ -52,6 +52,13 @@ test.describe("anonymous public-guide view", () => {
     await sql`INSERT INTO user_preferences (user_id, public_profile, show_on_explore)
       VALUES (${OWNER_ID}, true, true)
       ON CONFLICT (user_id) DO UPDATE SET public_profile = true, show_on_explore = true`;
+    // The public read paths also require *effective* entitlement: the public
+    // traveler profile is a Nomad-tier feature, so the author needs an active
+    // Nomad subscription for the opt-in above to actually surface them. Without
+    // this the anonymous read path would (correctly) 404 the guide.
+    await sql`INSERT INTO subscriptions (user_id, plan, status)
+      VALUES (${OWNER_ID}, 'nomad', 'active')
+      ON CONFLICT (user_id) DO UPDATE SET plan = 'nomad', status = 'active'`;
     // RETURNING + assertions so a no-op insert (id collision, missing default)
     // fails here with an accurate cause rather than later at a page assertion.
     const publicRows =
