@@ -7,12 +7,14 @@
  * public, while active/trialing subscribers on the public tier are.
  */
 import { describe, it, expect } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { PLAN, SUBSCRIPTION_STATUS } from "../../server/db/schema";
 import { mapStripeSubscriptionStatus } from "../../server/utils/subscriptions";
 import type { Stripe } from "stripe";
 import {
   PUBLIC_PROFILE_PLANS,
   subscriptionEntitlesPublicProfile,
+  entitledToPublicProfileCondition,
 } from "../../server/utils/publicVisibility";
 
 describe("PUBLIC_PROFILE_PLANS", () => {
@@ -22,6 +24,32 @@ describe("PUBLIC_PROFILE_PLANS", () => {
     expect(PUBLIC_PROFILE_PLANS).toContain(PLAN.NOMAD);
     expect(PUBLIC_PROFILE_PLANS).not.toContain(PLAN.WANDERER);
     expect(PUBLIC_PROFILE_PLANS).not.toContain(PLAN.DRIFTER);
+  });
+});
+
+describe("entitledToPublicProfileCondition (rendered SQL)", () => {
+  // The other read-path tests compare this predicate against itself, so they
+  // only catch it being *removed* — not being wrong. Render the real SQL so a
+  // broken correlation (wrong column) or a loosened status/plan filter fails
+  // here, where the leak would actually reopen.
+  const rendered = new PgDialect().sqlToQuery(
+    entitledToPublicProfileCondition(),
+  );
+
+  it("correlates the subscription to the profile owner", () => {
+    expect(rendered.sql).toContain('"subscriptions"."user_id"');
+    expect(rendered.sql).toContain('"user_preferences"."user_id"');
+  });
+
+  it("requires an active subscription on a public tier", () => {
+    expect(rendered.sql).toContain('"subscriptions"."status"');
+    expect(rendered.sql).toContain('"subscriptions"."plan"');
+    // Bound params: ACTIVE status, then the public-tier plan(s). A change that
+    // dropped the status filter or widened the plan set would shift these.
+    expect(rendered.params).toEqual([
+      SUBSCRIPTION_STATUS.ACTIVE,
+      ...PUBLIC_PROFILE_PLANS,
+    ]);
   });
 });
 

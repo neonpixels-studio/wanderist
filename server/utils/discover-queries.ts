@@ -112,10 +112,7 @@ export async function fetchFeaturedTrips(
     .where(
       and(
         eq(trips.visibility, VISIBILITY.PUBLIC),
-        eq(userPreferences.publicProfile, true),
-        eq(userPreferences.showOnExplore, true),
-        isNull(users.deletedAt),
-        entitledToPublicProfileCondition(),
+        discoverableAuthorCondition(),
       ),
     )
     .orderBy(desc(trips.createdAt))
@@ -147,12 +144,7 @@ export async function fetchTrendingPlaces(
 
   const recentSaveCountExpr = sql<number>`COUNT(CASE WHEN ${places.createdAt} >= ${windowStart.toISOString()} THEN 1 END)`;
 
-  const baseConditions = and(
-    eq(userPreferences.publicProfile, true),
-    eq(userPreferences.showOnExplore, true),
-    isNull(users.deletedAt),
-    entitledToPublicProfileCondition(),
-  );
+  const baseConditions = discoverableAuthorCondition();
 
   const filterCondition = category
     ? and(baseConditions, eq(places.category, category))
@@ -236,10 +228,7 @@ export async function fetchSuggestedPeople(
   )`;
 
   const notFollowedAndNotSelf = and(
-    eq(userPreferences.publicProfile, true),
-    eq(userPreferences.showOnExplore, true),
-    isNull(users.deletedAt),
-    entitledToPublicProfileCondition(),
+    discoverableAuthorCondition(),
     notInArray(users.id, [...followedIds, currentUserId]),
   );
 

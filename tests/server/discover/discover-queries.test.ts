@@ -17,7 +17,6 @@ import type { Database } from "../../../server/utils/discover-queries";
 import { entitledToPublicProfileCondition } from "../../../server/utils/publicVisibility";
 import {
   trips,
-  places,
   users,
   userPreferences,
   guides,
@@ -347,10 +346,7 @@ describe("effective public-profile gating", () => {
     expect(chain.where).toHaveBeenCalledWith(
       and(
         eq(trips.visibility, VISIBILITY.PUBLIC),
-        eq(userPreferences.publicProfile, true),
-        eq(userPreferences.showOnExplore, true),
-        isNull(users.deletedAt),
-        entitledToPublicProfileCondition(),
+        discoverableAuthorCondition(),
       ),
     );
   });
@@ -360,14 +356,7 @@ describe("effective public-profile gating", () => {
 
     await fetchTrendingPlaces(chain as unknown as Database, null);
 
-    expect(chain.where).toHaveBeenCalledWith(
-      and(
-        eq(userPreferences.publicProfile, true),
-        eq(userPreferences.showOnExplore, true),
-        isNull(users.deletedAt),
-        entitledToPublicProfileCondition(),
-      ),
-    );
+    expect(chain.where).toHaveBeenCalledWith(discoverableAuthorCondition());
   });
 
   it("fetchGuides gates on effective entitlement", async () => {
@@ -405,10 +394,7 @@ describe("effective public-profile gating", () => {
 
     expect(capturedWhere).toHaveBeenCalledWith(
       and(
-        eq(userPreferences.publicProfile, true),
-        eq(userPreferences.showOnExplore, true),
-        isNull(users.deletedAt),
-        entitledToPublicProfileCondition(),
+        discoverableAuthorCondition(),
         notInArray(users.id, ["user-2", "user-1"]),
       ),
     );

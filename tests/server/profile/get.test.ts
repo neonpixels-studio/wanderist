@@ -33,6 +33,7 @@ function profileRow(overrides: Record<string, unknown> = {}) {
     homeBase: "Reykjavik",
     bio: null,
     publicProfile: true,
+    effectivelyPublic: true,
     followerCount: 3,
     followingCount: 2,
     placeCount: 9,
@@ -63,7 +64,7 @@ describe("GET /api/users/[id]", () => {
   it("marks the profile as self when the viewer owns it", async () => {
     mockRequireUser.mockReturnValue("target-1");
     mockRequireViewableProfile.mockResolvedValue(
-      profileRow({ publicProfile: false }),
+      profileRow({ publicProfile: false, effectivelyPublic: false }),
     );
 
     const result = await callHandler();

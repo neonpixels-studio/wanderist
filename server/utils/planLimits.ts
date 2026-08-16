@@ -227,9 +227,12 @@ export async function assertPublicProfileAllowed(
  * The public read paths (profile, followers, discover, search) now also gate on
  * effective entitlement (see server/utils/publicVisibility.ts), so a stale
  * `true` on a lapsed/paused/downgraded plan no longer leaks discoverability on
- * its own. Clearing the flag here is still worthwhile: it keeps the stored
- * preference honest (settings shows the real state) and it is the terminal
- * cleanup when a user drops off the public-profile tier for good.
+ * its own. Clearing the flag here is the terminal cleanup when a user drops off
+ * the public-profile tier for good (cancellation/downgrade). Note it does NOT
+ * fire for the recoverable past_due/paused window (revokePublicProfileOnDowngrade
+ * returns early on any non-ACTIVE status): there the opt-in stays stored while
+ * reads are gated, so settings still shows the toggle on. Surfacing that gated
+ * state in the UI is a separate follow-up.
  *
  * Scoped to the one user AND to rows that actually carry the flag: Stripe fires
  * subscription.updated on renewals, card updates, and proration, so an
