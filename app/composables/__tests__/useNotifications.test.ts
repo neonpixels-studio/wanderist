@@ -3,9 +3,16 @@ import * as vue from "vue";
 
 const mockApiFetch = vi.fn();
 
-vi.stubGlobal("useState", <T>(_key: string, init?: () => T) =>
-  vue.ref(init?.()),
-);
+// Back useState with a keyed cache (cleared per test) so two useNotifications()
+// instances share state by key, the way Nuxt's real useState does — otherwise
+// the "one shared list" contract would be untestable and pass on any code.
+const stateStore = new Map<string, unknown>();
+vi.stubGlobal("useState", <T>(key: string, init?: () => T) => {
+  if (!stateStore.has(key)) {
+    stateStore.set(key, vue.ref(init?.()));
+  }
+  return stateStore.get(key);
+});
 
 vi.mock("~/composables/useApiClient", () => ({
   useApiClient: vi.fn(() => ({ apiFetch: mockApiFetch })),
@@ -25,6 +32,7 @@ const { useNotifications } = await import("../useNotifications");
 describe("useNotifications", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    stateStore.clear();
   });
 
   it("initializes notifications as an empty array", () => {
@@ -289,7 +297,18 @@ describe("useNotifications", () => {
     expect(notifications.value).toHaveLength(1);
   });
 
-  it("fetchAllNotifications sets error and leaves the list empty when a page request fails", async () => {
+  it("fetchAllNotifications sets error and does not commit a partial list when a page fails mid-walk", async () => {
+    // Seed a known list first, then fail on the second page of a fresh walk.
+    mockApiFetch.mockResolvedValueOnce({
+      notifications: [makeSample("seed")],
+      page: 1,
+      hasMore: false,
+    });
+    const { notifications, error, fetchNotifications, fetchAllNotifications } =
+      useNotifications();
+    await fetchNotifications();
+    expect(notifications.value.map((item) => item.id)).toEqual(["seed"]);
+
     mockApiFetch
       .mockResolvedValueOnce({
         notifications: [makeSample("n-1")],
@@ -297,12 +316,53 @@ describe("useNotifications", () => {
         hasMore: true,
       })
       .mockRejectedValueOnce(new Error("Network error"));
-
-    const { notifications, error, fetchAllNotifications } = useNotifications();
     await fetchAllNotifications();
 
+    // The failed walk surfaces the error and leaves the previous list intact
+    // rather than committing the single page it managed to fetch.
     expect(error.value).toBeTruthy();
-    expect(notifications.value).toEqual([]);
+    expect(notifications.value.map((item) => item.id)).toEqual(["seed"]);
+  });
+
+  it("fetchAllNotifications dedupes a row re-served across pages by a mid-walk insert", async () => {
+    mockApiFetch
+      .mockResolvedValueOnce({
+        notifications: [makeSample("n-1"), makeSample("n-2")],
+        page: 1,
+        hasMore: true,
+      })
+      // n-2 shifted onto page 2 because a newer notification arrived; it must
+      // not appear twice.
+      .mockResolvedValueOnce({
+        notifications: [makeSample("n-2"), makeSample("n-3")],
+        page: 2,
+        hasMore: false,
+      });
+
+    const { notifications, fetchAllNotifications } = useNotifications();
+    await fetchAllNotifications();
+
+    expect(notifications.value.map((item) => item.id)).toEqual([
+      "n-1",
+      "n-2",
+      "n-3",
+    ]);
+  });
+
+  it("shares one list across instances (drawer + activity see the same store)", async () => {
+    mockApiFetch.mockResolvedValue({
+      notifications: [makeSample("shared-1")],
+      page: 1,
+      hasMore: false,
+    });
+
+    const activity = useNotifications();
+    const drawer = useNotifications();
+    await activity.fetchAllNotifications();
+
+    expect(drawer.notifications.value.map((item) => item.id)).toEqual([
+      "shared-1",
+    ]);
   });
 
   it("fetchAllNotifications fails loud instead of looping forever when hasMore never clears", async () => {

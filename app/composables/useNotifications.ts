@@ -47,6 +47,30 @@ function isNotificationsResponse(
   );
 }
 
+// Appends only notifications whose id hasn't been seen yet. Offset pagination
+// over a top-inserted feed can re-serve a boundary row on the next page when a
+// notification arrives mid-walk; deduping keeps `:key="id"` unique so the list
+// renders (and unread-counts) correctly.
+function appendUnseen(
+  collected: AppNotification[],
+  seenIds: Set<string>,
+  rows: AppNotification[],
+): void {
+  for (const notification of rows) {
+    if (seenIds.has(notification.id)) {
+      continue;
+    }
+    seenIds.add(notification.id);
+    collected.push(notification);
+  }
+}
+
+// Monotonic across every useNotifications() instance (module scope), so a
+// slower fetch that started earlier can't overwrite the shared list a newer
+// fetch already committed — e.g. the drawer's page-1 request resolving after
+// the /activity full walk it was fired alongside.
+let latestFetchId = 0;
+
 // `notifications` is one shared store (keyed by NOTIFICATIONS_STATE_KEY) so the
 // header drawer and the /activity page agree on the list and its unread count.
 // The server paginates GET /api/notifications to keep each query bounded; the
@@ -85,6 +109,7 @@ export function useNotifications() {
 
   async function fetchAllNotificationPages(): Promise<AppNotification[]> {
     const collected: AppNotification[] = [];
+    const seenIds = new Set<string>();
     let page = FIRST_PAGE;
     let hasMore = true;
 
@@ -97,7 +122,7 @@ export function useNotifications() {
         );
       }
       const response = await fetchNotificationsPage(page);
-      collected.push(...response.notifications);
+      appendUnseen(collected, seenIds, response.notifications);
       hasMore = response.hasMore;
       page += 1;
     }
@@ -108,10 +133,15 @@ export function useNotifications() {
   async function runFetch(
     load: () => Promise<AppNotification[]>,
   ): Promise<void> {
+    const fetchId = ++latestFetchId;
     isLoading.value = true;
     error.value = null;
     try {
-      notifications.value = await load();
+      const loaded = await load();
+      // Only commit to the shared list if no newer fetch superseded this one.
+      if (fetchId === latestFetchId) {
+        notifications.value = loaded;
+      }
     } catch (fetchError: unknown) {
       error.value = extractErrorMessage(fetchError);
     } finally {

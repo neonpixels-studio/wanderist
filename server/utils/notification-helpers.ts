@@ -138,10 +138,12 @@ export async function fetchNotificationsForUser(
       eq(notifications.actorId, userPreferences.userId),
     )
     .where(eq(notifications.userId, userId))
-    // `id` is a unique secondary sort key purely to break ties within a single
-    // query when multiple notifications share a createdAt — without it, which
-    // of the tied rows lands on which side of a page boundary is unspecified,
-    // so a paginated walk could repeat or skip a row across pages.
+    // `id` is a unique secondary sort key purely to break ties *within a
+    // single query* when multiple notifications share a createdAt, so row
+    // order is deterministic. It does not stabilise order across separate
+    // paginated requests: a notification inserted between two page fetches
+    // still shifts later rows, so the client walk dedupes by id (see
+    // appendUnseen in useNotifications).
     .orderBy(desc(notifications.createdAt), desc(notifications.id))
     .limit(limit)
     .offset(offset);
