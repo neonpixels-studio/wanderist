@@ -62,7 +62,7 @@ function makeDb(options: { deletedRows?: SelectRows; mediaRows?: SelectRows }) {
   });
 
   const database = { select, delete: deleteFrom };
-  return { database, deleteFrom, deleteWhere, deleteReturning };
+  return { database, deleteFrom, deleteWhere };
 }
 
 describe("deleteMediaIfUnreferenced", () => {
@@ -114,12 +114,15 @@ describe("deleteMediaIfUnreferenced", () => {
   // delete can be cascaded away. Compiling the predicate the delete ran with
   // proves both referencing tables are guarded in the one statement.
   it("guards the delete with NOT EXISTS against every referencing table in a single statement", async () => {
-    const { database, deleteWhere } = makeDb({
+    const { database, deleteFrom, deleteWhere } = makeDb({
       deletedRows: [{ url: MEDIA_URL }],
     });
 
     await deleteMediaIfUnreferenced(database as never, OWNER_ID, MEDIA_ID);
 
+    // A single delete against media, guarded in its own WHERE — not a separate
+    // check followed by an unguarded delete.
+    expect(deleteFrom).toHaveBeenCalledWith(media);
     expect(deleteWhere).toHaveBeenCalledTimes(1);
     const deletePredicate = deleteWhere.mock.calls[0][0];
     const { sql, params } = new PgDialect().sqlToQuery(
@@ -128,7 +131,10 @@ describe("deleteMediaIfUnreferenced", () => {
 
     // Pin the whole compiled predicate, not fragments: substring checks would
     // survive an `and`→`or`, a `not exists`→`exists`, or a wrong-column binding.
-    expect(sql).toBe(
+    // Collapse incidental whitespace so a drizzle formatting change on a
+    // dependency bump doesn't red this without any behavioural change.
+    const normalized = sql.replace(/\s+/g, " ").trim();
+    expect(normalized).toBe(
       '("media"."id" = $1 and "media"."user_id" = $2 ' +
         'and not exists (select 1 from "trips" where "trips"."cover_image_id" = $3) ' +
         'and not exists (select 1 from "entry_photos" where "entry_photos"."media_id" = $4))',

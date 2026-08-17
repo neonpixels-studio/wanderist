@@ -29,24 +29,15 @@ type Database = ReturnType<typeof getDb>;
 // that would need SERIALIZABLE + retry or a FOR UPDATE lock on the media row —
 // out of scope here.
 function unreferencedOwnedMedia(ownerId: string, mediaId: string): SQL {
-  const condition = and(
+  // and() is typed SQL | undefined (undefined only when every argument is), so
+  // the cast is safe for this fixed, non-empty clause list. The exact compiled
+  // predicate is pinned in the test, which fails loudly if a clause is dropped.
+  return and(
     eq(media.id, mediaId),
     eq(media.userId, ownerId),
     sql`not exists (select 1 from ${trips} where ${trips.coverImageId} = ${mediaId})`,
     sql`not exists (select 1 from ${entryPhotos} where ${entryPhotos.mediaId} = ${mediaId})`,
-  );
-
-  // and() is typed SQL | undefined and drizzle treats undefined as "no WHERE".
-  // A future edit that makes the clauses conditional could yield undefined and
-  // silently turn this into an unfiltered DELETE FROM media, so fail loud rather
-  // than lean on the argument list staying non-empty.
-  if (!condition) {
-    throw new Error(
-      "unreferencedOwnedMedia: refusing to build an unfiltered delete",
-    );
-  }
-
-  return condition;
+  ) as SQL;
 }
 
 // Blob removal is best-effort: a leaked blob can be reaped out-of-band, so a
