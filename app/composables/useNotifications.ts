@@ -27,18 +27,32 @@ interface NotificationsResponse {
 }
 
 const NOTIFICATIONS_STATE_KEY = "notifications:list";
-const NOTIFICATIONS_PAGE_KEY = "notifications:page";
-const NOTIFICATIONS_HAS_MORE_KEY = "notifications:hasMore";
-const NOTIFICATIONS_LOADING_KEY = "notifications:loading";
-const NOTIFICATIONS_ERROR_KEY = "notifications:error";
 
 const FIRST_PAGE = 1;
 
-// The list, its pagination cursor, and its request status are one shared store
-// keyed by NOTIFICATIONS_* so the header drawer and the /activity page never
-// hold divergent copies (e.g. one paginated to page 3, the other reset to
-// page 1). Keeping only some of these shared would let the two views clobber
-// each other's state.
+// Safety net against an infinite walk if the API ever reports `hasMore: true`
+// forever (e.g. a server bug). At PAGE_SIZE 50 this caps a full walk at 10k
+// notifications — far beyond any real inbox, so hitting it always signals a
+// bug, not a genuine result set. Mirrors the trips store's MAX_TRIPS_PAGES.
+const MAX_NOTIFICATION_PAGES = 200;
+
+function isNotificationsResponse(
+  value: unknown,
+): value is NotificationsResponse {
+  const candidate = value as Partial<NotificationsResponse> | null;
+  return (
+    !!candidate &&
+    Array.isArray(candidate.notifications) &&
+    typeof candidate.hasMore === "boolean"
+  );
+}
+
+// `notifications` is one shared store (keyed by NOTIFICATIONS_STATE_KEY) so the
+// header drawer and the /activity page agree on the list and its unread count.
+// The server paginates GET /api/notifications to keep each query bounded; the
+// drawer fetches only the first page (a fast preview) while /activity walks
+// every page so older notifications stay reachable — the same
+// paginate-server / assemble-client split the trips store uses.
 export function useNotifications() {
   const { apiFetch } = useApiClient();
 
@@ -46,64 +60,77 @@ export function useNotifications() {
     NOTIFICATIONS_STATE_KEY,
     () => [],
   );
-  const page = useState<number>(NOTIFICATIONS_PAGE_KEY, () => FIRST_PAGE);
-  const hasMore = useState<boolean>(NOTIFICATIONS_HAS_MORE_KEY, () => false);
-  const isLoading = useState<boolean>(NOTIFICATIONS_LOADING_KEY, () => false);
-  const error = useState<string | null>(NOTIFICATIONS_ERROR_KEY, () => null);
+  const isLoading = ref(false);
+  const error = ref<string | null>(null);
 
   const unreadCount = computed(
     () =>
       notifications.value.filter((notification) => !notification.isRead).length,
   );
 
-  async function fetchPage(
-    nextPage: number,
-  ): Promise<NotificationsResponse | null> {
+  async function fetchNotificationsPage(
+    page: number,
+  ): Promise<NotificationsResponse> {
+    const response = await apiFetch<NotificationsResponse>(
+      "/api/notifications",
+      { query: { page } },
+    );
+    if (!isNotificationsResponse(response)) {
+      throw new Error(
+        "Malformed /api/notifications response: expected { notifications, hasMore }",
+      );
+    }
+    return response;
+  }
+
+  async function fetchAllNotificationPages(): Promise<AppNotification[]> {
+    const collected: AppNotification[] = [];
+    let page = FIRST_PAGE;
+    let hasMore = true;
+
+    while (hasMore) {
+      if (page > MAX_NOTIFICATION_PAGES) {
+        // Fail loud rather than silently returning a truncated list dressed
+        // up as the full one — the caller surfaces this via `error`.
+        throw new Error(
+          `fetchAllNotifications exceeded ${MAX_NOTIFICATION_PAGES} pages — the API kept reporting hasMore: true`,
+        );
+      }
+      const response = await fetchNotificationsPage(page);
+      collected.push(...response.notifications);
+      hasMore = response.hasMore;
+      page += 1;
+    }
+
+    return collected;
+  }
+
+  async function runFetch(
+    load: () => Promise<AppNotification[]>,
+  ): Promise<void> {
     isLoading.value = true;
     error.value = null;
     try {
-      return await apiFetch<NotificationsResponse>("/api/notifications", {
-        query: { page: nextPage },
-      });
+      notifications.value = await load();
     } catch (fetchError: unknown) {
       error.value = extractErrorMessage(fetchError);
-      return null;
     } finally {
       isLoading.value = false;
     }
   }
 
+  // First page only — the drawer's fast preview. Older notifications live on
+  // later pages and are reached via fetchAllNotifications on /activity.
   async function fetchNotifications(): Promise<void> {
-    const response = await fetchPage(FIRST_PAGE);
-    if (!response) {
-      return;
-    }
-    notifications.value = response.notifications ?? [];
-    page.value = response.page ?? FIRST_PAGE;
-    hasMore.value = response.hasMore ?? false;
+    await runFetch(async () => {
+      const response = await fetchNotificationsPage(FIRST_PAGE);
+      return response.notifications;
+    });
   }
 
-  async function loadMore(): Promise<void> {
-    if (!hasMore.value || isLoading.value) {
-      return;
-    }
-    const requestedPage = page.value + 1;
-    const response = await fetchPage(requestedPage);
-    if (!response) {
-      return;
-    }
-    // Bail if another consumer reset the list (e.g. the drawer re-fetched
-    // page 1) while this request was in flight — appending page N onto a
-    // now-shorter list would create a gap and strand the intervening pages.
-    if (page.value !== requestedPage - 1) {
-      return;
-    }
-    notifications.value = [
-      ...notifications.value,
-      ...(response.notifications ?? []),
-    ];
-    page.value = response.page ?? requestedPage;
-    hasMore.value = response.hasMore ?? false;
+  // Every page — the /activity view, so nothing older than page 1 is stranded.
+  async function fetchAllNotifications(): Promise<void> {
+    await runFetch(fetchAllNotificationPages);
   }
 
   async function markAllRead(): Promise<void> {
@@ -135,12 +162,11 @@ export function useNotifications() {
 
   return {
     notifications,
-    hasMore: readonly(hasMore),
     isLoading: readonly(isLoading),
     error: readonly(error),
     unreadCount,
     fetchNotifications,
-    loadMore,
+    fetchAllNotifications,
     markAllRead,
     markRead,
   };

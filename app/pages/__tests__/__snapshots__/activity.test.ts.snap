@@ -16,6 +16,5 @@ exports[`Activity page (/activity) > renders without crashing and matches snapsh
       <!--v-if-->
     </div>
   </div>
-  <!--v-if-->
 </div>"
 `;

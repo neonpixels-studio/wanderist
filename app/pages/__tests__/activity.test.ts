@@ -2,18 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ref } from "vue";
 import { mount } from "@vue/test-utils";
 import ActivityPage from "../activity.vue";
-import AppLoadMoreButton from "../../components/AppLoadMoreButton.vue";
-import { pageGlobalConfig } from "./test-utils";
+import { pageGlobalConfig as globalConfig } from "./test-utils";
 import type { AppNotification } from "~/composables/useNotifications";
-
-// Render the real AppLoadMoreButton (not a stub) so its visibility and click
-// wiring are exercised through the page.
-const globalConfig = {
-  global: {
-    ...pageGlobalConfig.global,
-    components: { AppLoadMoreButton },
-  },
-};
 
 // Mutable refs allow per-test overrides without re-stubbing the global.
 // The component calls useNotifications() as a Nuxt auto-import global,
@@ -21,18 +11,14 @@ const globalConfig = {
 const notificationsRef = ref<AppNotification[]>([]);
 const isLoadingRef = ref(false);
 const errorRef = ref<string | null>(null);
-const hasMoreRef = ref(false);
-const mockFetchNotifications = vi.fn().mockResolvedValue(undefined);
-const mockLoadMore = vi.fn().mockResolvedValue(undefined);
+const mockFetchAllNotifications = vi.fn().mockResolvedValue(undefined);
 
 vi.stubGlobal("useNotifications", () => ({
   notifications: notificationsRef,
-  hasMore: hasMoreRef,
   isLoading: isLoadingRef,
   error: errorRef,
   unreadCount: 0,
-  fetchNotifications: mockFetchNotifications,
-  loadMore: mockLoadMore,
+  fetchAllNotifications: mockFetchAllNotifications,
   markAllRead: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -60,11 +46,10 @@ const SAMPLE_NOTIFICATIONS: AppNotification[] = [
 describe("Activity page (/activity)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockFetchNotifications.mockResolvedValue(undefined);
+    mockFetchAllNotifications.mockResolvedValue(undefined);
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
-    hasMoreRef.value = false;
   });
 
   it("renders without crashing and matches snapshot", () => {
@@ -78,20 +63,9 @@ describe("Activity page (/activity)", () => {
     expect(wrapper.findAll(".activity__item")).toHaveLength(2);
   });
 
-  it("hides the load-more button when there are no further pages", () => {
-    hasMoreRef.value = false;
-    const wrapper = mount(ActivityPage, globalConfig);
-    expect(wrapper.find(".load-more").exists()).toBe(false);
-  });
-
-  it("shows the load-more button and calls loadMore on click when more pages exist", async () => {
-    hasMoreRef.value = true;
-    const wrapper = mount(ActivityPage, globalConfig);
-    const button = wrapper.find(".load-more");
-    expect(button.exists()).toBe(true);
-
-    await button.trigger("click");
-    expect(mockLoadMore).toHaveBeenCalledTimes(1);
+  it("walks every notification page on mount so older ones are reachable", () => {
+    mount(ActivityPage, globalConfig);
+    expect(mockFetchAllNotifications).toHaveBeenCalledTimes(1);
   });
 
   it("renders notification body text", () => {
@@ -141,7 +115,7 @@ describe("Activity page (/activity)", () => {
     expect(wrapper.find(".activity__state").text()).toContain("Loading");
   });
 
-  it("shows error state when error is set and no notifications are loaded", () => {
+  it("shows error state when error is set", () => {
     notificationsRef.value = [];
     errorRef.value = "Could not load notifications";
 
@@ -150,16 +124,6 @@ describe("Activity page (/activity)", () => {
     expect(wrapper.find('[role="alert"]').text()).toContain(
       "Could not load notifications",
     );
-  });
-
-  it("keeps the loaded list visible when an error occurs after rows are already shown", () => {
-    // A failed "load more" sets error while rows are on screen; the list must
-    // not be blanked out for one bad follow-up request.
-    errorRef.value = "Could not load more";
-
-    const wrapper = mount(ActivityPage, globalConfig);
-    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
-    expect(wrapper.findAll(".activity__item")).toHaveLength(2);
   });
 
   it("shows empty state when there are no notifications", () => {

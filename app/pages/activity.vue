@@ -7,11 +7,11 @@
     </div>
 
     <div
-      v-else-if="blockingError"
+      v-else-if="error"
       class="activity__state activity__state--error"
       role="alert"
     >
-      {{ blockingError }}
+      {{ error }}
     </div>
 
     <template v-else>
@@ -46,12 +46,6 @@
           <span v-if="!notification.isRead" class="activity__dot" />
         </div>
       </div>
-
-      <AppLoadMoreButton
-        :has-more="hasMore"
-        :loading="isLoading"
-        @load="loadMore"
-      />
     </template>
   </div>
 </template>
@@ -66,25 +60,14 @@ import {
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Activity" });
 
-const {
-  notifications,
-  hasMore,
-  isLoading,
-  error,
-  fetchNotifications,
-  loadMore,
-} = useNotifications();
-
-// Only the whole-page error state should replace already-loaded rows. A
-// failed "load more" (list already populated) leaves the list on screen and
-// keeps the retry button, rather than blanking everything for one bad request.
-const blockingError = computed(() =>
-  notifications.value.length === 0 ? error.value : null,
-);
+// /activity walks every page (fetchAllNotifications) so notifications older
+// than the drawer's first-page preview are reachable here.
+const { notifications, isLoading, error, fetchAllNotifications } =
+  useNotifications();
 
 onMounted(() => {
-  fetchNotifications().catch((fetchError: unknown) => {
-    console.error("[activity] fetchNotifications failed", fetchError);
+  fetchAllNotifications().catch((fetchError: unknown) => {
+    console.error("[activity] fetchAllNotifications failed", fetchError);
   });
 });
 </script>

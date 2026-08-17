@@ -43,7 +43,11 @@ describe("useNotifications", () => {
         createdAt: "2024-06-01T10:00:00Z",
       },
     ];
-    mockApiFetch.mockResolvedValue({ notifications: sampleNotifications });
+    mockApiFetch.mockResolvedValue({
+      notifications: sampleNotifications,
+      page: 1,
+      hasMore: false,
+    });
 
     const { notifications, fetchNotifications } = useNotifications();
     await fetchNotifications();
@@ -66,7 +70,11 @@ describe("useNotifications", () => {
     await fetchNotifications();
     expect(error.value).toBeTruthy();
 
-    mockApiFetch.mockResolvedValue({ notifications: [] });
+    mockApiFetch.mockResolvedValue({
+      notifications: [],
+      page: 1,
+      hasMore: false,
+    });
     await fetchNotifications();
     expect(error.value).toBeNull();
   });
@@ -99,6 +107,8 @@ describe("useNotifications", () => {
           createdAt: "2024-06-01T08:00:00Z",
         },
       ],
+      page: 1,
+      hasMore: false,
     });
 
     const { unreadCount, fetchNotifications } = useNotifications();
@@ -128,6 +138,8 @@ describe("useNotifications", () => {
             createdAt: "2024-06-01T09:00:00Z",
           },
         ],
+        page: 1,
+        hasMore: false,
       })
       .mockResolvedValueOnce({ ok: true });
 
@@ -175,6 +187,8 @@ describe("useNotifications", () => {
             createdAt: "2024-06-01T09:00:00Z",
           },
         ],
+        page: 1,
+        hasMore: false,
       })
       .mockResolvedValueOnce({ ok: true });
 
@@ -210,129 +224,117 @@ describe("useNotifications", () => {
     expect(isLoading.value).toBe(false);
   });
 
-  it("fetchNotifications requests page 1 and records hasMore from the envelope", async () => {
+  it("fetchNotifications requests only the first page (the drawer's fast preview)", async () => {
     mockApiFetch.mockResolvedValue({
-      notifications: [
-        {
-          id: "n-1",
-          type: "like",
-          tone: "accent",
-          body: "Liked",
-          isRead: false,
-          createdAt: "2024-06-01T10:00:00Z",
-        },
-      ],
+      notifications: [makeSample("n-1")],
       page: 1,
       hasMore: true,
     });
 
-    const { hasMore, fetchNotifications } = useNotifications();
+    const { notifications, fetchNotifications } = useNotifications();
     await fetchNotifications();
 
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
     expect(mockApiFetch).toHaveBeenCalledWith("/api/notifications", {
       query: { page: 1 },
     });
-    expect(hasMore.value).toBe(true);
+    expect(notifications.value.map((notification) => notification.id)).toEqual([
+      "n-1",
+    ]);
   });
 
-  it("loadMore fetches the next page and appends to the existing list", async () => {
+  it("fetchAllNotifications walks every page and concatenates them until hasMore is false", async () => {
     mockApiFetch
       .mockResolvedValueOnce({
-        notifications: [
-          {
-            id: "n-1",
-            type: "like",
-            tone: "accent",
-            body: "Liked",
-            isRead: false,
-            createdAt: "2024-06-01T10:00:00Z",
-          },
-        ],
+        notifications: [makeSample("n-1")],
         page: 1,
         hasMore: true,
       })
       .mockResolvedValueOnce({
-        notifications: [
-          {
-            id: "n-2",
-            type: "comment",
-            tone: "accent",
-            body: "Comment",
-            isRead: true,
-            createdAt: "2024-06-01T09:00:00Z",
-          },
-        ],
+        notifications: [makeSample("n-2")],
         page: 2,
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        notifications: [makeSample("n-3")],
+        page: 3,
         hasMore: false,
       });
 
-    const { notifications, hasMore, fetchNotifications, loadMore } =
-      useNotifications();
-    await fetchNotifications();
-    await loadMore();
+    const { notifications, fetchAllNotifications } = useNotifications();
+    await fetchAllNotifications();
 
-    expect(mockApiFetch).toHaveBeenNthCalledWith(2, "/api/notifications", {
-      query: { page: 2 },
+    expect(mockApiFetch).toHaveBeenCalledTimes(3);
+    expect(mockApiFetch).toHaveBeenNthCalledWith(3, "/api/notifications", {
+      query: { page: 3 },
     });
     expect(notifications.value.map((notification) => notification.id)).toEqual([
       "n-1",
       "n-2",
+      "n-3",
     ]);
-    expect(hasMore.value).toBe(false);
   });
 
-  it("loadMore preserves the existing list and keeps hasMore true when the request fails", async () => {
+  it("fetchAllNotifications stops after the first page when hasMore is false", async () => {
+    mockApiFetch.mockResolvedValue({
+      notifications: [makeSample("n-1")],
+      page: 1,
+      hasMore: false,
+    });
+
+    const { notifications, fetchAllNotifications } = useNotifications();
+    await fetchAllNotifications();
+
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(notifications.value).toHaveLength(1);
+  });
+
+  it("fetchAllNotifications sets error and leaves the list empty when a page request fails", async () => {
     mockApiFetch
       .mockResolvedValueOnce({
-        notifications: [
-          {
-            id: "n-1",
-            type: "like",
-            tone: "accent",
-            body: "Liked",
-            isRead: false,
-            createdAt: "2024-06-01T10:00:00Z",
-          },
-        ],
+        notifications: [makeSample("n-1")],
         page: 1,
         hasMore: true,
       })
       .mockRejectedValueOnce(new Error("Network error"));
 
-    const { notifications, hasMore, error, fetchNotifications, loadMore } =
-      useNotifications();
-    await fetchNotifications();
-    await loadMore();
+    const { notifications, error, fetchAllNotifications } = useNotifications();
+    await fetchAllNotifications();
 
-    expect(notifications.value.map((notification) => notification.id)).toEqual([
-      "n-1",
-    ]);
-    expect(hasMore.value).toBe(true);
     expect(error.value).toBeTruthy();
+    expect(notifications.value).toEqual([]);
   });
 
-  it("loadMore is a no-op when there is no next page", async () => {
+  it("fetchAllNotifications fails loud instead of looping forever when hasMore never clears", async () => {
     mockApiFetch.mockResolvedValue({
-      notifications: [
-        {
-          id: "n-1",
-          type: "like",
-          tone: "accent",
-          body: "Liked",
-          isRead: false,
-          createdAt: "2024-06-01T10:00:00Z",
-        },
-      ],
+      notifications: [makeSample("n-1")],
       page: 1,
-      hasMore: false,
+      hasMore: true,
     });
 
-    const { fetchNotifications, loadMore } = useNotifications();
+    const { error, fetchAllNotifications } = useNotifications();
+    await fetchAllNotifications();
+
+    expect(error.value).toContain("exceeded");
+  });
+
+  it("fetchNotifications surfaces an error when the response envelope is malformed", async () => {
+    mockApiFetch.mockResolvedValue([makeSample("n-1")]);
+
+    const { error, fetchNotifications } = useNotifications();
     await fetchNotifications();
-    expect(mockApiFetch).toHaveBeenCalledTimes(1);
 
-    await loadMore();
-
-    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+    expect(error.value).toContain("Malformed");
   });
 });
+
+function makeSample(id: string) {
+  return {
+    id,
+    type: "like",
+    tone: "accent",
+    body: "Liked",
+    isRead: false,
+    createdAt: "2024-06-01T10:00:00Z",
+  };
+}
