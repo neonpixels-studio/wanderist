@@ -125,15 +125,15 @@ describe("deleteMediaIfUnreferenced", () => {
     const { sql, params } = new PgDialect().sqlToQuery(
       deletePredicate as never,
     );
-    const normalized = sql.toLowerCase();
 
-    expect(normalized).toContain("not exists");
-    expect(normalized).toContain('"trips"');
-    expect(normalized).toContain('"cover_image_id"');
-    expect(normalized).toContain('"entry_photos"');
-    expect(normalized).toContain('"media_id"');
-    expect(params).toContain(MEDIA_ID);
-    expect(params).toContain(OWNER_ID);
+    // Pin the whole compiled predicate, not fragments: substring checks would
+    // survive an `and`→`or`, a `not exists`→`exists`, or a wrong-column binding.
+    expect(sql).toBe(
+      '("media"."id" = $1 and "media"."user_id" = $2 ' +
+        'and not exists (select 1 from "trips" where "trips"."cover_image_id" = $3) ' +
+        'and not exists (select 1 from "entry_photos" where "entry_photos"."media_id" = $4))',
+    );
+    expect(params).toEqual([MEDIA_ID, OWNER_ID, MEDIA_ID, MEDIA_ID]);
   });
 
   it("still reports success when blob removal fails", async () => {
