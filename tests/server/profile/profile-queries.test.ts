@@ -60,17 +60,25 @@ const pgDialect = new PgDialect();
 
 // Renders one field from a captured `.select({...})` object to real SQL text so
 // filters embedded in the count subqueries (and the coalesce default) become
-// assertable — the mock resolves rows without ever running this SQL.
+// assertable — the mock resolves rows without ever running this SQL. Guards the
+// field so a rename surfaces the missing key instead of a cryptic Drizzle throw.
 function renderSelectField(
   selection: Record<string, unknown>,
   field: string,
 ): string {
-  return pgDialect.sqlToQuery(selection[field] as SQL).sql.toLowerCase();
+  const fragment = selection[field];
+  if (!(fragment instanceof SQL)) {
+    throw new Error(`select() field "${field}" is not an SQL fragment`);
+  }
+  return pgDialect.sqlToQuery(fragment).sql.toLowerCase();
 }
 
-function capturedSelection(
-  built: ReturnType<typeof buildSelectChain>,
-): Record<string, unknown> {
+// Runs fetchProfileRow against an empty result set and returns the object it
+// passed to `.select()`, so the privacy filters built into those fields can be
+// rendered and asserted.
+async function captureProfileSelection(): Promise<Record<string, unknown>> {
+  const built = buildSelectChain([]);
+  await fetchProfileRow(built.chain as unknown as Database, "user-1");
   return built.select.mock.calls[0][0] as Record<string, unknown>;
 }
 
@@ -139,47 +147,40 @@ describe("fetchProfileRow", () => {
   });
 
   it("defaults a prefs-less profile to private (coalesce publicProfile to false)", async () => {
-    const built = buildSelectChain([]);
-
-    await fetchProfileRow(built.chain as unknown as Database, "user-1");
-
     // A user who never opened settings has no preferences row, so publicProfile
     // is NULL. The coalesce default is the only thing keeping them private:
     // flipping it to true would make every prefs-less account world-readable.
-    // Fails if the coalesce is removed or its default flipped away from false.
+    // Anchored to public_profile so substituting a different flag also fails.
     const publicProfileSql = renderSelectField(
-      capturedSelection(built),
+      await captureProfileSelection(),
       "publicProfile",
     );
-    expect(publicProfileSql).toMatch(/coalesce\(.+,\s*false\)/);
-  });
-
-  it("excludes soft-deleted followers from the follower count", async () => {
-    const built = buildSelectChain([]);
-
-    await fetchProfileRow(built.chain as unknown as Database, "user-1");
-
-    // The follower-count subquery joins users and filters deleted_at IS NULL so
-    // an account pending purge cannot inflate the total. Fails if that filter is
-    // dropped, which would leak soft-deleted accounts back into the count.
-    const followerCountSql = renderSelectField(
-      capturedSelection(built),
-      "followerCount",
+    expect(publicProfileSql).toMatch(
+      /coalesce\("?user_preferences"?\."?public_profile"?,\s*false\)/,
     );
-    expect(followerCountSql).toContain("deleted_at is null");
   });
 
-  it("excludes soft-deleted followees from the following count", async () => {
-    const built = buildSelectChain([]);
-
-    await fetchProfileRow(built.chain as unknown as Database, "user-1");
-
-    const followingCountSql = renderSelectField(
-      capturedSelection(built),
-      "followingCount",
-    );
-    expect(followingCountSql).toContain("deleted_at is null");
-  });
+  // Each count subquery joins the counterparty's users row and filters
+  // deleted_at IS NULL so an account pending purge cannot inflate the total,
+  // then correlates on the follow column that points back at this profile.
+  // Fails if the soft-delete filter is dropped (deleted accounts leak into the
+  // count) or the correlation column is swapped (counts the wrong direction).
+  it.each([
+    ["followerCount", "follower_users", /follows.followee_id\s*=/],
+    ["followingCount", "followee_users", /follows.follower_id\s*=/],
+  ] as const)(
+    "excludes soft-deleted counterparties from %s and correlates correctly",
+    async (field, counterpartyAlias, correlationPredicate) => {
+      const countSql = renderSelectField(
+        await captureProfileSelection(),
+        field,
+      );
+      expect(countSql).toMatch(
+        new RegExp(`"?${counterpartyAlias}"?\\."?deleted_at"?\\s+is\\s+null`),
+      );
+      expect(countSql).toMatch(correlationPredicate);
+    },
+  );
 });
 
 describe("fetchFollowers", () => {
