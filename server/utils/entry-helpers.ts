@@ -25,25 +25,31 @@ export function parseVisibility(value: unknown): EntryVisibility {
   return VISIBILITY.PRIVATE;
 }
 
+function throwBadRequest(message: string): never {
+  throw createError({ statusCode: 400, statusMessage: message });
+}
+
 export function parseOccurredAt(value: unknown): Date | undefined {
   if (value === undefined || value === null) {
     return undefined;
   }
   if (typeof value !== "string" && typeof value !== "number") {
-    throw createError({
-      statusCode: 400,
-      statusMessage: "occurredAt must be a valid date string",
-    });
+    throwBadRequest("occurredAt must be a valid date string");
   }
   const date = new Date(value);
   if (isNaN(date.getTime())) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: "occurredAt must be a valid date string",
-    });
+    throwBadRequest("occurredAt must be a valid date string");
   }
   return date;
 }
+
+// Upper bound on how many ids a single list input (tags, photoMediaIds) may
+// carry. photoMediaIds flows straight into an `inArray(...)` query and tags
+// into one upsert round-trip per unique name, so an unbounded list lets one
+// request drive thousands of ids through either path. 100 is far above what any
+// single entry realistically references (a journal entry with 100 photos or 100
+// tags is already an extreme) while hard-bounding the work a caller can trigger.
+export const MAX_STRING_ARRAY_LENGTH = 100;
 
 export function parseStringArray(
   value: unknown,
@@ -53,19 +59,25 @@ export function parseStringArray(
     return undefined;
   }
   if (!Array.isArray(value)) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: `${fieldName} must be an array when provided`,
-    });
+    throwBadRequest(`${fieldName} must be an array when provided`);
+  }
+  if (value.length > MAX_STRING_ARRAY_LENGTH) {
+    throwBadRequest(
+      `${fieldName} must not contain more than ${MAX_STRING_ARRAY_LENGTH} items`,
+    );
   }
   const allStrings = value.every((item) => typeof item === "string");
   if (!allStrings) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: `${fieldName} must be an array of strings`,
-    });
+    throwBadRequest(`${fieldName} must be an array of strings`);
   }
-  return value as string[];
+  // Trim so the value validated is the value used: a padded id like " uuid "
+  // would otherwise clear the blank check yet miss its `inArray` lookup,
+  // surfacing as a misleading 404 instead of a clean match.
+  const trimmed = (value as string[]).map((item) => item.trim());
+  if (trimmed.some((item) => item === "")) {
+    throwBadRequest(`${fieldName} must not contain blank values`);
+  }
+  return trimmed;
 }
 
 export function parseRequiredStringArray(
