@@ -11,14 +11,14 @@ import type { AppNotification } from "~/composables/useNotifications";
 const notificationsRef = ref<AppNotification[]>([]);
 const isLoadingRef = ref(false);
 const errorRef = ref<string | null>(null);
-const mockFetchNotifications = vi.fn().mockResolvedValue(undefined);
+const mockFetchAllNotifications = vi.fn().mockResolvedValue(undefined);
 
 vi.stubGlobal("useNotifications", () => ({
   notifications: notificationsRef,
   isLoading: isLoadingRef,
   error: errorRef,
   unreadCount: 0,
-  fetchNotifications: mockFetchNotifications,
+  fetchAllNotifications: mockFetchAllNotifications,
   markAllRead: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -46,7 +46,7 @@ const SAMPLE_NOTIFICATIONS: AppNotification[] = [
 describe("Activity page (/activity)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockFetchNotifications.mockResolvedValue(undefined);
+    mockFetchAllNotifications.mockResolvedValue(undefined);
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
@@ -61,6 +61,11 @@ describe("Activity page (/activity)", () => {
   it("renders notification items from useNotifications", () => {
     const wrapper = mount(ActivityPage, globalConfig);
     expect(wrapper.findAll(".activity__item")).toHaveLength(2);
+  });
+
+  it("walks every notification page on mount so older ones are reachable", () => {
+    mount(ActivityPage, globalConfig);
+    expect(mockFetchAllNotifications).toHaveBeenCalledTimes(1);
   });
 
   it("renders notification body text", () => {

@@ -60,12 +60,14 @@ import {
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Activity" });
 
-const { notifications, isLoading, error, fetchNotifications } =
+// /activity walks every page (fetchAllNotifications) so notifications older
+// than the drawer's first-page preview are reachable here.
+const { notifications, isLoading, error, fetchAllNotifications } =
   useNotifications();
 
 onMounted(() => {
-  fetchNotifications().catch((fetchError: unknown) => {
-    console.error("[activity] fetchNotifications failed", fetchError);
+  fetchAllNotifications().catch((fetchError: unknown) => {
+    console.error("[activity] fetchAllNotifications failed", fetchError);
   });
 });
 </script>

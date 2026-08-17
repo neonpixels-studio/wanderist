@@ -198,7 +198,25 @@ describe("fetchNotificationsForUser", () => {
       'literal:"user-1"',
     ]);
     expect(selectChain.orderBy).toHaveBeenCalledTimes(1);
+    // Both a createdAt sort and a unique id tiebreaker must be passed —
+    // without the second, rows sharing a createdAt have undefined order and
+    // offset pagination can repeat or skip them. Asserting the arg count keeps
+    // a dropped tiebreaker from passing silently.
+    expect(selectChain.orderBy.mock.calls[0]).toHaveLength(2);
     expect(selectChain.limit).toHaveBeenCalledWith(LIMIT);
+    expect(selectChain.offset).toHaveBeenCalledWith(0);
+  });
+
+  it("passes the requested offset through to the query for pagination", async () => {
+    const selectChain = makeSelectChain([]);
+    const database = selectChain as unknown as Parameters<
+      typeof fetchNotificationsForUser
+    >[0];
+
+    await fetchNotificationsForUser(database, "user-1", LIMIT, LIMIT * 2);
+
+    expect(selectChain.limit).toHaveBeenCalledWith(LIMIT);
+    expect(selectChain.offset).toHaveBeenCalledWith(LIMIT * 2);
   });
 
   it("resolves an actor with a handle but no display name set (most real rows, before onboarding)", async () => {

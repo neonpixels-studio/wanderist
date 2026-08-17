@@ -23,7 +23,7 @@
         {{ error }}
       </div>
       <div
-        v-for="notification in notifications"
+        v-for="notification in previewNotifications"
         :key="notification.id"
         class="notif__item"
         :class="{ 'is-unread': !notification.isRead }"
@@ -81,6 +81,14 @@ const {
   markAllRead,
   markRead,
 } = useNotifications();
+
+// The drawer is a quick preview; the full list lives on /activity (linked in
+// the footer). The shared store can hold every page once /activity has walked
+// it, so cap what the dropdown renders.
+const DRAWER_PREVIEW_LIMIT = 12;
+const previewNotifications = computed(() =>
+  notifications.value.slice(0, DRAWER_PREVIEW_LIMIT),
+);
 
 watch(
   () => props.open,

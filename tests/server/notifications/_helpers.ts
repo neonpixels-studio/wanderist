@@ -1,31 +1,22 @@
 import { vi } from "vitest";
 import { getTableName, type SQL } from "drizzle-orm";
 import type { PgColumn } from "drizzle-orm/pg-core";
+import { stubNitroGlobals } from "../test-utils";
 
 /**
- * Installs Nitro/H3 global stubs (defineEventHandler, createError)
- * before importing server route modules.
+ * Installs the shared Nitro/H3 global stubs (defineEventHandler, createError)
+ * plus getQuery, before importing server route modules.
  *
  * Call this at the top of each notifications-endpoint test file, before any
  * vi.mock() or import() calls that touch the server handlers.
  */
 export function installNitroGlobals() {
-  vi.stubGlobal(
-    "defineEventHandler",
-    (handler: (event: unknown) => unknown) => handler,
-  );
-  vi.stubGlobal(
-    "createError",
-    (options: { statusCode: number; statusMessage: string }) => {
-      const error = new Error(options.statusMessage) as Error & {
-        statusCode: number;
-        statusMessage: string;
-      };
-      error.statusCode = options.statusCode;
-      error.statusMessage = options.statusMessage;
-      return error;
-    },
-  );
+  stubNitroGlobals();
+  // Route handlers read pagination params via getQuery(event); tests pass the
+  // query bag as `event.query`.
+  vi.stubGlobal("getQuery", (event: { query?: Record<string, unknown> }) => {
+    return event?.query ?? {};
+  });
 }
 
 /**
@@ -40,24 +31,35 @@ export function unwrapHandler(
 }
 
 /**
- * Builds a mock `select().from().leftJoin().leftJoin().where().orderBy().limit()`
- * chain, matching fetchNotificationsForUser's actor-resolution join.
+ * Builds a mock
+ * `select().from().leftJoin().leftJoin().where().orderBy().limit().offset()`
+ * chain, matching fetchNotificationsForUser's actor-resolution join and
+ * pagination.
  *
  * Exposes every intermediate spy (rather than just `select`) so a test can
  * assert on the actual join/filter conditions, not just the canned rows — a
  * mock returning fixed rows regardless of the arguments passed to it would
  * otherwise pass even if the query joined on the wrong column, scoped to the
- * wrong user, or dropped the ordering/limit entirely.
+ * wrong user, or dropped the ordering/limit/offset entirely.
  */
 export function makeSelectChain(rows: Record<string, unknown>[]) {
-  const limit = vi.fn().mockResolvedValue(rows);
+  const offset = vi.fn().mockResolvedValue(rows);
+  const limit = vi.fn().mockReturnValue({ offset });
   const orderBy = vi.fn().mockReturnValue({ limit });
   const where = vi.fn().mockReturnValue({ orderBy });
   const secondLeftJoin = vi.fn().mockReturnValue({ where });
   const firstLeftJoin = vi.fn().mockReturnValue({ leftJoin: secondLeftJoin });
   const from = vi.fn().mockReturnValue({ leftJoin: firstLeftJoin });
   const select = vi.fn().mockReturnValue({ from });
-  return { select, firstLeftJoin, secondLeftJoin, where, orderBy, limit };
+  return {
+    select,
+    firstLeftJoin,
+    secondLeftJoin,
+    where,
+    orderBy,
+    limit,
+    offset,
+  };
 }
 
 interface ParamChunk {
