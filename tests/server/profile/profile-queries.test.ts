@@ -17,7 +17,15 @@ import {
   FOLLOWERS_PAGE_SIZE,
 } from "../../../server/utils/profile-queries";
 import type { Database } from "../../../server/utils/profile-queries";
-import { follows, users, userPreferences } from "../../../server/db/schema";
+import {
+  follows,
+  users,
+  userPreferences,
+  subscriptions,
+  PLAN,
+  SUBSCRIPTION_STATUS,
+} from "../../../server/db/schema";
+import { publiclyVisibleAuthorCondition } from "../../../server/utils/publicVisibility";
 
 // requireViewableProfile throws via createError; stub the Nitro globals so it
 // resolves outside the Nuxt runtime.
@@ -57,6 +65,8 @@ describe("fetchProfileRow", () => {
       homeBase: "Reykjavik",
       bio: "Cold-water swimmer",
       publicProfile: true,
+      subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
+      subscriptionPlan: PLAN.NOMAD,
       followerCount: "12",
       followingCount: "4",
       placeCount: "37",
@@ -68,6 +78,9 @@ describe("fetchProfileRow", () => {
       "user-1",
     );
 
+    // The raw subscription fields are consumed to derive effectivelyPublic and
+    // never leaked back to the caller (a viewer must not learn another user's
+    // billing status).
     expect(result).toEqual({
       userId: "user-1",
       displayName: "Elsa",
@@ -75,9 +88,37 @@ describe("fetchProfileRow", () => {
       homeBase: "Reykjavik",
       bio: "Cold-water swimmer",
       publicProfile: true,
+      effectivelyPublic: true,
       followerCount: 12,
       followingCount: 4,
       placeCount: 37,
+    });
+  });
+
+  it("derives effectivelyPublic false when the opt-in is true but the subscription lapsed", async () => {
+    const rawRow = {
+      userId: "user-1",
+      displayName: "Elsa",
+      handle: "elsa_far",
+      homeBase: "Reykjavik",
+      bio: null,
+      publicProfile: true,
+      subscriptionStatus: SUBSCRIPTION_STATUS.PAST_DUE,
+      subscriptionPlan: PLAN.NOMAD,
+      followerCount: "0",
+      followingCount: "0",
+      placeCount: "0",
+    };
+    const built = buildSelectChain([rawRow]);
+
+    const result = await fetchProfileRow(
+      built.chain as unknown as Database,
+      "user-1",
+    );
+
+    expect(result).toMatchObject({
+      publicProfile: true,
+      effectivelyPublic: false,
     });
   });
 
@@ -91,13 +132,14 @@ describe("fetchProfileRow", () => {
     );
   });
 
-  it("left-joins preferences so a user without a prefs row still resolves", async () => {
+  it("left-joins preferences and subscriptions so a user without either row still resolves", async () => {
     const built = buildSelectChain([]);
 
     await fetchProfileRow(built.chain as unknown as Database, "user-1");
 
-    // An inner join here would 404 a brand-new user on their own profile.
-    expect(built.leftJoin).toHaveBeenCalledTimes(1);
+    // Inner joins here would 404 a brand-new user on their own profile, or a
+    // free user with no subscriptions row.
+    expect(built.leftJoin).toHaveBeenCalledTimes(2);
     expect(built.innerJoin).not.toHaveBeenCalled();
   });
 
@@ -158,11 +200,7 @@ describe("fetchFollowers", () => {
     // These predicates are the whole privacy contract: they keep private and
     // soft-deleted accounts out of another user's followers list.
     expect(built.where).toHaveBeenCalledWith(
-      and(
-        eq(follows.followeeId, "user-1"),
-        eq(userPreferences.publicProfile, true),
-        isNull(users.deletedAt),
-      ),
+      and(eq(follows.followeeId, "user-1"), publiclyVisibleAuthorCondition()),
     );
   });
 
@@ -191,22 +229,37 @@ describe("fetchFollowers", () => {
 });
 
 describe("requireViewableProfile", () => {
-  function publicRow(publicProfile: boolean) {
+  // The raw row shape fetchProfileRow reads before it derives effectivelyPublic
+  // and strips the subscription fields — so these rows carry the subscription
+  // status/plan, letting the visibility rule be exercised end to end.
+  function rawProfileRow(params: {
+    publicProfile: boolean;
+    status?: (typeof SUBSCRIPTION_STATUS)[keyof typeof SUBSCRIPTION_STATUS];
+    plan?: (typeof PLAN)[keyof typeof PLAN];
+  }) {
     return {
       userId: "target-1",
       displayName: "Elsa",
       handle: "elsa_far",
       homeBase: null,
       bio: null,
-      publicProfile,
+      publicProfile: params.publicProfile,
+      subscriptionStatus: params.status ?? null,
+      subscriptionPlan: params.plan ?? null,
       followerCount: 0,
       followingCount: 0,
       placeCount: 0,
     };
   }
 
-  it("returns a public profile to another viewer", async () => {
-    const built = buildSelectChain([publicRow(true)]);
+  it("returns a public profile to another viewer when the subscription entitles it", async () => {
+    const built = buildSelectChain([
+      rawProfileRow({
+        publicProfile: true,
+        status: SUBSCRIPTION_STATUS.ACTIVE,
+        plan: PLAN.NOMAD,
+      }),
+    ]);
 
     const result = await requireViewableProfile(
       built.chain as unknown as Database,
@@ -214,11 +267,54 @@ describe("requireViewableProfile", () => {
       "target-1",
     );
 
-    expect(result).toMatchObject({ userId: "target-1", publicProfile: true });
+    expect(result).toMatchObject({
+      userId: "target-1",
+      publicProfile: true,
+      effectivelyPublic: true,
+    });
+  });
+
+  it("throws 404 to another viewer when opted in but the subscription is past_due", async () => {
+    const built = buildSelectChain([
+      rawProfileRow({
+        publicProfile: true,
+        status: SUBSCRIPTION_STATUS.PAST_DUE,
+        plan: PLAN.NOMAD,
+      }),
+    ]);
+
+    await expect(
+      requireViewableProfile(
+        built.chain as unknown as Database,
+        "viewer-1",
+        "target-1",
+      ),
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("still shows a lapsed (past_due) public profile to its owner", async () => {
+    const built = buildSelectChain([
+      rawProfileRow({
+        publicProfile: true,
+        status: SUBSCRIPTION_STATUS.PAST_DUE,
+        plan: PLAN.NOMAD,
+      }),
+    ]);
+
+    const result = await requireViewableProfile(
+      built.chain as unknown as Database,
+      "target-1",
+      "target-1",
+    );
+
+    expect(result).toMatchObject({
+      userId: "target-1",
+      effectivelyPublic: false,
+    });
   });
 
   it("returns a private profile to its owner", async () => {
-    const built = buildSelectChain([publicRow(false)]);
+    const built = buildSelectChain([rawProfileRow({ publicProfile: false })]);
 
     const result = await requireViewableProfile(
       built.chain as unknown as Database,
@@ -230,7 +326,7 @@ describe("requireViewableProfile", () => {
   });
 
   it("throws 404 for a private profile viewed by someone else", async () => {
-    const built = buildSelectChain([publicRow(false)]);
+    const built = buildSelectChain([rawProfileRow({ publicProfile: false })]);
 
     await expect(
       requireViewableProfile(

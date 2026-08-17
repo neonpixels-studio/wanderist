@@ -6,7 +6,7 @@
  * module-level singletons. Auth scoping is enforced here, not in the handlers.
  */
 
-import { count, desc, eq, isNull, sql, and, notInArray } from "drizzle-orm";
+import { count, desc, eq, sql, and, notInArray } from "drizzle-orm";
 import type { getDb } from "../db/index";
 import {
   trips,
@@ -17,6 +17,7 @@ import {
   guides,
   VISIBILITY,
 } from "../db/schema";
+import { publiclyVisibleAuthorCondition } from "./publicVisibility";
 
 export type Database = ReturnType<typeof getDb>;
 
@@ -28,11 +29,15 @@ export type Database = ReturnType<typeof getDb>;
  * explore — a guide must never stay readable by id after its author fails this.
  * Callers `and()` it with their own table-specific conditions (e.g. the
  * relevant `visibility = public`).
+ *
+ * Layers `showOnExplore` on top of publiclyVisibleAuthorCondition (live account
+ * + public opt-in + effective entitlement), which is the shared gate the
+ * followers and search read paths also use — explore additionally requires the
+ * author to have opted into promotion.
  */
 export function discoverableAuthorCondition() {
   return and(
-    isNull(users.deletedAt),
-    eq(userPreferences.publicProfile, true),
+    publiclyVisibleAuthorCondition(),
     eq(userPreferences.showOnExplore, true),
   );
 }
@@ -106,9 +111,7 @@ export async function fetchFeaturedTrips(
     .where(
       and(
         eq(trips.visibility, VISIBILITY.PUBLIC),
-        eq(userPreferences.publicProfile, true),
-        eq(userPreferences.showOnExplore, true),
-        isNull(users.deletedAt),
+        discoverableAuthorCondition(),
       ),
     )
     .orderBy(desc(trips.createdAt))
@@ -140,11 +143,7 @@ export async function fetchTrendingPlaces(
 
   const recentSaveCountExpr = sql<number>`COUNT(CASE WHEN ${places.createdAt} >= ${windowStart.toISOString()} THEN 1 END)`;
 
-  const baseConditions = and(
-    eq(userPreferences.publicProfile, true),
-    eq(userPreferences.showOnExplore, true),
-    isNull(users.deletedAt),
-  );
+  const baseConditions = discoverableAuthorCondition();
 
   const filterCondition = category
     ? and(baseConditions, eq(places.category, category))
@@ -228,9 +227,7 @@ export async function fetchSuggestedPeople(
   )`;
 
   const notFollowedAndNotSelf = and(
-    eq(userPreferences.publicProfile, true),
-    eq(userPreferences.showOnExplore, true),
-    isNull(users.deletedAt),
+    discoverableAuthorCondition(),
     notInArray(users.id, [...followedIds, currentUserId]),
   );
 
