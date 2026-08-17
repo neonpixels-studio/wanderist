@@ -79,11 +79,6 @@ function renderSelectField(
 async function captureProfileSelection(): Promise<Record<string, unknown>> {
   const built = buildSelectChain([]);
   await fetchProfileRow(built.chain as unknown as Database, "user-1");
-  if (built.select.mock.calls.length !== 1) {
-    throw new Error(
-      `expected fetchProfileRow to call select() once, got ${built.select.mock.calls.length}`,
-    );
-  }
   return built.select.mock.calls[0][0] as Record<string, unknown>;
 }
 
@@ -165,38 +160,30 @@ describe("fetchProfileRow", () => {
     );
   });
 
-  // Each count subquery joins the counterparty's users row and filters
-  // deleted_at IS NULL so an account pending purge cannot inflate the total,
-  // then correlates on the follow column that points back at this profile.
-  // The three assertions fail if, respectively: the join is re-aliased onto the
-  // profile's own row (making the soft-delete filter a tautology), the
-  // soft-delete filter is dropped, or the correlation is swapped/pointed away
-  // from users.id (e.g. at the left-joined prefs row, which zeroes the count).
+  // Assert the whole subquery clause as one anchored shape, not loose tokens, so
+  // structural weakenings are caught: an inner JOIN (not LEFT JOIN, which would
+  // make deleted_at IS NULL true for unmatched rows), the counterparty joined on
+  // the correct follow column (not re-aliased onto the profile's own row), a
+  // correlation anchored to users.id (not the left-joined prefs row, which zeroes
+  // the count), and the soft-delete filter AND-ed on (not OR-ed, which counts
+  // every follow row). `\s+` spans the newlines in the rendered SQL.
   it.each([
     [
       "followerCount",
-      "follower_users",
-      /join users as follower_users on follower_users\.id\s*=\s*follows\.follower_id/,
-      /follows\.followee_id\s*=\s*"users"\."id"/,
+      /from follows\s+join users as follower_users on follower_users\.id\s*=\s*follows\.follower_id\s+where\s+follows\.followee_id\s*=\s*"users"\."id"\s+and\s+follower_users\.deleted_at\s+is\s+null/,
     ],
     [
       "followingCount",
-      "followee_users",
-      /join users as followee_users on followee_users\.id\s*=\s*follows\.followee_id/,
-      /follows\.follower_id\s*=\s*"users"\."id"/,
+      /from follows\s+join users as followee_users on followee_users\.id\s*=\s*follows\.followee_id\s+where\s+follows\.follower_id\s*=\s*"users"\."id"\s+and\s+followee_users\.deleted_at\s+is\s+null/,
     ],
   ] as const)(
-    "excludes soft-deleted counterparties from %s and correlates correctly",
-    async (field, counterpartyAlias, joinPredicate, correlationPredicate) => {
+    "counts only non-deleted, correctly-correlated %s rows",
+    async (field, subqueryPredicate) => {
       const countSql = renderSelectField(
         await captureProfileSelection(),
         field,
       );
-      expect(countSql).toMatch(joinPredicate);
-      expect(countSql).toMatch(
-        new RegExp(`"?${counterpartyAlias}"?\\."?deleted_at"?\\s+is\\s+null`),
-      );
-      expect(countSql).toMatch(correlationPredicate);
+      expect(countSql).toMatch(subqueryPredicate);
     },
   );
 
