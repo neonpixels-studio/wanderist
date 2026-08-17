@@ -5,10 +5,18 @@
  * regardless of the predicates, the privacy-critical filters are asserted
  * explicitly against the arguments passed to `.where()` — otherwise removing
  * `publicProfile`/`deletedAt` would silently pass while leaking private data.
+ *
+ * Some privacy filters do not live in `.where()`: `fetchProfileRow` defaults a
+ * prefs-less account to private via `coalesce(publicProfile, false)` and drops
+ * soft-deleted counterparties from the count subqueries via `deleted_at IS NULL`
+ * — all inside `.select()`. The mock never runs SQL, so those would flip
+ * silently. To give them teeth, the captured `.select()` fragments are rendered
+ * to real SQL text with Drizzle's PgDialect and asserted directly.
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { stubNitroGlobals } from "../test-utils";
 import {
   fetchProfileRow,
@@ -46,6 +54,24 @@ function buildSelectChain(rows: unknown[]) {
     orderBy,
     limit,
   };
+}
+
+const pgDialect = new PgDialect();
+
+// Renders one field from a captured `.select({...})` object to real SQL text so
+// filters embedded in the count subqueries (and the coalesce default) become
+// assertable — the mock resolves rows without ever running this SQL.
+function renderSelectField(
+  selection: Record<string, unknown>,
+  field: string,
+): string {
+  return pgDialect.sqlToQuery(selection[field] as SQL).sql.toLowerCase();
+}
+
+function capturedSelection(
+  built: ReturnType<typeof buildSelectChain>,
+): Record<string, unknown> {
+  return built.select.mock.calls[0][0] as Record<string, unknown>;
 }
 
 describe("fetchProfileRow", () => {
@@ -110,6 +136,49 @@ describe("fetchProfileRow", () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  it("defaults a prefs-less profile to private (coalesce publicProfile to false)", async () => {
+    const built = buildSelectChain([]);
+
+    await fetchProfileRow(built.chain as unknown as Database, "user-1");
+
+    // A user who never opened settings has no preferences row, so publicProfile
+    // is NULL. The coalesce default is the only thing keeping them private:
+    // flipping it to true would make every prefs-less account world-readable.
+    // Fails if the coalesce is removed or its default flipped away from false.
+    const publicProfileSql = renderSelectField(
+      capturedSelection(built),
+      "publicProfile",
+    );
+    expect(publicProfileSql).toMatch(/coalesce\(.+,\s*false\)/);
+  });
+
+  it("excludes soft-deleted followers from the follower count", async () => {
+    const built = buildSelectChain([]);
+
+    await fetchProfileRow(built.chain as unknown as Database, "user-1");
+
+    // The follower-count subquery joins users and filters deleted_at IS NULL so
+    // an account pending purge cannot inflate the total. Fails if that filter is
+    // dropped, which would leak soft-deleted accounts back into the count.
+    const followerCountSql = renderSelectField(
+      capturedSelection(built),
+      "followerCount",
+    );
+    expect(followerCountSql).toContain("deleted_at is null");
+  });
+
+  it("excludes soft-deleted followees from the following count", async () => {
+    const built = buildSelectChain([]);
+
+    await fetchProfileRow(built.chain as unknown as Database, "user-1");
+
+    const followingCountSql = renderSelectField(
+      capturedSelection(built),
+      "followingCount",
+    );
+    expect(followingCountSql).toContain("deleted_at is null");
   });
 });
 
