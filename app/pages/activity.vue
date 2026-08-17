@@ -7,11 +7,11 @@
     </div>
 
     <div
-      v-else-if="error"
+      v-else-if="blockingError"
       class="activity__state activity__state--error"
       role="alert"
     >
-      {{ error }}
+      {{ blockingError }}
     </div>
 
     <template v-else>
@@ -50,7 +50,7 @@
       <AppLoadMoreButton
         :has-more="hasMore"
         :loading="isLoading"
-        @load="handleLoadMore"
+        @load="loadMore"
       />
     </template>
   </div>
@@ -75,15 +75,18 @@ const {
   loadMore,
 } = useNotifications();
 
+// Only the whole-page error state should replace already-loaded rows. A
+// failed "load more" (list already populated) leaves the list on screen and
+// keeps the retry button, rather than blanking everything for one bad request.
+const blockingError = computed(() =>
+  notifications.value.length === 0 ? error.value : null,
+);
+
 onMounted(() => {
   fetchNotifications().catch((fetchError: unknown) => {
     console.error("[activity] fetchNotifications failed", fetchError);
   });
 });
-
-async function handleLoadMore(): Promise<void> {
-  await loadMore();
-}
 </script>
 
 <style scoped>

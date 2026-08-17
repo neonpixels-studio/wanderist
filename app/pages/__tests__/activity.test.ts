@@ -81,16 +81,14 @@ describe("Activity page (/activity)", () => {
   it("hides the load-more button when there are no further pages", () => {
     hasMoreRef.value = false;
     const wrapper = mount(ActivityPage, globalConfig);
-    expect(wrapper.find(".load-more").attributes("style")).toContain(
-      "display: none",
-    );
+    expect(wrapper.find(".load-more").exists()).toBe(false);
   });
 
   it("shows the load-more button and calls loadMore on click when more pages exist", async () => {
     hasMoreRef.value = true;
     const wrapper = mount(ActivityPage, globalConfig);
     const button = wrapper.find(".load-more");
-    expect(button.attributes("style") ?? "").not.toContain("display: none");
+    expect(button.exists()).toBe(true);
 
     await button.trigger("click");
     expect(mockLoadMore).toHaveBeenCalledTimes(1);
@@ -143,7 +141,7 @@ describe("Activity page (/activity)", () => {
     expect(wrapper.find(".activity__state").text()).toContain("Loading");
   });
 
-  it("shows error state when error is set", () => {
+  it("shows error state when error is set and no notifications are loaded", () => {
     notificationsRef.value = [];
     errorRef.value = "Could not load notifications";
 
@@ -152,6 +150,16 @@ describe("Activity page (/activity)", () => {
     expect(wrapper.find('[role="alert"]').text()).toContain(
       "Could not load notifications",
     );
+  });
+
+  it("keeps the loaded list visible when an error occurs after rows are already shown", () => {
+    // A failed "load more" sets error while rows are on screen; the list must
+    // not be blanked out for one bad follow-up request.
+    errorRef.value = "Could not load more";
+
+    const wrapper = mount(ActivityPage, globalConfig);
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(wrapper.findAll(".activity__item")).toHaveLength(2);
   });
 
   it("shows empty state when there are no notifications", () => {

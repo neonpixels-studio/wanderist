@@ -3,25 +3,23 @@ import { mount } from "@vue/test-utils";
 import AppLoadMoreButton from "../AppLoadMoreButton.vue";
 
 describe("AppLoadMoreButton", () => {
-  it("is visible and reads 'Load more' when there are more pages and it is idle", () => {
+  it("renders and reads 'Load more' when there are more pages and it is idle", () => {
     const wrapper = mount(AppLoadMoreButton, {
       props: { hasMore: true, loading: false },
     });
 
     const button = wrapper.find(".load-more");
-    expect(button.attributes("style") ?? "").not.toContain("display: none");
+    expect(button.exists()).toBe(true);
     expect(button.text()).toBe("Load more");
     expect(button.attributes("disabled")).toBeUndefined();
   });
 
-  it("is hidden when there are no further pages", () => {
+  it("renders nothing when there are no further pages", () => {
     const wrapper = mount(AppLoadMoreButton, {
       props: { hasMore: false, loading: false },
     });
 
-    expect(wrapper.find(".load-more").attributes("style")).toContain(
-      "display: none",
-    );
+    expect(wrapper.find(".load-more").exists()).toBe(false);
   });
 
   it("shows a loading label and disables itself while loading", () => {

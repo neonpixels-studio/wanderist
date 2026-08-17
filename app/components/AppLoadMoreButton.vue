@@ -1,6 +1,6 @@
 <template>
   <button
-    v-show="hasMore"
+    v-if="hasMore"
     type="button"
     class="load-more"
     :disabled="loading"

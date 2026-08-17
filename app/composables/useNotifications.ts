@@ -29,9 +29,16 @@ interface NotificationsResponse {
 const NOTIFICATIONS_STATE_KEY = "notifications:list";
 const NOTIFICATIONS_PAGE_KEY = "notifications:page";
 const NOTIFICATIONS_HAS_MORE_KEY = "notifications:hasMore";
+const NOTIFICATIONS_LOADING_KEY = "notifications:loading";
+const NOTIFICATIONS_ERROR_KEY = "notifications:error";
 
 const FIRST_PAGE = 1;
 
+// The list, its pagination cursor, and its request status are one shared store
+// keyed by NOTIFICATIONS_* so the header drawer and the /activity page never
+// hold divergent copies (e.g. one paginated to page 3, the other reset to
+// page 1). Keeping only some of these shared would let the two views clobber
+// each other's state.
 export function useNotifications() {
   const { apiFetch } = useApiClient();
 
@@ -41,8 +48,8 @@ export function useNotifications() {
   );
   const page = useState<number>(NOTIFICATIONS_PAGE_KEY, () => FIRST_PAGE);
   const hasMore = useState<boolean>(NOTIFICATIONS_HAS_MORE_KEY, () => false);
-  const isLoading = ref(false);
-  const error = ref<string | null>(null);
+  const isLoading = useState<boolean>(NOTIFICATIONS_LOADING_KEY, () => false);
+  const error = useState<string | null>(NOTIFICATIONS_ERROR_KEY, () => null);
 
   const unreadCount = computed(
     () =>
@@ -80,15 +87,22 @@ export function useNotifications() {
     if (!hasMore.value || isLoading.value) {
       return;
     }
-    const response = await fetchPage(page.value + 1);
+    const requestedPage = page.value + 1;
+    const response = await fetchPage(requestedPage);
     if (!response) {
+      return;
+    }
+    // Bail if another consumer reset the list (e.g. the drawer re-fetched
+    // page 1) while this request was in flight — appending page N onto a
+    // now-shorter list would create a gap and strand the intervening pages.
+    if (page.value !== requestedPage - 1) {
       return;
     }
     notifications.value = [
       ...notifications.value,
       ...(response.notifications ?? []),
     ];
-    page.value = response.page ?? page.value + 1;
+    page.value = response.page ?? requestedPage;
     hasMore.value = response.hasMore ?? false;
   }
 

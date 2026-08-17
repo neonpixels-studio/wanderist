@@ -181,4 +181,24 @@ describe("GET /api/notifications", () => {
     expect(result.page).toBe(1);
     expect(selectChain.offset).toHaveBeenCalledWith(0);
   });
+
+  it("reports hasMore: false at the final page even when a full page is returned", async () => {
+    mockRequireUser.mockReturnValue("user-1");
+
+    const fullPage = Array.from({ length: PAGE_SIZE }, (_unused, index) =>
+      makeRawRow(`notif-${index}`),
+    );
+    const selectChain = makeSelectChain(fullPage);
+    mockGetDb.mockReturnValue(
+      selectChain as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = (await callHandler({ page: "1000" })) as {
+      page: number;
+      hasMore: boolean;
+    };
+
+    expect(result.page).toBe(1000);
+    expect(result.hasMore).toBe(false);
+  });
 });

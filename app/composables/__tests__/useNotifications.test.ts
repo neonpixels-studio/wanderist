@@ -281,6 +281,36 @@ describe("useNotifications", () => {
     expect(hasMore.value).toBe(false);
   });
 
+  it("loadMore preserves the existing list and keeps hasMore true when the request fails", async () => {
+    mockApiFetch
+      .mockResolvedValueOnce({
+        notifications: [
+          {
+            id: "n-1",
+            type: "like",
+            tone: "accent",
+            body: "Liked",
+            isRead: false,
+            createdAt: "2024-06-01T10:00:00Z",
+          },
+        ],
+        page: 1,
+        hasMore: true,
+      })
+      .mockRejectedValueOnce(new Error("Network error"));
+
+    const { notifications, hasMore, error, fetchNotifications, loadMore } =
+      useNotifications();
+    await fetchNotifications();
+    await loadMore();
+
+    expect(notifications.value.map((notification) => notification.id)).toEqual([
+      "n-1",
+    ]);
+    expect(hasMore.value).toBe(true);
+    expect(error.value).toBeTruthy();
+  });
+
   it("loadMore is a no-op when there is no next page", async () => {
     mockApiFetch.mockResolvedValue({
       notifications: [
