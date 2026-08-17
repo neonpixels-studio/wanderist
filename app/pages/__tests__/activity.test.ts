@@ -2,8 +2,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ref } from "vue";
 import { mount } from "@vue/test-utils";
 import ActivityPage from "../activity.vue";
-import { pageGlobalConfig as globalConfig } from "./test-utils";
+import AppLoadMoreButton from "../../components/AppLoadMoreButton.vue";
+import { pageGlobalConfig } from "./test-utils";
 import type { AppNotification } from "~/composables/useNotifications";
+
+// Render the real AppLoadMoreButton (not a stub) so its visibility and click
+// wiring are exercised through the page.
+const globalConfig = {
+  global: {
+    ...pageGlobalConfig.global,
+    components: { AppLoadMoreButton },
+  },
+};
 
 // Mutable refs allow per-test overrides without re-stubbing the global.
 // The component calls useNotifications() as a Nuxt auto-import global,
@@ -11,14 +21,18 @@ import type { AppNotification } from "~/composables/useNotifications";
 const notificationsRef = ref<AppNotification[]>([]);
 const isLoadingRef = ref(false);
 const errorRef = ref<string | null>(null);
+const hasMoreRef = ref(false);
 const mockFetchNotifications = vi.fn().mockResolvedValue(undefined);
+const mockLoadMore = vi.fn().mockResolvedValue(undefined);
 
 vi.stubGlobal("useNotifications", () => ({
   notifications: notificationsRef,
+  hasMore: hasMoreRef,
   isLoading: isLoadingRef,
   error: errorRef,
   unreadCount: 0,
   fetchNotifications: mockFetchNotifications,
+  loadMore: mockLoadMore,
   markAllRead: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -50,6 +64,7 @@ describe("Activity page (/activity)", () => {
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
+    hasMoreRef.value = false;
   });
 
   it("renders without crashing and matches snapshot", () => {
@@ -61,6 +76,24 @@ describe("Activity page (/activity)", () => {
   it("renders notification items from useNotifications", () => {
     const wrapper = mount(ActivityPage, globalConfig);
     expect(wrapper.findAll(".activity__item")).toHaveLength(2);
+  });
+
+  it("hides the load-more button when there are no further pages", () => {
+    hasMoreRef.value = false;
+    const wrapper = mount(ActivityPage, globalConfig);
+    expect(wrapper.find(".load-more").attributes("style")).toContain(
+      "display: none",
+    );
+  });
+
+  it("shows the load-more button and calls loadMore on click when more pages exist", async () => {
+    hasMoreRef.value = true;
+    const wrapper = mount(ActivityPage, globalConfig);
+    const button = wrapper.find(".load-more");
+    expect(button.attributes("style") ?? "").not.toContain("display: none");
+
+    await button.trigger("click");
+    expect(mockLoadMore).toHaveBeenCalledTimes(1);
   });
 
   it("renders notification body text", () => {

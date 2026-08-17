@@ -209,4 +209,100 @@ describe("useNotifications", () => {
     const { isLoading } = useNotifications();
     expect(isLoading.value).toBe(false);
   });
+
+  it("fetchNotifications requests page 1 and records hasMore from the envelope", async () => {
+    mockApiFetch.mockResolvedValue({
+      notifications: [
+        {
+          id: "n-1",
+          type: "like",
+          tone: "accent",
+          body: "Liked",
+          isRead: false,
+          createdAt: "2024-06-01T10:00:00Z",
+        },
+      ],
+      page: 1,
+      hasMore: true,
+    });
+
+    const { hasMore, fetchNotifications } = useNotifications();
+    await fetchNotifications();
+
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/notifications", {
+      query: { page: 1 },
+    });
+    expect(hasMore.value).toBe(true);
+  });
+
+  it("loadMore fetches the next page and appends to the existing list", async () => {
+    mockApiFetch
+      .mockResolvedValueOnce({
+        notifications: [
+          {
+            id: "n-1",
+            type: "like",
+            tone: "accent",
+            body: "Liked",
+            isRead: false,
+            createdAt: "2024-06-01T10:00:00Z",
+          },
+        ],
+        page: 1,
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        notifications: [
+          {
+            id: "n-2",
+            type: "comment",
+            tone: "accent",
+            body: "Comment",
+            isRead: true,
+            createdAt: "2024-06-01T09:00:00Z",
+          },
+        ],
+        page: 2,
+        hasMore: false,
+      });
+
+    const { notifications, hasMore, fetchNotifications, loadMore } =
+      useNotifications();
+    await fetchNotifications();
+    await loadMore();
+
+    expect(mockApiFetch).toHaveBeenNthCalledWith(2, "/api/notifications", {
+      query: { page: 2 },
+    });
+    expect(notifications.value.map((notification) => notification.id)).toEqual([
+      "n-1",
+      "n-2",
+    ]);
+    expect(hasMore.value).toBe(false);
+  });
+
+  it("loadMore is a no-op when there is no next page", async () => {
+    mockApiFetch.mockResolvedValue({
+      notifications: [
+        {
+          id: "n-1",
+          type: "like",
+          tone: "accent",
+          body: "Liked",
+          isRead: false,
+          createdAt: "2024-06-01T10:00:00Z",
+        },
+      ],
+      page: 1,
+      hasMore: false,
+    });
+
+    const { fetchNotifications, loadMore } = useNotifications();
+    await fetchNotifications();
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+
+    await loadMore();
+
+    expect(mockApiFetch).toHaveBeenCalledTimes(1);
+  });
 });

@@ -20,7 +20,17 @@ export interface AppNotification {
   actor: AppNotificationActor | null;
 }
 
+interface NotificationsResponse {
+  notifications: AppNotification[];
+  page: number;
+  hasMore: boolean;
+}
+
 const NOTIFICATIONS_STATE_KEY = "notifications:list";
+const NOTIFICATIONS_PAGE_KEY = "notifications:page";
+const NOTIFICATIONS_HAS_MORE_KEY = "notifications:hasMore";
+
+const FIRST_PAGE = 1;
 
 export function useNotifications() {
   const { apiFetch } = useApiClient();
@@ -29,6 +39,8 @@ export function useNotifications() {
     NOTIFICATIONS_STATE_KEY,
     () => [],
   );
+  const page = useState<number>(NOTIFICATIONS_PAGE_KEY, () => FIRST_PAGE);
+  const hasMore = useState<boolean>(NOTIFICATIONS_HAS_MORE_KEY, () => false);
   const isLoading = ref(false);
   const error = ref<string | null>(null);
 
@@ -37,19 +49,47 @@ export function useNotifications() {
       notifications.value.filter((notification) => !notification.isRead).length,
   );
 
-  async function fetchNotifications(): Promise<void> {
+  async function fetchPage(
+    nextPage: number,
+  ): Promise<NotificationsResponse | null> {
     isLoading.value = true;
     error.value = null;
     try {
-      const response = await apiFetch<{ notifications: AppNotification[] }>(
-        "/api/notifications",
-      );
-      notifications.value = response?.notifications ?? [];
+      return await apiFetch<NotificationsResponse>("/api/notifications", {
+        query: { page: nextPage },
+      });
     } catch (fetchError: unknown) {
       error.value = extractErrorMessage(fetchError);
+      return null;
     } finally {
       isLoading.value = false;
     }
+  }
+
+  async function fetchNotifications(): Promise<void> {
+    const response = await fetchPage(FIRST_PAGE);
+    if (!response) {
+      return;
+    }
+    notifications.value = response.notifications ?? [];
+    page.value = response.page ?? FIRST_PAGE;
+    hasMore.value = response.hasMore ?? false;
+  }
+
+  async function loadMore(): Promise<void> {
+    if (!hasMore.value || isLoading.value) {
+      return;
+    }
+    const response = await fetchPage(page.value + 1);
+    if (!response) {
+      return;
+    }
+    notifications.value = [
+      ...notifications.value,
+      ...(response.notifications ?? []),
+    ];
+    page.value = response.page ?? page.value + 1;
+    hasMore.value = response.hasMore ?? false;
   }
 
   async function markAllRead(): Promise<void> {
@@ -81,10 +121,12 @@ export function useNotifications() {
 
   return {
     notifications,
+    hasMore: readonly(hasMore),
     isLoading: readonly(isLoading),
     error: readonly(error),
     unreadCount,
     fetchNotifications,
+    loadMore,
     markAllRead,
     markRead,
   };

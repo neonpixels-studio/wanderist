@@ -95,14 +95,17 @@ function resolveActor(row: RawNotificationRow): NotificationActor | null {
 }
 
 /**
- * Returns the most recent notifications for a user, with the acting user (if
- * any) resolved via a left join so legacy and deleted-actor rows still return
- * cleanly rather than being dropped or throwing.
+ * Returns a page of the most recent notifications for a user, with the acting
+ * user (if any) resolved via a left join so legacy and deleted-actor rows
+ * still return cleanly rather than being dropped or throwing.
+ *
+ * `offset` defaults to 0 so callers that only want the first page can omit it.
  */
 export async function fetchNotificationsForUser(
   database: Database,
   userId: string,
   limit: number,
+  offset = 0,
 ): Promise<NotificationRow[]> {
   const rows = await database
     .select({
@@ -135,8 +138,13 @@ export async function fetchNotificationsForUser(
       eq(notifications.actorId, userPreferences.userId),
     )
     .where(eq(notifications.userId, userId))
-    .orderBy(desc(notifications.createdAt))
-    .limit(limit);
+    // `id` is a unique secondary sort key purely to break ties within a single
+    // query when multiple notifications share a createdAt — without it, which
+    // of the tied rows lands on which side of a page boundary is unspecified,
+    // so a paginated walk could repeat or skip a row across pages.
+    .orderBy(desc(notifications.createdAt), desc(notifications.id))
+    .limit(limit)
+    .offset(offset);
 
   return rows.map((row) => ({
     id: row.id,

@@ -15,6 +15,6 @@ exports[`Activity page (/activity) > renders without crashing and matches snapsh
       </div>
       <!--v-if-->
     </div>
-  </div>
+  </div><button data-v-0e69b3e4="" data-v-570ac06b="" type="button" class="load-more" style="display: none;">Load more</button>
 </div>"
 `;

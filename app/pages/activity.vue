@@ -46,6 +46,12 @@
           <span v-if="!notification.isRead" class="activity__dot" />
         </div>
       </div>
+
+      <AppLoadMoreButton
+        :has-more="hasMore"
+        :loading="isLoading"
+        @load="handleLoadMore"
+      />
     </template>
   </div>
 </template>
@@ -60,14 +66,24 @@ import {
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Activity" });
 
-const { notifications, isLoading, error, fetchNotifications } =
-  useNotifications();
+const {
+  notifications,
+  hasMore,
+  isLoading,
+  error,
+  fetchNotifications,
+  loadMore,
+} = useNotifications();
 
 onMounted(() => {
   fetchNotifications().catch((fetchError: unknown) => {
     console.error("[activity] fetchNotifications failed", fetchError);
   });
 });
+
+async function handleLoadMore(): Promise<void> {
+  await loadMore();
+}
 </script>
 
 <style scoped>
