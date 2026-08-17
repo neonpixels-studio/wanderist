@@ -16,25 +16,37 @@ import { removeMediaBlob, toThumbnailKey } from "./mediaStore";
 
 type Database = ReturnType<typeof getDb>;
 
-// Matches the owner's media row only when nothing references it: no trip cover
-// and no entry photo. Folding the NOT EXISTS reference check into the DELETE's
-// own WHERE collapses the former two-statement check-then-delete into a single
-// statement, so there is no multi-statement gap for a concurrent insert to land
-// in and then be cascaded away. (This does not raise the isolation guarantee:
-// under the default READ COMMITTED a reference that commits within the delete's
-// own snapshot window could still be cascaded; fully serializing against that
-// would need SERIALIZABLE + retry or a FOR UPDATE lock on the media row — out of
-// scope here, and it would need a migration to change the ON DELETE CASCADE FKs.)
+// Matches the owner's media row only when nothing references it. Folding the
+// NOT EXISTS reference check into the DELETE's own WHERE collapses the former
+// two-statement check-then-delete into one statement, so there is no
+// multi-statement gap for a concurrent insert to land in and then be lost.
 //
-// `and()` with a fixed, non-empty argument list is always defined, so the cast
-// to SQL is safe; revisit it if the conditions ever become conditional.
+// This narrows but does not eliminate the race: under the default READ
+// COMMITTED a reference that commits inside the delete's snapshot window can
+// still slip through, and the two FKs resolve it differently — an entry photo
+// (media_id CASCADE) would be deleted with the media, a trip cover
+// (cover_image_id SET NULL) would be silently nulled. Fully serializing against
+// that would need SERIALIZABLE + retry or a FOR UPDATE lock on the media row —
+// out of scope here.
 function unreferencedOwnedMedia(ownerId: string, mediaId: string): SQL {
-  return and(
+  const condition = and(
     eq(media.id, mediaId),
     eq(media.userId, ownerId),
     sql`not exists (select 1 from ${trips} where ${trips.coverImageId} = ${mediaId})`,
     sql`not exists (select 1 from ${entryPhotos} where ${entryPhotos.mediaId} = ${mediaId})`,
-  ) as SQL;
+  );
+
+  // and() is typed SQL | undefined and drizzle treats undefined as "no WHERE".
+  // A future edit that makes the clauses conditional could yield undefined and
+  // silently turn this into an unfiltered DELETE FROM media, so fail loud rather
+  // than lean on the argument list staying non-empty.
+  if (!condition) {
+    throw new Error(
+      "unreferencedOwnedMedia: refusing to build an unfiltered delete",
+    );
+  }
+
+  return condition;
 }
 
 // Blob removal is best-effort: a leaked blob can be reaped out-of-band, so a
@@ -96,12 +108,9 @@ export async function deleteMediaIfUnreferenced(
   ownerId: string,
   mediaId: string,
 ): Promise<boolean> {
-  // Single conditional delete: the reference guard is part of the DELETE's
-  // WHERE, so the check and the delete happen in one atomic statement. RETURNING
-  // reports whether a row was actually removed (and its blob storage key), which
-  // is what distinguishes "deleted" from "left in place (referenced or gone)".
-  // media.url holds the blob storage key (insertMediaRow sets url = storageKey),
-  // so it is what removeMediaBlob/toThumbnailKey operate on.
+  // RETURNING reports whether a row was actually removed and its blob storage
+  // key (media.url holds the storage key: insertMediaRow sets url = storageKey),
+  // distinguishing "deleted" from "left in place (referenced or gone)".
   const deletedRows = await database
     .delete(media)
     .where(unreferencedOwnedMedia(ownerId, mediaId))
