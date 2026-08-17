@@ -79,6 +79,11 @@ function renderSelectField(
 async function captureProfileSelection(): Promise<Record<string, unknown>> {
   const built = buildSelectChain([]);
   await fetchProfileRow(built.chain as unknown as Database, "user-1");
+  if (built.select.mock.calls.length !== 1) {
+    throw new Error(
+      `expected fetchProfileRow to call select() once, got ${built.select.mock.calls.length}`,
+    );
+  }
   return built.select.mock.calls[0][0] as Record<string, unknown>;
 }
 
@@ -163,24 +168,48 @@ describe("fetchProfileRow", () => {
   // Each count subquery joins the counterparty's users row and filters
   // deleted_at IS NULL so an account pending purge cannot inflate the total,
   // then correlates on the follow column that points back at this profile.
-  // Fails if the soft-delete filter is dropped (deleted accounts leak into the
-  // count) or the correlation column is swapped (counts the wrong direction).
+  // The three assertions fail if, respectively: the join is re-aliased onto the
+  // profile's own row (making the soft-delete filter a tautology), the
+  // soft-delete filter is dropped, or the correlation is swapped/pointed away
+  // from users.id (e.g. at the left-joined prefs row, which zeroes the count).
   it.each([
-    ["followerCount", "follower_users", /follows.followee_id\s*=/],
-    ["followingCount", "followee_users", /follows.follower_id\s*=/],
+    [
+      "followerCount",
+      "follower_users",
+      /join users as follower_users on follower_users\.id\s*=\s*follows\.follower_id/,
+      /follows\.followee_id\s*=\s*"users"\."id"/,
+    ],
+    [
+      "followingCount",
+      "followee_users",
+      /join users as followee_users on followee_users\.id\s*=\s*follows\.followee_id/,
+      /follows\.follower_id\s*=\s*"users"\."id"/,
+    ],
   ] as const)(
     "excludes soft-deleted counterparties from %s and correlates correctly",
-    async (field, counterpartyAlias, correlationPredicate) => {
+    async (field, counterpartyAlias, joinPredicate, correlationPredicate) => {
       const countSql = renderSelectField(
         await captureProfileSelection(),
         field,
       );
+      expect(countSql).toMatch(joinPredicate);
       expect(countSql).toMatch(
         new RegExp(`"?${counterpartyAlias}"?\\."?deleted_at"?\\s+is\\s+null`),
       );
       expect(countSql).toMatch(correlationPredicate);
     },
   );
+
+  it("scopes the place count to the profile owner", async () => {
+    // places has no soft-delete or visibility column, so the only thing that
+    // can silently break here is the correlation column — swapping it would
+    // return a different user's place count on this profile.
+    const placeCountSql = renderSelectField(
+      await captureProfileSelection(),
+      "placeCount",
+    );
+    expect(placeCountSql).toMatch(/places\.user_id\s*=\s*"users"\."id"/);
+  });
 });
 
 describe("fetchFollowers", () => {
