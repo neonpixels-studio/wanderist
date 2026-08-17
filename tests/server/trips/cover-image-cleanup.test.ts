@@ -3,9 +3,11 @@
  *
  * The Netlify Blobs interaction is mocked at the mediaStore seam so no network
  * or real store is touched. The drizzle query builder is stubbed with a small
- * chainable fake that records which table each select/delete targeted.
+ * chainable fake; the conditional-delete predicate is compiled with PgDialect
+ * to prove the reference guard lives inside the single DELETE statement.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 const { mockRemoveMediaBlob, mockToThumbnailKey } = vi.hoisted(() => ({
   mockRemoveMediaBlob: vi.fn().mockResolvedValue(undefined),
@@ -24,7 +26,7 @@ Object.assign(globalThis, {
 
 const { deleteMediaIfUnreferenced, assertCoverImageOwned } =
   await import("../../../server/utils/coverImageCleanup");
-const { media, trips, entryPhotos } = await import("../../../server/db/schema");
+const { media } = await import("../../../server/db/schema");
 
 const OWNER_ID = "user-1";
 const MEDIA_ID = "media-1";
@@ -36,43 +38,27 @@ const MEDIA_URL = "user-1/media-1";
 
 type SelectRows = Record<string, unknown>[];
 
-// Returns a select() that resolves to different rows depending on the table
-// passed to from(). Lets a single db stub answer the trips-reference query, the
-// entry-photos-reference query, and the media-row lookup independently.
-function makeDb(options: {
-  tripRefs?: SelectRows;
-  photoRefs?: SelectRows;
-  mediaRows?: SelectRows;
-}) {
-  const deleteWhere = vi.fn().mockResolvedValue(undefined);
+// Stubs the two builders the cleanup uses:
+//   - delete(media).where(cond).returning() — the atomic conditional delete,
+//     resolving to `deletedRows` (the rows the DELETE ... RETURNING removed).
+//   - select().from().where().limit() — the ownership lookup in
+//     assertCoverImageOwned, resolving to `mediaRows`.
+// `deleteWhere` is exposed so a test can inspect the predicate the DELETE ran
+// with and prove the reference guard is inside that single statement.
+function makeDb(options: { deletedRows?: SelectRows; mediaRows?: SelectRows }) {
+  const deleteReturning = vi.fn().mockResolvedValue(options.deletedRows ?? []);
+  const deleteWhere = vi.fn(() => ({ returning: deleteReturning }));
   const deleteFrom = vi.fn(() => ({ where: deleteWhere }));
 
-  function resolveRows(table: unknown): SelectRows {
-    if (table === trips) {
-      return options.tripRefs ?? [];
-    }
-
-    if (table === entryPhotos) {
-      return options.photoRefs ?? [];
-    }
-
-    if (table === media) {
-      return options.mediaRows ?? [];
-    }
-
-    return [];
-  }
-
-  const select = vi.fn(() => ({
-    from: (table: unknown) => {
-      const rows = resolveRows(table);
-      const limit = vi.fn().mockResolvedValue(rows);
-      return { where: vi.fn(() => ({ limit })) };
-    },
-  }));
+  const select = vi.fn(() => {
+    const limit = vi.fn().mockResolvedValue(options.mediaRows ?? []);
+    return {
+      from: () => ({ where: vi.fn(() => ({ limit })) }),
+    };
+  });
 
   const database = { select, delete: deleteFrom };
-  return { database, deleteFrom, deleteWhere };
+  return { database, deleteFrom, deleteWhere, deleteReturning };
 }
 
 describe("deleteMediaIfUnreferenced", () => {
@@ -85,9 +71,9 @@ describe("deleteMediaIfUnreferenced", () => {
     mockRemoveMediaBlob.mockResolvedValue(undefined);
   });
 
-  it("deletes the row and both blobs when nothing else references the media", async () => {
+  it("deletes both blobs and reports success when the conditional delete removes a row", async () => {
     const { database, deleteFrom } = makeDb({
-      mediaRows: [{ url: MEDIA_URL }],
+      deletedRows: [{ url: MEDIA_URL }],
     });
 
     const deleted = await deleteMediaIfUnreferenced(
@@ -102,57 +88,53 @@ describe("deleteMediaIfUnreferenced", () => {
     expect(mockRemoveMediaBlob).toHaveBeenCalledWith(`${MEDIA_URL}-thumb`);
   });
 
-  it("does not delete when another trip still uses the media as its cover", async () => {
-    const { database, deleteFrom } = makeDb({
-      tripRefs: [{ id: "trip-2" }],
-      mediaRows: [{ url: MEDIA_URL }],
+  it("reports failure and touches no blobs when the conditional delete removes nothing", async () => {
+    // An empty RETURNING is how the single statement signals "left in place":
+    // the row was still referenced (or already gone), so the WHERE matched
+    // nothing. The delete still runs — it just deletes zero rows.
+    const { database } = makeDb({ deletedRows: [] });
+
+    const deleted = await deleteMediaIfUnreferenced(
+      database as never,
+      OWNER_ID,
+      MEDIA_ID,
+    );
+
+    expect(deleted).toBe(false);
+    expect(mockRemoveMediaBlob).not.toHaveBeenCalled();
+  });
+
+  // Regression guard for the TOCTOU fix (#166): the reference check must live
+  // inside the DELETE's WHERE, not in a separate query. If it doesn't, a
+  // concurrent insert referencing the media between a standalone check and the
+  // delete can be cascaded away. Compiling the predicate the delete ran with
+  // proves both referencing tables are guarded in the one statement.
+  it("guards the delete with NOT EXISTS against every referencing table in a single statement", async () => {
+    const { database, deleteWhere } = makeDb({
+      deletedRows: [{ url: MEDIA_URL }],
     });
 
-    const deleted = await deleteMediaIfUnreferenced(
-      database as never,
-      OWNER_ID,
-      MEDIA_ID,
-    );
+    await deleteMediaIfUnreferenced(database as never, OWNER_ID, MEDIA_ID);
 
-    expect(deleted).toBe(false);
-    expect(deleteFrom).not.toHaveBeenCalled();
-    expect(mockRemoveMediaBlob).not.toHaveBeenCalled();
+    expect(deleteWhere).toHaveBeenCalledTimes(1);
+    const deletePredicate = deleteWhere.mock.calls[0][0];
+    const { sql, params } = new PgDialect().sqlToQuery(
+      deletePredicate as never,
+    );
+    const normalized = sql.toLowerCase();
+
+    expect(normalized).toContain("not exists");
+    expect(normalized).toContain('"trips"');
+    expect(normalized).toContain('"cover_image_id"');
+    expect(normalized).toContain('"entry_photos"');
+    expect(normalized).toContain('"media_id"');
+    expect(params).toContain(MEDIA_ID);
+    expect(params).toContain(OWNER_ID);
   });
 
-  it("does not delete when an entry photo still references the media", async () => {
+  it("still reports success when blob removal fails", async () => {
     const { database, deleteFrom } = makeDb({
-      photoRefs: [{ id: "photo-9" }],
-      mediaRows: [{ url: MEDIA_URL }],
-    });
-
-    const deleted = await deleteMediaIfUnreferenced(
-      database as never,
-      OWNER_ID,
-      MEDIA_ID,
-    );
-
-    expect(deleted).toBe(false);
-    expect(deleteFrom).not.toHaveBeenCalled();
-    expect(mockRemoveMediaBlob).not.toHaveBeenCalled();
-  });
-
-  it("returns false without touching blobs when the media row is not found", async () => {
-    const { database, deleteFrom } = makeDb({ mediaRows: [] });
-
-    const deleted = await deleteMediaIfUnreferenced(
-      database as never,
-      OWNER_ID,
-      MEDIA_ID,
-    );
-
-    expect(deleted).toBe(false);
-    expect(deleteFrom).not.toHaveBeenCalled();
-    expect(mockRemoveMediaBlob).not.toHaveBeenCalled();
-  });
-
-  it("still deletes the row and reports success when blob removal fails", async () => {
-    const { database, deleteFrom } = makeDb({
-      mediaRows: [{ url: MEDIA_URL }],
+      deletedRows: [{ url: MEDIA_URL }],
     });
     mockRemoveMediaBlob.mockRejectedValue(new Error("store unavailable"));
 

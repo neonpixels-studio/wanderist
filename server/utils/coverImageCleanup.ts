@@ -9,34 +9,26 @@
  * The Netlify Blobs interaction lives behind `mediaStore` so this logic can be
  * unit-tested without touching the network.
  */
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql, type SQL } from "drizzle-orm";
 import type { getDb } from "../db/index";
 import { media, trips, entryPhotos } from "../db/schema";
 import { removeMediaBlob, toThumbnailKey } from "./mediaStore";
 
 type Database = ReturnType<typeof getDb>;
 
-async function isMediaReferenced(
-  database: Database,
-  mediaId: string,
-): Promise<boolean> {
-  const coverReferences = await database
-    .select({ id: trips.id })
-    .from(trips)
-    .where(eq(trips.coverImageId, mediaId))
-    .limit(1);
-
-  if (coverReferences.length > 0) {
-    return true;
-  }
-
-  const photoReferences = await database
-    .select({ id: entryPhotos.id })
-    .from(entryPhotos)
-    .where(eq(entryPhotos.mediaId, mediaId))
-    .limit(1);
-
-  return photoReferences.length > 0;
+// Matches the owner's media row only when nothing references it: no trip cover
+// and no entry photo. The NOT EXISTS subqueries live in the same statement as
+// the DELETE, so the reference check and the delete are evaluated atomically —
+// a concurrent insert that references this media can't slip in between a
+// separate check and delete and then be cascaded away (closes the TOCTOU
+// window without needing an explicit row lock).
+function unreferencedOwnedMedia(ownerId: string, mediaId: string): SQL {
+  return and(
+    eq(media.id, mediaId),
+    eq(media.userId, ownerId),
+    sql`not exists (select 1 from ${trips} where ${trips.coverImageId} = ${mediaId})`,
+    sql`not exists (select 1 from ${entryPhotos} where ${entryPhotos.mediaId} = ${mediaId})`,
+  ) as SQL;
 }
 
 // Blob removal is best-effort: a leaked blob can be reaped out-of-band, so a
@@ -98,31 +90,26 @@ export async function deleteMediaIfUnreferenced(
   ownerId: string,
   mediaId: string,
 ): Promise<boolean> {
-  if (await isMediaReferenced(database, mediaId)) {
-    return false;
-  }
-
+  // Single conditional delete: the reference guard is part of the DELETE's
+  // WHERE, so the check and the delete happen in one atomic statement. RETURNING
+  // reports whether a row was actually removed (and its blob storage key), which
+  // is what distinguishes "deleted" from "left in place (referenced or gone)".
   // media.url holds the blob storage key (insertMediaRow sets url = storageKey),
   // so it is what removeMediaBlob/toThumbnailKey operate on.
-  const rows = await database
-    .select({ url: media.url })
-    .from(media)
-    .where(and(eq(media.id, mediaId), eq(media.userId, ownerId)))
-    .limit(1);
+  const deletedRows = await database
+    .delete(media)
+    .where(unreferencedOwnedMedia(ownerId, mediaId))
+    .returning({ url: media.url });
 
-  const row = rows[0];
+  const deletedRow = deletedRows[0];
 
-  if (!row) {
+  if (!deletedRow) {
     return false;
   }
 
-  // Delete the row first so the reference is gone even if blob removal fails;
-  // an orphaned blob can be reaped out-of-band, an orphaned row cannot.
-  await database
-    .delete(media)
-    .where(and(eq(media.id, mediaId), eq(media.userId, ownerId)));
-
-  await removeStoredBlobs(row.url);
+  // The row is already gone, so the reference is cleared even if blob removal
+  // fails; an orphaned blob can be reaped out-of-band, an orphaned row cannot.
+  await removeStoredBlobs(deletedRow.url);
 
   return true;
 }
