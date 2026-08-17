@@ -47,7 +47,11 @@ type SelectRows = Record<string, unknown>[];
 // with and prove the reference guard is inside that single statement.
 function makeDb(options: { deletedRows?: SelectRows; mediaRows?: SelectRows }) {
   const deleteReturning = vi.fn().mockResolvedValue(options.deletedRows ?? []);
-  const deleteWhere = vi.fn(() => ({ returning: deleteReturning }));
+  // Declares the predicate parameter so the atomicity test can read
+  // deleteWhere.mock.calls[0][0] without a tuple-index type error under tsc.
+  const deleteWhere = vi.fn((_condition: unknown) => ({
+    returning: deleteReturning,
+  }));
   const deleteFrom = vi.fn(() => ({ where: deleteWhere }));
 
   const select = vi.fn(() => {

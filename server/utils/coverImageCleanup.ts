@@ -17,11 +17,17 @@ import { removeMediaBlob, toThumbnailKey } from "./mediaStore";
 type Database = ReturnType<typeof getDb>;
 
 // Matches the owner's media row only when nothing references it: no trip cover
-// and no entry photo. The NOT EXISTS subqueries live in the same statement as
-// the DELETE, so the reference check and the delete are evaluated atomically —
-// a concurrent insert that references this media can't slip in between a
-// separate check and delete and then be cascaded away (closes the TOCTOU
-// window without needing an explicit row lock).
+// and no entry photo. Folding the NOT EXISTS reference check into the DELETE's
+// own WHERE collapses the former two-statement check-then-delete into a single
+// statement, so there is no multi-statement gap for a concurrent insert to land
+// in and then be cascaded away. (This does not raise the isolation guarantee:
+// under the default READ COMMITTED a reference that commits within the delete's
+// own snapshot window could still be cascaded; fully serializing against that
+// would need SERIALIZABLE + retry or a FOR UPDATE lock on the media row — out of
+// scope here, and it would need a migration to change the ON DELETE CASCADE FKs.)
+//
+// `and()` with a fixed, non-empty argument list is always defined, so the cast
+// to SQL is safe; revisit it if the conditions ever become conditional.
 function unreferencedOwnedMedia(ownerId: string, mediaId: string): SQL {
   return and(
     eq(media.id, mediaId),
