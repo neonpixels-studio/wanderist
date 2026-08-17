@@ -349,6 +349,46 @@ describe("useNotifications", () => {
     ]);
   });
 
+  it("fetchNotifications merges the first page in without truncating a fuller loaded list", async () => {
+    // /activity walks three rows into the shared list.
+    mockApiFetch
+      .mockResolvedValueOnce({
+        notifications: [makeSample("n-1")],
+        page: 1,
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        notifications: [makeSample("n-2")],
+        page: 2,
+        hasMore: true,
+      })
+      .mockResolvedValueOnce({
+        notifications: [makeSample("n-3")],
+        page: 3,
+        hasMore: false,
+      });
+    const { notifications, fetchNotifications, fetchAllNotifications } =
+      useNotifications();
+    await fetchAllNotifications();
+    expect(notifications.value).toHaveLength(3);
+
+    // The drawer's page-1 refresh (a brand-new n-0 plus the existing n-1) must
+    // not shrink the list back to the first page.
+    mockApiFetch.mockResolvedValueOnce({
+      notifications: [makeSample("n-0"), makeSample("n-1")],
+      page: 1,
+      hasMore: true,
+    });
+    await fetchNotifications();
+
+    expect(notifications.value.map((item) => item.id)).toEqual([
+      "n-0",
+      "n-1",
+      "n-2",
+      "n-3",
+    ]);
+  });
+
   it("shares one list across instances (drawer + activity see the same store)", async () => {
     mockApiFetch.mockResolvedValue({
       notifications: [makeSample("shared-1")],

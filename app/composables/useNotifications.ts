@@ -65,11 +65,22 @@ function appendUnseen(
   }
 }
 
-// Monotonic across every useNotifications() instance (module scope), so a
-// slower fetch that started earlier can't overwrite the shared list a newer
-// fetch already committed — e.g. the drawer's page-1 request resolving after
-// the /activity full walk it was fired alongside.
-let latestFetchId = 0;
+// Folds a fresh first page into the existing list without shrinking it: the
+// newest rows (authoritative for their read state) go on top, older rows the
+// preview didn't cover are preserved. This is why the drawer's page-1 refresh
+// never truncates a fuller list the /activity walk already loaded.
+function mergeFirstPage(
+  firstPage: AppNotification[],
+  existing: AppNotification[],
+): AppNotification[] {
+  const firstPageIds = new Set(
+    firstPage.map((notification) => notification.id),
+  );
+  const older = existing.filter(
+    (notification) => !firstPageIds.has(notification.id),
+  );
+  return [...firstPage, ...older];
+}
 
 // `notifications` is one shared store (keyed by NOTIFICATIONS_STATE_KEY) so the
 // header drawer and the /activity page agree on the list and its unread count.
@@ -133,15 +144,10 @@ export function useNotifications() {
   async function runFetch(
     load: () => Promise<AppNotification[]>,
   ): Promise<void> {
-    const fetchId = ++latestFetchId;
     isLoading.value = true;
     error.value = null;
     try {
-      const loaded = await load();
-      // Only commit to the shared list if no newer fetch superseded this one.
-      if (fetchId === latestFetchId) {
-        notifications.value = loaded;
-      }
+      notifications.value = await load();
     } catch (fetchError: unknown) {
       error.value = extractErrorMessage(fetchError);
     } finally {
@@ -149,12 +155,13 @@ export function useNotifications() {
     }
   }
 
-  // First page only — the drawer's fast preview. Older notifications live on
-  // later pages and are reached via fetchAllNotifications on /activity.
+  // First page only — the drawer's fast preview. Merges into the shared list so
+  // it refreshes the newest notifications without discarding older pages the
+  // /activity walk may have already loaded.
   async function fetchNotifications(): Promise<void> {
     await runFetch(async () => {
       const response = await fetchNotificationsPage(FIRST_PAGE);
-      return response.notifications;
+      return mergeFirstPage(response.notifications, notifications.value);
     });
   }
 
