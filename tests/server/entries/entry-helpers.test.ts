@@ -5,6 +5,9 @@ import { entryPhotos, entryTags } from "../../../server/db/schema";
 import {
   loadEntryRelations,
   loadRelationsForEntries,
+  parseStringArray,
+  parseRequiredStringArray,
+  MAX_STRING_ARRAY_LENGTH,
 } from "../../../server/utils/entry-helpers";
 import type { getDb } from "../../../server/db/index";
 
@@ -59,6 +62,135 @@ function createFakeDatabase(photoRows: unknown[], tagRows: unknown[]) {
     photoOrderBy: typeof photoOrderBy;
   };
 }
+
+describe("parseStringArray", () => {
+  it("returns undefined when the value is absent", () => {
+    expect(parseStringArray(undefined, "photoMediaIds")).toBeUndefined();
+    expect(parseStringArray(null, "photoMediaIds")).toBeUndefined();
+  });
+
+  it("accepts a valid list of non-blank strings", () => {
+    expect(parseStringArray(["a", "b", "c"], "photoMediaIds")).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+  });
+
+  it("returns an empty array unchanged so callers can distinguish clear-all from absent", () => {
+    expect(parseStringArray([], "photoMediaIds")).toEqual([]);
+  });
+
+  it("trims surrounding whitespace so padded ids match their lookup", () => {
+    expect(parseStringArray([" a ", "b\t"], "photoMediaIds")).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
+  it("accepts a list exactly at the max length", () => {
+    const atLimit = Array.from(
+      { length: MAX_STRING_ARRAY_LENGTH },
+      (_unused, index) => `id-${index}`,
+    );
+    expect(parseStringArray(atLimit, "photoMediaIds")).toEqual(atLimit);
+  });
+
+  it("rejects a list longer than the max length with a 400", () => {
+    const overLimit = Array.from(
+      { length: MAX_STRING_ARRAY_LENGTH + 1 },
+      (_unused, index) => `id-${index}`,
+    );
+    expect(() => parseStringArray(overLimit, "photoMediaIds")).toThrowError(
+      expect.objectContaining({
+        statusCode: 400,
+        statusMessage: `photoMediaIds must not contain more than ${MAX_STRING_ARRAY_LENGTH} items`,
+      }),
+    );
+  });
+
+  it("rejects an empty-string id with a 400", () => {
+    expect(() => parseStringArray(["a", ""], "photoMediaIds")).toThrowError(
+      expect.objectContaining({
+        statusCode: 400,
+        statusMessage: "photoMediaIds must not contain blank values",
+      }),
+    );
+  });
+
+  it("rejects a whitespace-only id with a 400", () => {
+    expect(() => parseStringArray(["a", "   "], "photoMediaIds")).toThrowError(
+      expect.objectContaining({
+        statusCode: 400,
+        statusMessage: "photoMediaIds must not contain blank values",
+      }),
+    );
+  });
+
+  it("rejects a non-string element with a 400", () => {
+    expect(() =>
+      parseStringArray(["a", 42] as unknown, "photoMediaIds"),
+    ).toThrowError(
+      expect.objectContaining({
+        statusCode: 400,
+        statusMessage: "photoMediaIds must be an array of strings",
+      }),
+    );
+  });
+
+  it("rejects a non-array value with a 400", () => {
+    const nonArrays: unknown[] = ["nope", {}, 42];
+    for (const nonArray of nonArrays) {
+      expect(() => parseStringArray(nonArray, "photoMediaIds")).toThrowError(
+        expect.objectContaining({
+          statusCode: 400,
+          statusMessage: "photoMediaIds must be an array when provided",
+        }),
+      );
+    }
+  });
+});
+
+describe("parseRequiredStringArray", () => {
+  it("returns an empty array when the value is absent", () => {
+    expect(parseRequiredStringArray(undefined, "tags")).toEqual([]);
+    expect(parseRequiredStringArray(null, "tags")).toEqual([]);
+  });
+
+  it("passes a valid list through unchanged", () => {
+    expect(parseRequiredStringArray(["a", "b"], "tags")).toEqual(["a", "b"]);
+  });
+
+  it("returns an empty array for an empty list", () => {
+    expect(parseRequiredStringArray([], "tags")).toEqual([]);
+  });
+
+  it("trims surrounding whitespace on each tag", () => {
+    expect(parseRequiredStringArray([" a ", "b"], "tags")).toEqual(["a", "b"]);
+  });
+
+  it("rejects an over-limit list with a 400", () => {
+    const overLimit = Array.from(
+      { length: MAX_STRING_ARRAY_LENGTH + 1 },
+      (_unused, index) => `id-${index}`,
+    );
+    expect(() => parseRequiredStringArray(overLimit, "tags")).toThrowError(
+      expect.objectContaining({
+        statusCode: 400,
+        statusMessage: `tags must not contain more than ${MAX_STRING_ARRAY_LENGTH} items`,
+      }),
+    );
+  });
+
+  it("rejects a blank id with a 400", () => {
+    expect(() => parseRequiredStringArray(["ok", " "], "tags")).toThrowError(
+      expect.objectContaining({
+        statusCode: 400,
+        statusMessage: "tags must not contain blank values",
+      }),
+    );
+  });
+});
 
 describe("loadRelationsForEntries", () => {
   beforeEach(() => {
