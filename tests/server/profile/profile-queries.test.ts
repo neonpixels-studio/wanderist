@@ -5,10 +5,18 @@
  * regardless of the predicates, the privacy-critical filters are asserted
  * explicitly against the arguments passed to `.where()` — otherwise removing
  * `publicProfile`/`deletedAt` would silently pass while leaking private data.
+ *
+ * Some privacy filters do not live in `.where()`: `fetchProfileRow` defaults a
+ * prefs-less account to private via `coalesce(publicProfile, false)` and drops
+ * soft-deleted counterparties from the count subqueries via `deleted_at IS NULL`
+ * — all inside `.select()`. The mock never runs SQL, so those would flip
+ * silently. To give them teeth, the captured `.select()` fragments are rendered
+ * to real SQL text with Drizzle's PgDialect and asserted directly.
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { stubNitroGlobals } from "../test-utils";
 import {
   fetchProfileRow,
@@ -54,6 +62,32 @@ function buildSelectChain(rows: unknown[]) {
     orderBy,
     limit,
   };
+}
+
+const pgDialect = new PgDialect();
+
+// Renders one field from a captured `.select({...})` object to real SQL text so
+// filters embedded in the count subqueries (and the coalesce default) become
+// assertable — the mock resolves rows without ever running this SQL. Guards the
+// field so a rename surfaces the missing key instead of a cryptic Drizzle throw.
+function renderSelectField(
+  selection: Record<string, unknown>,
+  field: string,
+): string {
+  const fragment = selection[field];
+  if (!(fragment instanceof SQL)) {
+    throw new Error(`select() field "${field}" is not an SQL fragment`);
+  }
+  return pgDialect.sqlToQuery(fragment).sql.toLowerCase();
+}
+
+// Runs fetchProfileRow against an empty result set and returns the object it
+// passed to `.select()`, so the privacy filters built into those fields can be
+// rendered and asserted.
+async function captureProfileSelection(): Promise<Record<string, unknown>> {
+  const built = buildSelectChain([]);
+  await fetchProfileRow(built.chain as unknown as Database, "user-1");
+  return built.select.mock.calls[0][0] as Record<string, unknown>;
 }
 
 describe("fetchProfileRow", () => {
@@ -152,6 +186,58 @@ describe("fetchProfileRow", () => {
     );
 
     expect(result).toBeNull();
+  });
+
+  it("defaults a prefs-less profile to private (coalesce publicProfile to false)", async () => {
+    // A user who never opened settings has no preferences row, so publicProfile
+    // is NULL. The coalesce default is the only thing keeping them private:
+    // flipping it to true would make every prefs-less account world-readable.
+    // Anchored to public_profile so substituting a different flag also fails.
+    const publicProfileSql = renderSelectField(
+      await captureProfileSelection(),
+      "publicProfile",
+    );
+    expect(publicProfileSql).toMatch(
+      /coalesce\("?user_preferences"?\."?public_profile"?,\s*false\)/,
+    );
+  });
+
+  // Assert the whole subquery clause as one anchored shape, not loose tokens, so
+  // structural weakenings are caught: an inner JOIN (not LEFT JOIN, which would
+  // make deleted_at IS NULL true for unmatched rows), the counterparty joined on
+  // the correct follow column (not re-aliased onto the profile's own row), a
+  // correlation anchored to users.id (not the left-joined prefs row, which zeroes
+  // the count), and the soft-delete filter AND-ed on (not OR-ed, which counts
+  // every follow row). `\s+` spans the newlines in the rendered SQL.
+  it.each([
+    [
+      "followerCount",
+      /from follows\s+join users as follower_users on follower_users\.id\s*=\s*follows\.follower_id\s+where\s+follows\.followee_id\s*=\s*"users"\."id"\s+and\s+follower_users\.deleted_at\s+is\s+null/,
+    ],
+    [
+      "followingCount",
+      /from follows\s+join users as followee_users on followee_users\.id\s*=\s*follows\.followee_id\s+where\s+follows\.follower_id\s*=\s*"users"\."id"\s+and\s+followee_users\.deleted_at\s+is\s+null/,
+    ],
+  ] as const)(
+    "counts only non-deleted, correctly-correlated %s rows",
+    async (field, subqueryPredicate) => {
+      const countSql = renderSelectField(
+        await captureProfileSelection(),
+        field,
+      );
+      expect(countSql).toMatch(subqueryPredicate);
+    },
+  );
+
+  it("scopes the place count to the profile owner", async () => {
+    // places has no soft-delete or visibility column, so the only thing that
+    // can silently break here is the correlation column — swapping it would
+    // return a different user's place count on this profile.
+    const placeCountSql = renderSelectField(
+      await captureProfileSelection(),
+      "placeCount",
+    );
+    expect(placeCountSql).toMatch(/places\.user_id\s*=\s*"users"\."id"/);
   });
 });
 
