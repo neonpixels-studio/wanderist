@@ -245,7 +245,13 @@ export const trips = pgTable(
       .notNull()
       .$onUpdate(() => new Date()),
   },
-  (table) => [index("trips_user_id_idx").on(table.userId)],
+  (table) => [
+    index("trips_user_id_idx").on(table.userId),
+    // Index the media FK so the NOT EXISTS anti-join in media deletion (and
+    // cover-image lookups) uses an index scan instead of a sequential scan
+    // while the media row lock is held.
+    index("trips_cover_image_id_idx").on(table.coverImageId),
+  ],
 );
 
 // ---------------------------------------------------------------------------
@@ -362,7 +368,12 @@ export const entryPhotos = pgTable(
       .references(() => media.id, { onDelete: ON_DELETE.CASCADE }),
     sortOrder: integer("sort_order").notNull().default(0),
   },
-  (table) => [index("entry_photos_entry_id_idx").on(table.entryId)],
+  (table) => [
+    index("entry_photos_entry_id_idx").on(table.entryId),
+    // Index the media FK so the NOT EXISTS anti-join in media deletion uses an
+    // index scan instead of a sequential scan while the media row lock is held.
+    index("entry_photos_media_id_idx").on(table.mediaId),
+  ],
 );
 
 // ---------------------------------------------------------------------------

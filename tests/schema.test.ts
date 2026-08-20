@@ -330,6 +330,38 @@ describe("column presence", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Foreign-key indexes — assert that FKs pointing at the media table are
+// indexed. Without these, the NOT EXISTS anti-joins run during a media DELETE
+// fall back to sequential scans while holding the media row lock (see #179).
+// Read the index set from the Drizzle table config so the assertion tracks the
+// schema source of truth rather than the generated SQL.
+// ---------------------------------------------------------------------------
+
+function hasIndexOnColumn(table: PgTable, columnName: string): boolean {
+  const { indexes } = getTableConfig(table);
+  return indexes.some((index) =>
+    index.config.columns.some(
+      (column) => "name" in column && column.name === columnName,
+    ),
+  );
+}
+
+const MEDIA_FK_INDEX_POLICY: ReadonlyArray<{
+  label: string;
+  table: PgTable;
+  column: string;
+}> = [
+  { label: "trips.coverImageId", table: trips, column: "cover_image_id" },
+  { label: "entryPhotos.mediaId", table: entryPhotos, column: "media_id" },
+];
+
+describe("media foreign-key indexes", () => {
+  it.each(MEDIA_FK_INDEX_POLICY)("$label is indexed", ({ table, column }) => {
+    expect(hasIndexOnColumn(table, column)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ON DELETE policy — assert the referential-action encoded on each FK so the
 // build fails if the policy regresses (e.g. a cascade silently becomes the
 // Drizzle default of "no action"). Read directly from the Drizzle table config
