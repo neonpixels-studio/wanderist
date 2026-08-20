@@ -152,16 +152,20 @@ export function getUserIdFromSubscription(
   return subscription.metadata?.userId ?? null;
 }
 
-type SubscriptionIdRow = {
+type SubscriptionStalenessRow = {
   stripeSubscriptionId: string | null;
+  updatedFromEventAt: Date | null;
 };
 
-async function getSubscriptionIdRow(
+async function getSubscriptionStalenessRow(
   database: ReturnType<typeof getDb>,
   userId: string,
-): Promise<SubscriptionIdRow | undefined> {
+): Promise<SubscriptionStalenessRow | undefined> {
   const rows = await database
-    .select({ stripeSubscriptionId: subscriptions.stripeSubscriptionId })
+    .select({
+      stripeSubscriptionId: subscriptions.stripeSubscriptionId,
+      updatedFromEventAt: subscriptions.updatedFromEventAt,
+    })
     .from(subscriptions)
     .where(eq(subscriptions.userId, userId))
     .limit(1);
@@ -176,7 +180,7 @@ async function getSubscriptionIdRow(
  * subscription arrives after the new one was already synced). No existing
  * row, or a row with no ID recorded yet, is never considered stale.
  */
-function isStaleEvent(
+function isSupersededSubscription(
   recordedId: string | null | undefined,
   incomingId: string,
 ): boolean {
@@ -184,6 +188,45 @@ function isStaleEvent(
     return false;
   }
   return recordedId !== incomingId;
+}
+
+/**
+ * True when this event is an out-of-order redelivery of an *older* event for
+ * the row's current subscription. Stripe does not guarantee webhook delivery
+ * order, so a delayed redelivery of an older `customer.subscription.*` event
+ * (same subscription ID) can arrive after a newer one was already applied —
+ * without this guard it would resurrect the older, stale plan. Compared
+ * strictly (`<`): an event whose `created` equals the recorded timestamp is
+ * still applied, since Stripe's second-granularity `created` can collide for
+ * two genuinely distinct events and reapplying identical state is a no-op.
+ * Never stale when no timestamp is recorded yet.
+ */
+function isOutOfOrderEvent(
+  recordedEventAt: Date | null | undefined,
+  incomingEventAt: Date,
+): boolean {
+  if (!recordedEventAt) {
+    return false;
+  }
+  return incomingEventAt.getTime() < recordedEventAt.getTime();
+}
+
+/**
+ * True when a webhook event must be rejected as stale: either it targets a
+ * subscription that has since been superseded by a different one, or it is an
+ * out-of-order redelivery of an older event for the same subscription. Single
+ * source both sync functions read so the staleness rule can't drift between
+ * them.
+ */
+function isStaleEvent(
+  row: SubscriptionStalenessRow | undefined,
+  incomingId: string,
+  incomingEventAt: Date,
+): boolean {
+  if (isSupersededSubscription(row?.stripeSubscriptionId, incomingId)) {
+    return true;
+  }
+  return isOutOfOrderEvent(row?.updatedFromEventAt, incomingEventAt);
 }
 
 /**
@@ -198,21 +241,20 @@ function isStaleEvent(
  * unrecognized payload doesn't fail webhook delivery — Stripe retries on
  * non-2xx, and there is nothing actionable to retry here.
  *
- * Known, accepted race (mirrors the exact tradeoff the previous Clerk Billing
- * integration accepted for the same reason): markSubscriptionCanceled clears
- * stripeSubscriptionId on cancellation so a genuine resubscribe isn't
- * rejected as stale (see its docstring). That means a `subscription.updated`
- * for the just-canceled subscription, delivered *after* its `.deleted` event
- * (Stripe does not guarantee delivery order), would no longer be recognized
- * as stale here and could briefly re-activate the row with a future
- * `current_period_end`. Closing this fully would require tracking the
- * canceled subscription's ID separately from the live one (an extra column)
- * purely to guard a narrow, transient race — not done here; the same
- * cost/benefit call the original Clerk integration made for its equivalent
- * out-of-order risk.
+ * Rejects stale events two ways (see isStaleEvent): an event for a
+ * subscription that has since been superseded by a different one, and — via
+ * the `eventCreatedAt` (the Stripe event's `created`) recorded in
+ * `updatedFromEventAt` — an out-of-order redelivery of an *older* event for
+ * the row's current subscription. The latter also closes the race where a
+ * `subscription.updated` for a just-canceled subscription, redelivered after
+ * its `.deleted` event (Stripe does not guarantee delivery order), would
+ * otherwise re-activate the row: the stale update's older `created` loses to
+ * the deletion's recorded timestamp even though markSubscriptionCanceled
+ * clears stripeSubscriptionId so a genuine resubscribe still isn't rejected.
  */
 export async function upsertSubscriptionFromStripeSubscription(
   subscription: Stripe.Subscription,
+  eventCreatedAt: Date,
 ): Promise<void> {
   const userId = getUserIdFromSubscription(subscription);
   if (!userId) {
@@ -228,8 +270,8 @@ export async function upsertSubscriptionFromStripeSubscription(
   }
 
   const database = getDb();
-  const existing = await getSubscriptionIdRow(database, userId);
-  if (isStaleEvent(existing?.stripeSubscriptionId, subscription.id)) {
+  const existing = await getSubscriptionStalenessRow(database, userId);
+  if (isStaleEvent(existing, subscription.id, eventCreatedAt)) {
     return;
   }
 
@@ -252,6 +294,7 @@ export async function upsertSubscriptionFromStripeSubscription(
     cancelAtPeriodEnd: subscription.cancel_at_period_end,
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscription.id,
+    updatedFromEventAt: eventCreatedAt,
   };
 
   await database
@@ -288,6 +331,7 @@ export async function upsertSubscriptionFromStripeSubscription(
  */
 export async function markSubscriptionCanceled(
   subscription: Stripe.Subscription,
+  eventCreatedAt: Date,
 ): Promise<void> {
   const userId = getUserIdFromSubscription(subscription);
   if (!userId) {
@@ -295,8 +339,8 @@ export async function markSubscriptionCanceled(
   }
 
   const database = getDb();
-  const existing = await getSubscriptionIdRow(database, userId);
-  if (isStaleEvent(existing?.stripeSubscriptionId, subscription.id)) {
+  const existing = await getSubscriptionStalenessRow(database, userId);
+  if (isStaleEvent(existing, subscription.id, eventCreatedAt)) {
     return;
   }
 
@@ -317,6 +361,7 @@ export async function markSubscriptionCanceled(
       status: SUBSCRIPTION_STATUS.CANCELED,
       cancelAtPeriodEnd: false,
       stripeSubscriptionId: null,
+      updatedFromEventAt: eventCreatedAt,
     })
     .where(eq(subscriptions.userId, userId));
 }

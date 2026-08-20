@@ -77,6 +77,13 @@ const {
   markSubscriptionCanceled,
 } = await import("../../server/utils/subscriptions");
 
+// The Stripe event's `created` time, threaded into the sync functions. A fixed
+// value so out-of-order tests can build clearly older / newer timestamps
+// relative to it.
+const EVENT_CREATED_AT = new Date("2026-08-01T00:00:00.000Z");
+const OLDER_EVENT_AT = new Date("2026-07-01T00:00:00.000Z");
+const NEWER_EVENT_AT = new Date("2026-09-01T00:00:00.000Z");
+
 function buildSubscriptionRow(
   status: string,
   plan: string,
@@ -397,6 +404,7 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
   it("upserts the subscriptions row from a valid subscription", async () => {
     await upsertSubscriptionFromStripeSubscription(
       buildSubscription() as never,
+      EVENT_CREATED_AT,
     );
 
     expect(mockInsert).toHaveBeenCalledTimes(1);
@@ -411,6 +419,7 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
         cancelAtPeriodEnd: false,
         currentPeriodEnd: new Date(1785000000 * 1000),
         trialEndsAt: null,
+        updatedFromEventAt: EVENT_CREATED_AT,
       }),
     );
     expect(mockInsertOnConflictDoUpdate).toHaveBeenCalledTimes(1);
@@ -419,6 +428,7 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
   it("resolves customer from an expanded customer object", async () => {
     await upsertSubscriptionFromStripeSubscription(
       buildSubscription({ customer: { id: "cus_expanded" } }) as never,
+      EVENT_CREATED_AT,
     );
 
     expect(mockInsertValues).toHaveBeenCalledWith(
@@ -429,6 +439,7 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
   it("maps trialing status to active and populates trialEndsAt from trial_end", async () => {
     await upsertSubscriptionFromStripeSubscription(
       buildSubscription({ status: "trialing", trial_end: 1785100000 }) as never,
+      EVENT_CREATED_AT,
     );
 
     expect(mockInsertValues).toHaveBeenCalledWith(
@@ -442,6 +453,7 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
   it("stores cancelAtPeriodEnd true when the subscription is scheduled to cancel", async () => {
     await upsertSubscriptionFromStripeSubscription(
       buildSubscription({ cancel_at_period_end: true }) as never,
+      EVENT_CREATED_AT,
     );
 
     expect(mockInsertValues).toHaveBeenCalledWith(
@@ -452,6 +464,7 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
   it("no-ops when metadata.userId is missing", async () => {
     await upsertSubscriptionFromStripeSubscription(
       buildSubscription({ metadata: {} }) as never,
+      EVENT_CREATED_AT,
     );
     expect(mockInsert).not.toHaveBeenCalled();
   });
@@ -459,6 +472,7 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
   it("no-ops when there are no subscription items", async () => {
     await upsertSubscriptionFromStripeSubscription(
       buildSubscription({ items: { data: [] } }) as never,
+      EVENT_CREATED_AT,
     );
     expect(mockInsert).not.toHaveBeenCalled();
   });
@@ -468,6 +482,7 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
 
     await upsertSubscriptionFromStripeSubscription(
       buildSubscription() as never,
+      EVENT_CREATED_AT,
     );
 
     expect(mockInsert).not.toHaveBeenCalled();
@@ -485,6 +500,7 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
           ],
         },
       }) as never,
+      EVENT_CREATED_AT,
     );
 
     expect(mockInsertValues).toHaveBeenCalledWith(
@@ -500,6 +516,7 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
 
     await upsertSubscriptionFromStripeSubscription(
       buildSubscription({ id: "sub_123" }) as never,
+      EVENT_CREATED_AT,
     );
 
     expect(mockInsert).not.toHaveBeenCalled();
@@ -510,6 +527,7 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
 
     await upsertSubscriptionFromStripeSubscription(
       buildSubscription() as never,
+      EVENT_CREATED_AT,
     );
 
     expect(mockInsert).toHaveBeenCalledTimes(1);
@@ -520,6 +538,53 @@ describe("upsertSubscriptionFromStripeSubscription", () => {
 
     await upsertSubscriptionFromStripeSubscription(
       buildSubscription({ id: "sub_123" }) as never,
+      EVENT_CREATED_AT,
+    );
+
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips an out-of-order redelivery of an older event for the same subscription", async () => {
+    // Same subscription id, but the row was already updated from a newer event.
+    // A delayed redelivery of an older event must not resurrect its stale plan.
+    mockSelectLimit.mockResolvedValue([
+      { stripeSubscriptionId: "sub_123", updatedFromEventAt: EVENT_CREATED_AT },
+    ]);
+
+    await upsertSubscriptionFromStripeSubscription(
+      buildSubscription({ id: "sub_123" }) as never,
+      OLDER_EVENT_AT,
+    );
+
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it("applies a newer event for the same subscription", async () => {
+    mockSelectLimit.mockResolvedValue([
+      { stripeSubscriptionId: "sub_123", updatedFromEventAt: EVENT_CREATED_AT },
+    ]);
+
+    await upsertSubscriptionFromStripeSubscription(
+      buildSubscription({ id: "sub_123" }) as never,
+      NEWER_EVENT_AT,
+    );
+
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ updatedFromEventAt: NEWER_EVENT_AT }),
+    );
+  });
+
+  it("applies an event whose timestamp equals the recorded one (second-granularity collision)", async () => {
+    // Stripe's `created` has second granularity, so two distinct events can
+    // share a timestamp. Equal is applied (only strictly-older is rejected).
+    mockSelectLimit.mockResolvedValue([
+      { stripeSubscriptionId: "sub_123", updatedFromEventAt: EVENT_CREATED_AT },
+    ]);
+
+    await upsertSubscriptionFromStripeSubscription(
+      buildSubscription({ id: "sub_123" }) as never,
+      EVENT_CREATED_AT,
     );
 
     expect(mockInsert).toHaveBeenCalledTimes(1);
@@ -547,13 +612,17 @@ describe("markSubscriptionCanceled", () => {
   it("marks the row canceled, clears stripeSubscriptionId, but keeps stripeCustomerId", async () => {
     mockSelectLimit.mockResolvedValue([{ stripeSubscriptionId: "sub_123" }]);
 
-    await markSubscriptionCanceled(buildSubscription() as never);
+    await markSubscriptionCanceled(
+      buildSubscription() as never,
+      EVENT_CREATED_AT,
+    );
 
     expect(mockUpdate).toHaveBeenCalledTimes(1);
     expect(mockUpdateSet).toHaveBeenCalledWith({
       status: "canceled",
       cancelAtPeriodEnd: false,
       stripeSubscriptionId: null,
+      updatedFromEventAt: EVENT_CREATED_AT,
     });
   });
 
@@ -561,7 +630,10 @@ describe("markSubscriptionCanceled", () => {
     mockSelectLimit.mockResolvedValue([]);
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await markSubscriptionCanceled(buildSubscription() as never);
+    await markSubscriptionCanceled(
+      buildSubscription() as never,
+      EVENT_CREATED_AT,
+    );
 
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -571,7 +643,10 @@ describe("markSubscriptionCanceled", () => {
   it("marks the row canceled when the existing row has no subscription id recorded", async () => {
     mockSelectLimit.mockResolvedValue([{ stripeSubscriptionId: null }]);
 
-    await markSubscriptionCanceled(buildSubscription() as never);
+    await markSubscriptionCanceled(
+      buildSubscription() as never,
+      EVENT_CREATED_AT,
+    );
 
     expect(mockUpdate).toHaveBeenCalledTimes(1);
   });
@@ -581,14 +656,44 @@ describe("markSubscriptionCanceled", () => {
 
     await markSubscriptionCanceled(
       buildSubscription({ id: "sub_123" }) as never,
+      EVENT_CREATED_AT,
     );
 
     expect(mockUpdate).not.toHaveBeenCalled();
   });
 
+  it("skips an out-of-order redelivery of an older deletion for the same subscription", async () => {
+    mockSelectLimit.mockResolvedValue([
+      { stripeSubscriptionId: "sub_123", updatedFromEventAt: EVENT_CREATED_AT },
+    ]);
+
+    await markSubscriptionCanceled(
+      buildSubscription({ id: "sub_123" }) as never,
+      OLDER_EVENT_AT,
+    );
+
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("records the event timestamp when canceling so a later stale update loses to it", async () => {
+    mockSelectLimit.mockResolvedValue([
+      { stripeSubscriptionId: "sub_123", updatedFromEventAt: OLDER_EVENT_AT },
+    ]);
+
+    await markSubscriptionCanceled(
+      buildSubscription({ id: "sub_123" }) as never,
+      NEWER_EVENT_AT,
+    );
+
+    expect(mockUpdateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ updatedFromEventAt: NEWER_EVENT_AT }),
+    );
+  });
+
   it("no-ops when metadata.userId is missing", async () => {
     await markSubscriptionCanceled(
       buildSubscription({ metadata: {} }) as never,
+      EVENT_CREATED_AT,
     );
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockSelect).not.toHaveBeenCalled();

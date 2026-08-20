@@ -14,6 +14,7 @@ import {
 } from "../../utils/planLimits";
 
 const STRIPE_SIGNATURE_HEADER = "stripe-signature";
+const MILLISECONDS_PER_SECOND = 1000;
 
 /**
  * Runs a subscription sync (upsert or cancel) then reconciles the user's
@@ -23,13 +24,21 @@ const STRIPE_SIGNATURE_HEADER = "stripe-signature";
  * reconcile re-reads the row the sync just wrote, so it must run after it. Skips
  * reconciliation when the event carries no userId, exactly as the sync
  * functions themselves no-op.
+ *
+ * `eventCreatedAt` is the Stripe event's `created` time, threaded into the sync
+ * so an out-of-order redelivery of an older event is rejected as stale (see
+ * server/utils/subscriptions.ts).
  */
 async function applySubscriptionSync(
   subscription: Stripe.Subscription,
-  sync: (subscription: Stripe.Subscription) => Promise<void>,
+  eventCreatedAt: Date,
+  sync: (
+    subscription: Stripe.Subscription,
+    eventCreatedAt: Date,
+  ) => Promise<void>,
   reconcilePublicProfile: (userId: string) => Promise<void>,
 ): Promise<void> {
-  await sync(subscription);
+  await sync(subscription, eventCreatedAt);
   const userId = getUserIdFromSubscription(subscription);
   if (!userId) {
     return;
@@ -87,12 +96,18 @@ export default defineEventHandler(async (event) => {
     });
   }
 
+  // Stripe's `event.created` is a Unix timestamp in seconds.
+  const eventCreatedAt = new Date(
+    stripeEvent.created * MILLISECONDS_PER_SECOND,
+  );
+
   if (
     stripeEvent.type === EVENT_SUBSCRIPTION_CREATED ||
     stripeEvent.type === EVENT_SUBSCRIPTION_UPDATED
   ) {
     await applySubscriptionSync(
       stripeEvent.data.object as Stripe.Subscription,
+      eventCreatedAt,
       upsertSubscriptionFromStripeSubscription,
       revokePublicProfileOnDowngrade,
     );
@@ -102,6 +117,7 @@ export default defineEventHandler(async (event) => {
   if (stripeEvent.type === EVENT_SUBSCRIPTION_DELETED) {
     await applySubscriptionSync(
       stripeEvent.data.object as Stripe.Subscription,
+      eventCreatedAt,
       markSubscriptionCanceled,
       revokePublicProfileOnCancellation,
     );

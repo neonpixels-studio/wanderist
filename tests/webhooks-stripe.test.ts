@@ -69,6 +69,11 @@ const SUBSCRIPTION_OBJECT = {
   metadata: { userId: "user-1" },
 };
 
+// Stripe's `event.created` (Unix seconds) and the Date the handler threads into
+// the sync functions from it.
+const EVENT_CREATED_UNIX = 1785000000;
+const EVENT_CREATED_AT = new Date(EVENT_CREATED_UNIX * 1000);
+
 // The signature-verification-failure test exercises the handler's catch block,
 // which logs via console.error. Silence it so the expected log doesn't pollute
 // test output.
@@ -147,6 +152,7 @@ describe("stripe webhook handler", () => {
     async (eventType) => {
       mockConstructStripeEvent.mockReturnValue({
         type: eventType,
+        created: EVENT_CREATED_UNIX,
         data: { object: SUBSCRIPTION_OBJECT },
       });
 
@@ -156,6 +162,7 @@ describe("stripe webhook handler", () => {
 
       expect(mockUpsertSubscriptionFromStripeSubscription).toHaveBeenCalledWith(
         SUBSCRIPTION_OBJECT,
+        EVENT_CREATED_AT,
       );
       expect(mockMarkSubscriptionCanceled).not.toHaveBeenCalled();
       // A plan change can be an active downgrade (Nomad → Wanderer), so the
@@ -178,6 +185,7 @@ describe("stripe webhook handler", () => {
   it("dispatches customer.subscription.deleted to markSubscriptionCanceled", async () => {
     mockConstructStripeEvent.mockReturnValue({
       type: "customer.subscription.deleted",
+      created: EVENT_CREATED_UNIX,
       data: { object: SUBSCRIPTION_OBJECT },
     });
 
@@ -187,6 +195,7 @@ describe("stripe webhook handler", () => {
 
     expect(mockMarkSubscriptionCanceled).toHaveBeenCalledWith(
       SUBSCRIPTION_OBJECT,
+      EVENT_CREATED_AT,
     );
     expect(mockUpsertSubscriptionFromStripeSubscription).not.toHaveBeenCalled();
     // Cancellation drops the user to Drifter, so public discoverability is
