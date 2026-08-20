@@ -3,6 +3,7 @@ import type { SQL } from "drizzle-orm";
 import { getDb } from "../../db/index";
 import { trips, TRIP_STATUS } from "../../db/schema";
 import { requireUser } from "../../utils/auth";
+import { MAX_PAGE, parsePageParam, pageToOffset } from "../../utils/pagination";
 
 const VALID_STATUSES = [
   TRIP_STATUS.ONGOING,
@@ -52,21 +53,6 @@ function parseSortOrder(value: unknown): SortOrder {
 
 const PAGE_SIZE = 20;
 
-// Bounds how deep an offset scan can go — well above the client's own
-// MAX_TRIPS_PAGES walk limit (see app/stores/trips.ts), so a legitimate walk
-// never hits this; it only stops a malicious/garbage page number (including
-// non-safe-integer values like `1e300`, which `Number.isInteger` admits but
-// would otherwise reach the query as a huge offset).
-const MAX_PAGE = 1000;
-
-function parsePageParam(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_PAGE) {
-    return 1;
-  }
-  return parsed;
-}
-
 function buildFilters(userId: string, statusFilter: TripStatus | null): SQL[] {
   const filters: SQL[] = [eq(trips.userId, userId)];
 
@@ -102,7 +88,7 @@ async function fetchTripsPage(
     .where(and(...filters))
     .orderBy(...orderColumns)
     .limit(PAGE_SIZE)
-    .offset((page - 1) * PAGE_SIZE);
+    .offset(pageToOffset(page, PAGE_SIZE));
 }
 
 export default defineEventHandler(async (event) => {

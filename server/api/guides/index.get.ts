@@ -3,23 +3,9 @@ import { getDb } from "../../db/index";
 import { guides } from "../../db/schema";
 import { requireUser } from "../../utils/auth";
 import { GUIDE_LIKEABLE, likedContentIds } from "../../utils/like-helpers";
+import { MAX_PAGE, parsePageParam, pageToOffset } from "../../utils/pagination";
 
 const PAGE_SIZE = 20;
-
-// Bounds how deep an offset scan can go — well above the client's own
-// MAX_GUIDES_PAGES walk limit (see app/stores/guides.ts), so a legitimate walk
-// never hits this; it only stops a malicious/garbage page number (including
-// non-safe-integer values like `1e300`, which would otherwise reach the query
-// as a huge offset). Mirrors the trips pagination (server/api/trips/index.get.ts).
-const MAX_PAGE = 1000;
-
-function parsePageParam(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_PAGE) {
-    return 1;
-  }
-  return parsed;
-}
 
 async function fetchGuidesPage(
   database: ReturnType<typeof getDb>,
@@ -38,7 +24,7 @@ async function fetchGuidesPage(
     .where(eq(guides.userId, userId))
     .orderBy(desc(guides.createdAt), desc(guides.id))
     .limit(PAGE_SIZE)
-    .offset((page - 1) * PAGE_SIZE);
+    .offset(pageToOffset(page, PAGE_SIZE));
 }
 
 export default defineEventHandler(async (event) => {

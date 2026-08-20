@@ -89,6 +89,7 @@ function makeDbForListing(
     }),
     selectDistinct: selectDistinctMock,
     _whereMock: whereMock,
+    _offsetMock: offsetMock,
   };
 }
 
@@ -193,6 +194,70 @@ describe("GET /api/entries", () => {
     const shortPage = [{ id: "e-1", userId: "user-1", title: "Only Entry" }];
     mockRequireUser.mockReturnValue("user-1");
     const mockDb = makeDbForListing(shortPage);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    const result = (await (defaultHandler as (event: unknown) => unknown)(
+      {},
+    )) as { hasMore: boolean };
+
+    expect(result.hasMore).toBe(false);
+  });
+
+  it("falls back to page 1 for a non-safe-integer page param (e.g. 1e300)", async () => {
+    mockRequireUser.mockReturnValue("user-1");
+    mockGetQuery.mockReturnValue({ page: "1e300" });
+    const mockDb = makeDbForListing([]);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    const result = (await (defaultHandler as (event: unknown) => unknown)(
+      {},
+    )) as { page: number };
+
+    expect(result.page).toBe(1);
+    expect(mockDb._offsetMock).toHaveBeenCalledWith(0);
+  });
+
+  it("falls back to page 1 for a page beyond the MAX_PAGE bound", async () => {
+    mockRequireUser.mockReturnValue("user-1");
+    mockGetQuery.mockReturnValue({ page: "1001" });
+    const mockDb = makeDbForListing([]);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    const result = (await (defaultHandler as (event: unknown) => unknown)(
+      {},
+    )) as { page: number };
+
+    expect(result.page).toBe(1);
+    expect(mockDb._offsetMock).toHaveBeenCalledWith(0);
+  });
+
+  it("honors the page exactly at the MAX_PAGE bound", async () => {
+    mockRequireUser.mockReturnValue("user-1");
+    mockGetQuery.mockReturnValue({ page: "1000" });
+    const mockDb = makeDbForListing([]);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    const result = (await (defaultHandler as (event: unknown) => unknown)(
+      {},
+    )) as { page: number };
+
+    expect(result.page).toBe(1000);
+    expect(mockDb._offsetMock).toHaveBeenCalledWith((1000 - 1) * 20);
+  });
+
+  it("reports hasMore: false at MAX_PAGE even with a full page", async () => {
+    const fullPage = Array.from({ length: 20 }, (_, index) => ({
+      id: `e-${index}`,
+      userId: "user-1",
+      title: `Entry ${index}`,
+    }));
+    mockRequireUser.mockReturnValue("user-1");
+    mockGetQuery.mockReturnValue({ page: "1000" });
+    const mockDb = makeDbForListing(fullPage);
     mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
 
     const defaultHandler = "default" in handler ? handler.default : handler;
