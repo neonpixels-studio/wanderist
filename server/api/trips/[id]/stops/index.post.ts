@@ -2,6 +2,7 @@ import { eq, max } from "drizzle-orm";
 import { getDb } from "../../../../db/index";
 import { trips, tripStops, TRIP_STOP_STATUS } from "../../../../db/schema";
 import { requireString, optionalString } from "../../../../utils/db-helpers";
+import { assertPlaceOwnedIfPresent } from "../../../../utils/place-helpers";
 import {
   parseEnum,
   parseOptionalDate,
@@ -76,12 +77,17 @@ function buildNewStop(
 export default defineEventHandler(async (event): Promise<TripStop> => {
   const tripId = requireTripId(event);
 
-  await loadOwnedTrip(event, tripId);
+  const trip = await loadOwnedTrip(event, tripId);
 
   const body = await readBody(event);
   const parsed = parseStopBody(body ?? {});
 
   const database = getDb();
+
+  // Reject a foreign/nonexistent place before writing: a placeId the trip owner
+  // doesn't own would otherwise dangle this stop off another user's place.
+  await assertPlaceOwnedIfPresent(database, trip.userId, parsed.placeId);
+
   const sortOrder = await getNextSortOrder(database, tripId);
   const newStop = buildNewStop(tripId, sortOrder, parsed);
 

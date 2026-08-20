@@ -20,6 +20,10 @@ vi.mock("../../../server/utils/media-helpers", () => ({
   assertPhotoMediaOwned: vi.fn(),
 }));
 
+vi.mock("../../../server/utils/place-helpers", () => ({
+  assertPlaceOwnedIfPresent: vi.fn(),
+}));
+
 vi.mock("../../../server/utils/trip-helpers", () => ({
   assertTripOwnershipIfPresent: vi.fn(),
 }));
@@ -66,12 +70,14 @@ import { ensureUser } from "../../../server/utils/auth";
 import { getDb } from "../../../server/db/index";
 import { upsertTags } from "../../../server/utils/entry-helpers";
 import { assertPhotoMediaOwned } from "../../../server/utils/media-helpers";
+import { assertPlaceOwnedIfPresent } from "../../../server/utils/place-helpers";
 import { assertTripOwnershipIfPresent } from "../../../server/utils/trip-helpers";
 
 const mockEnsureUser = vi.mocked(ensureUser);
 const mockGetDb = vi.mocked(getDb);
 const mockUpsertTags = vi.mocked(upsertTags);
 const mockAssertPhotoMediaOwned = vi.mocked(assertPhotoMediaOwned);
+const mockAssertPlaceOwnedIfPresent = vi.mocked(assertPlaceOwnedIfPresent);
 const mockAssertTripOwnershipIfPresent = vi.mocked(
   assertTripOwnershipIfPresent,
 );
@@ -198,6 +204,67 @@ describe("POST /api/entries", () => {
       "trip-other",
     );
     expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it("throws 404 when placeId belongs to another user and does not insert", async () => {
+    mockEnsureUser.mockResolvedValue("user-1");
+    mockReadBody.mockResolvedValue({
+      title: "My Entry",
+      placeId: "place-other",
+    });
+    const mockDb = makeDbForCreate({ id: "e-1" });
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+    mockAssertPlaceOwnedIfPresent.mockRejectedValueOnce(
+      createError({ statusCode: 404, statusMessage: "Place not found" }),
+    );
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+
+    await expect(
+      (defaultHandler as (event: unknown) => unknown)({}),
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(mockAssertPlaceOwnedIfPresent).toHaveBeenCalledWith(
+      mockDb,
+      "user-1",
+      "place-other",
+    );
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it("calls the place check with undefined and still inserts when no placeId is supplied", async () => {
+    const createdEntry = { id: "e-1", userId: "user-1" };
+    mockEnsureUser.mockResolvedValue("user-1");
+    mockReadBody.mockResolvedValue({ title: "My Entry" });
+    const mockDb = makeDbForCreate(createdEntry);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    await (defaultHandler as (event: unknown) => unknown)({});
+
+    expect(mockAssertPlaceOwnedIfPresent).toHaveBeenCalledWith(
+      mockDb,
+      "user-1",
+      undefined,
+    );
+    expect(mockDb.insert).toHaveBeenCalled();
+  });
+
+  it("validates place ownership before inserting when a placeId is supplied", async () => {
+    const createdEntry = { id: "e-1", userId: "user-1", placeId: "place-1" };
+    mockEnsureUser.mockResolvedValue("user-1");
+    mockReadBody.mockResolvedValue({ title: "My Entry", placeId: "place-1" });
+    const mockDb = makeDbForCreate(createdEntry);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    const result = await (defaultHandler as (event: unknown) => unknown)({});
+
+    expect(mockAssertPlaceOwnedIfPresent).toHaveBeenCalledWith(
+      mockDb,
+      "user-1",
+      "place-1",
+    );
+    expect(result).toMatchObject(createdEntry);
   });
 
   it("validates trip ownership before inserting when a tripId is supplied", async () => {
