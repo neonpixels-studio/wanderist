@@ -4,6 +4,7 @@ import { getDb } from "../../db/index";
 import { entries, entryPhotos, entryTags } from "../../db/schema";
 import { requireString, optionalString } from "../../utils/db-helpers";
 import { assertPhotoMediaOwned } from "../../utils/media-helpers";
+import { assertPlaceOwnedIfPresent } from "../../utils/place-helpers";
 import {
   generateId,
   parseOccurredAt,
@@ -78,6 +79,10 @@ export default defineEventHandler(async (event) => {
   // Reject foreign/nonexistent photo media before writing anything: a media id
   // the caller doesn't own would otherwise be attached to this entry.
   await assertPhotoMediaOwned(database, userId, photoMediaIds);
+
+  // Reject a foreign/nonexistent place before writing: a placeId the caller
+  // doesn't own would otherwise dangle this entry off another user's place.
+  await assertPlaceOwnedIfPresent(database, userId, placeId);
 
   const entryId = generateId();
 

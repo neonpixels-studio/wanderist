@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "../../../../db/index";
 import { tripStops, TRIP_STOP_STATUS } from "../../../../db/schema";
 import { optionalString } from "../../../../utils/db-helpers";
+import { assertPlaceOwnedIfPresent } from "../../../../utils/place-helpers";
 import {
   parseOptionalEnum,
   parseOptionalDate,
@@ -83,7 +84,7 @@ export default defineEventHandler(async (event): Promise<TripStop> => {
   const tripId = requireTripId(event);
   const stopId = requireStopId(event);
 
-  await loadOwnedTrip(event, tripId);
+  const trip = await loadOwnedTrip(event, tripId);
 
   const database = getDb();
 
@@ -93,6 +94,11 @@ export default defineEventHandler(async (event): Promise<TripStop> => {
   const patchFields = buildPatchFields(body ?? {});
 
   requireNonEmptyPatch(patchFields);
+
+  // Reject a foreign/nonexistent place before writing: a placeId the trip owner
+  // doesn't own would otherwise re-point this stop at another user's place. A
+  // no-op when the patch does not touch placeId.
+  await assertPlaceOwnedIfPresent(database, trip.userId, patchFields.placeId);
 
   const [updated] = await database
     .update(tripStops)
