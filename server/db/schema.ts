@@ -597,6 +597,13 @@ export const subscriptions = pgTable("subscriptions", {
   // cleared on cancellation — see server/utils/subscriptions.ts for why.
   stripeCustomerId: text("stripe_customer_id"),
   stripeSubscriptionId: text("stripe_subscription_id").unique(),
+  // The `created` timestamp of the most recent Stripe webhook event applied to
+  // this row. Stripe does not guarantee delivery order, so a redelivery of an
+  // *older* event for the same subscription must not overwrite state written by
+  // a newer one — the sync rejects any incoming event whose `created` is older
+  // than this. Null until the first event writes it. See
+  // server/utils/subscriptions.ts.
+  updatedFromEventAt: timestamp("updated_from_event_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at")
     .defaultNow()
