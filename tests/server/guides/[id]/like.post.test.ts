@@ -17,8 +17,11 @@ vi.mock("../../../../server/db/index", () => ({
 
 vi.mock("../../../../server/utils/like-helpers", () => ({
   GUIDE_LIKEABLE: { name: "guide" },
-  loadLikeableOrThrow: vi.fn(),
   likeContent: vi.fn(),
+}));
+
+vi.mock("../../../../server/utils/guide-queries", () => ({
+  loadReadableGuide: vi.fn(),
 }));
 
 import { requireRouterParam } from "../../../../server/utils/db-helpers";
@@ -26,14 +29,14 @@ import { requireUser } from "../../../../server/utils/auth";
 import { getDb } from "../../../../server/db/index";
 import {
   GUIDE_LIKEABLE,
-  loadLikeableOrThrow,
   likeContent,
 } from "../../../../server/utils/like-helpers";
+import { loadReadableGuide } from "../../../../server/utils/guide-queries";
 
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
 const mockRequireUser = vi.mocked(requireUser);
 const mockGetDb = vi.mocked(getDb);
-const mockLoadLikeableOrThrow = vi.mocked(loadLikeableOrThrow);
+const mockLoadReadableGuide = vi.mocked(loadReadableGuide);
 const mockLikeContent = vi.mocked(likeContent);
 
 const handler = await import("../../../../server/api/guides/[id]/like.post");
@@ -58,8 +61,8 @@ describe("POST /api/guides/:id/like", () => {
     };
     mockRequireRouterParam.mockReturnValue("g-1");
     mockRequireUser.mockReturnValue("liker-2");
-    mockLoadLikeableOrThrow.mockResolvedValue(
-      updated as unknown as Awaited<ReturnType<typeof loadLikeableOrThrow>>,
+    mockLoadReadableGuide.mockResolvedValue(
+      updated as unknown as Awaited<ReturnType<typeof loadReadableGuide>>,
     );
     mockLikeContent.mockResolvedValue(
       updated as unknown as Awaited<ReturnType<typeof likeContent>>,
@@ -67,9 +70,8 @@ describe("POST /api/guides/:id/like", () => {
 
     const result = await invoke();
 
-    expect(mockLoadLikeableOrThrow).toHaveBeenCalledWith(
+    expect(mockLoadReadableGuide).toHaveBeenCalledWith(
       expect.anything(),
-      GUIDE_LIKEABLE,
       "g-1",
       "liker-2",
     );
@@ -86,14 +88,15 @@ describe("POST /api/guides/:id/like", () => {
     });
   });
 
-  it("throws 404 when the guide is missing or not likeable", async () => {
+  it("throws 404 without recording a like when the guide is not readable (missing, private, or a lapsed/undiscoverable author)", async () => {
     mockRequireRouterParam.mockReturnValue("missing");
     mockRequireUser.mockReturnValue("liker-2");
-    mockLoadLikeableOrThrow.mockRejectedValue(
-      createError({ statusCode: 404, statusMessage: "Not found" }),
+    mockLoadReadableGuide.mockRejectedValue(
+      createError({ statusCode: 404, statusMessage: "Guide not found" }),
     );
 
     await expect(invoke()).rejects.toMatchObject({ statusCode: 404 });
+    expect(mockLikeContent).not.toHaveBeenCalled();
   });
 
   it("throws 400 when id param is missing", async () => {
