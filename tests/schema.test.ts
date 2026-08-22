@@ -351,28 +351,20 @@ const MEDIA_FK_INDEX_POLICY: ReadonlyArray<{
   label: string;
   table: PgTable;
   column: string;
-}> = [
-  { label: "trips.coverImageId", table: trips, column: "cover_image_id" },
-  { label: "entryPhotos.mediaId", table: entryPhotos, column: "media_id" },
-];
-
-// The Drizzle-config assertions above pass whenever schema.ts declares the
-// index, even if the migration that creates it in the database was lost (e.g.
-// during a rebase or a migration renumber). Assert the index also lives in the
-// latest migration snapshot — the artifact drizzle-kit diffs against — so
-// schema/migration drift fails the build instead of shipping the #179 outage.
-const LATEST_MIGRATION_SNAPSHOT_INDEXES: ReadonlyArray<{
-  label: string;
   snapshotTable: string;
   indexName: string;
 }> = [
   {
     label: "trips.coverImageId",
+    table: trips,
+    column: "cover_image_id",
     snapshotTable: "public.trips",
     indexName: "trips_cover_image_id_idx",
   },
   {
     label: "entryPhotos.mediaId",
+    table: entryPhotos,
+    column: "media_id",
     snapshotTable: "public.entry_photos",
     indexName: "entry_photos_media_id_idx",
   },
@@ -383,14 +375,19 @@ describe("media foreign-key indexes", () => {
     expect(hasIndexOnColumn(table, column)).toBe(true);
   });
 
-  it.each(LATEST_MIGRATION_SNAPSHOT_INDEXES)(
+  // The Drizzle-config assertion above passes whenever schema.ts declares the
+  // index, even if the migration that creates it in the database was lost (e.g.
+  // during a rebase or a migration renumber). Assert the index also lives in
+  // the latest migration snapshot — the artifact drizzle-kit diffs against — so
+  // schema/migration drift fails the build instead of shipping the #179 outage.
+  it.each(MEDIA_FK_INDEX_POLICY)(
     "$label index is present in the latest migration snapshot",
     ({ snapshotTable, indexName }) => {
       const tables = latestMigrationSnapshot.tables as Record<
         string,
         { indexes: Record<string, unknown> }
       >;
-      expect(tables[snapshotTable].indexes).toHaveProperty(indexName);
+      expect(tables[snapshotTable]?.indexes ?? {}).toHaveProperty(indexName);
     },
   );
 });
