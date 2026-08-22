@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { is } from "drizzle-orm";
 import { getTableConfig, PgTable } from "drizzle-orm/pg-core";
 import * as schema from "../server/db/schema";
+import latestMigrationSnapshot from "../server/db/migrations/meta/0012_snapshot.json";
 import {
   users,
   media,
@@ -355,10 +356,43 @@ const MEDIA_FK_INDEX_POLICY: ReadonlyArray<{
   { label: "entryPhotos.mediaId", table: entryPhotos, column: "media_id" },
 ];
 
+// The Drizzle-config assertions above pass whenever schema.ts declares the
+// index, even if the migration that creates it in the database was lost (e.g.
+// during a rebase or a migration renumber). Assert the index also lives in the
+// latest migration snapshot — the artifact drizzle-kit diffs against — so
+// schema/migration drift fails the build instead of shipping the #179 outage.
+const LATEST_MIGRATION_SNAPSHOT_INDEXES: ReadonlyArray<{
+  label: string;
+  snapshotTable: string;
+  indexName: string;
+}> = [
+  {
+    label: "trips.coverImageId",
+    snapshotTable: "public.trips",
+    indexName: "trips_cover_image_id_idx",
+  },
+  {
+    label: "entryPhotos.mediaId",
+    snapshotTable: "public.entry_photos",
+    indexName: "entry_photos_media_id_idx",
+  },
+];
+
 describe("media foreign-key indexes", () => {
   it.each(MEDIA_FK_INDEX_POLICY)("$label is indexed", ({ table, column }) => {
     expect(hasIndexOnColumn(table, column)).toBe(true);
   });
+
+  it.each(LATEST_MIGRATION_SNAPSHOT_INDEXES)(
+    "$label index is present in the latest migration snapshot",
+    ({ snapshotTable, indexName }) => {
+      const tables = latestMigrationSnapshot.tables as Record<
+        string,
+        { indexes: Record<string, unknown> }
+      >;
+      expect(tables[snapshotTable].indexes).toHaveProperty(indexName);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
