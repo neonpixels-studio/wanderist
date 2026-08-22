@@ -78,6 +78,13 @@
       "when": 1787216901577,
       "tag": "0011_add_subscriptions_updated_from_event_at",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787216901578,
+      "tag": "0012_add_media_fk_indexes",
+      "breakpoints": true
     }
   ]
 }
