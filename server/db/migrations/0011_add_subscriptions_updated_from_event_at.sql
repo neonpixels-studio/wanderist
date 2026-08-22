@@ -1,0 +1,1 @@
+ALTER TABLE "subscriptions" ADD COLUMN "updated_from_event_at" timestamp;

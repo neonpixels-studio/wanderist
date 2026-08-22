@@ -3,16 +3,9 @@ import type { SQL } from "drizzle-orm";
 import { requireUser } from "../../utils/auth";
 import { getDb } from "../../db/index";
 import { places } from "../../db/schema";
+import { MAX_PAGE, parsePageParam, pageToOffset } from "../../utils/pagination";
 
 const PAGE_SIZE = 20;
-
-function parsePageParam(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    return 1;
-  }
-  return parsed;
-}
 
 function buildFilters(userId: string, query: Record<string, unknown>): SQL[] {
   const filters: SQL[] = [eq(places.userId, userId)];
@@ -46,7 +39,7 @@ async function fetchPlacesPage(
       // pages; see the PR description for why that's an accepted tradeoff.
       .orderBy(desc(places.createdAt), desc(places.id))
       .limit(PAGE_SIZE)
-      .offset((page - 1) * PAGE_SIZE)
+      .offset(pageToOffset(page, PAGE_SIZE))
   );
 }
 
@@ -60,5 +53,9 @@ export default defineEventHandler(async (event) => {
 
   const rows = await fetchPlacesPage(database, filters, page);
 
-  return { places: rows, page, hasMore: rows.length === PAGE_SIZE };
+  return {
+    places: rows,
+    page,
+    hasMore: rows.length === PAGE_SIZE && page < MAX_PAGE,
+  };
 });

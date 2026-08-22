@@ -6,6 +6,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeOwnershipError, callHandler } from "./_helpers";
+import { assertPlaceOwnedIfPresent } from "../../../server/utils/place-helpers";
+
+vi.mock("../../../server/utils/place-helpers", () => ({
+  assertPlaceOwnedIfPresent: vi.fn(),
+}));
+
+const mockAssertPlaceOwnedIfPresent = vi.mocked(assertPlaceOwnedIfPresent);
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -115,7 +122,7 @@ describe("PATCH /api/trips/[id]/stops/[stopId]", () => {
     mockGetRouterParam.mockImplementation((_, key: string) =>
       key === "id" ? "trip-1" : "stop-1",
     );
-    mockLoadOwnedOrThrow.mockResolvedValue({ id: "trip-1" });
+    mockLoadOwnedOrThrow.mockResolvedValue({ id: "trip-1", userId: "user-1" });
     mockReadBody.mockResolvedValue({ name: "New Name" });
     mockSelectLimit.mockResolvedValue([
       {
@@ -200,5 +207,44 @@ describe("PATCH /api/trips/[id]/stops/[stopId]", () => {
     expect(mockSet).toHaveBeenCalledWith(
       expect.objectContaining({ name: "Reykjavík" }),
     );
+  });
+
+  it("throws 404 when placeId belongs to another user and does not update", async () => {
+    mockReadBody.mockResolvedValue({ placeId: "place-other" });
+    mockAssertPlaceOwnedIfPresent.mockRejectedValueOnce(makeOwnershipError());
+
+    await expect(callHandler(handler, buildEvent())).rejects.toMatchObject({
+      statusCode: 404,
+    });
+    expect(mockAssertPlaceOwnedIfPresent).toHaveBeenCalledWith(
+      expect.anything(),
+      "user-1",
+      "place-other",
+    );
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it("calls the place check with undefined and still updates when no placeId is supplied", async () => {
+    await callHandler(handler, buildEvent());
+
+    expect(mockAssertPlaceOwnedIfPresent).toHaveBeenCalledWith(
+      expect.anything(),
+      "user-1",
+      undefined,
+    );
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("validates place ownership scoped to the trip owner when a placeId is supplied", async () => {
+    mockReadBody.mockResolvedValue({ placeId: "place-1" });
+
+    await callHandler(handler, buildEvent());
+
+    expect(mockAssertPlaceOwnedIfPresent).toHaveBeenCalledWith(
+      expect.anything(),
+      "user-1",
+      "place-1",
+    );
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
   });
 });

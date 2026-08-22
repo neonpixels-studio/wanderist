@@ -8,6 +8,7 @@ import { getDb } from "../../db/index";
 import { entries, entryPhotos, entryTags } from "../../db/schema";
 import { deleteMediaIfUnreferenced } from "../../utils/coverImageCleanup";
 import { assertPhotoMediaOwned } from "../../utils/media-helpers";
+import { assertPlaceOwnedIfPresent } from "../../utils/place-helpers";
 import { assertTripOwnershipIfPresent } from "../../utils/trip-helpers";
 import {
   generateId,
@@ -243,6 +244,11 @@ export default defineEventHandler(async (event) => {
   if (photoMediaIds !== undefined) {
     await assertPhotoMediaOwned(database, entry.userId, photoMediaIds);
   }
+
+  // Reject a foreign/nonexistent place before the transaction: a placeId the
+  // entry owner doesn't own would otherwise re-point this entry at another
+  // user's place. A no-op when the patch does not touch placeId.
+  await assertPlaceOwnedIfPresent(database, entry.userId, placeId);
 
   const { payload, removedMediaIds } = await database.transaction(
     async (transaction) => {

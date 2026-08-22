@@ -46,6 +46,10 @@ vi.mock("../../../server/utils/media-helpers", () => ({
   assertPhotoMediaOwned: vi.fn(),
 }));
 
+vi.mock("../../../server/utils/place-helpers", () => ({
+  assertPlaceOwnedIfPresent: vi.fn(),
+}));
+
 vi.mock("../../../server/utils/trip-helpers", () => ({
   assertTripOwnershipIfPresent: vi.fn(),
 }));
@@ -100,6 +104,7 @@ import {
 import { getDb } from "../../../server/db/index";
 import { deleteMediaIfUnreferenced } from "../../../server/utils/coverImageCleanup";
 import { assertPhotoMediaOwned } from "../../../server/utils/media-helpers";
+import { assertPlaceOwnedIfPresent } from "../../../server/utils/place-helpers";
 import { assertTripOwnershipIfPresent } from "../../../server/utils/trip-helpers";
 
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
@@ -107,6 +112,7 @@ const mockLoadOwnedOrThrow = vi.mocked(loadOwnedOrThrow);
 const mockGetDb = vi.mocked(getDb);
 const mockDeleteMediaIfUnreferenced = vi.mocked(deleteMediaIfUnreferenced);
 const mockAssertPhotoMediaOwned = vi.mocked(assertPhotoMediaOwned);
+const mockAssertPlaceOwnedIfPresent = vi.mocked(assertPlaceOwnedIfPresent);
 const mockAssertTripOwnershipIfPresent = vi.mocked(
   assertTripOwnershipIfPresent,
 );
@@ -305,6 +311,60 @@ describe("PATCH /api/entries/:id", () => {
     expect(mockAssertTripOwnershipIfPresent).toHaveBeenCalledWith(
       expect.anything(),
       "trip-1",
+    );
+    expect(result).toMatchObject(updatedEntry);
+  });
+
+  it("throws 404 when placeId belongs to another user and does not open a transaction", async () => {
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({ placeId: "place-other" });
+    const mockDb = makeDbForPatch({ id: "e-1", userId: "user-1" });
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    mockAssertPlaceOwnedIfPresent.mockRejectedValueOnce(
+      createError({ statusCode: 404, statusMessage: "Place not found" }),
+    );
+
+    await expect(invokeHandler({})).rejects.toMatchObject({ statusCode: 404 });
+
+    expect(mockAssertPlaceOwnedIfPresent).toHaveBeenCalledWith(
+      mockDb,
+      "user-1",
+      "place-other",
+    );
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it("calls the place check with undefined and still updates when no placeId is supplied", async () => {
+    const updatedEntry = { id: "e-1", userId: "user-1", title: "Only title" };
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({ title: "Only title" });
+    const mockDb = makeDbForPatch(updatedEntry);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    await invokeHandler({});
+
+    expect(mockAssertPlaceOwnedIfPresent).toHaveBeenCalledWith(
+      mockDb,
+      "user-1",
+      undefined,
+    );
+    expect(mockDb.transaction).toHaveBeenCalled();
+  });
+
+  it("validates place ownership scoped to the entry owner when a placeId is supplied", async () => {
+    const updatedEntry = { id: "e-1", userId: "user-1", placeId: "place-1" };
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({ placeId: "place-1" });
+    const mockDb = makeDbForPatch(updatedEntry);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const result = await invokeHandler({});
+
+    expect(mockAssertPlaceOwnedIfPresent).toHaveBeenCalledWith(
+      mockDb,
+      "user-1",
+      "place-1",
     );
     expect(result).toMatchObject(updatedEntry);
   });

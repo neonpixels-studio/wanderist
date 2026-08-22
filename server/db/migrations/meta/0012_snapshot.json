@@ -1,6 +1,6 @@
 {
-  "id": "6b7c598f-68ec-4a51-bd15-538a5d4e1070",
-  "prevId": "19db1161-1746-4ca3-8d2f-8e1b83899dd8",
+  "id": "2fba8871-19bf-433b-8830-33357bbfae8d",
+  "prevId": "6b7c598f-68ec-4a51-bd15-538a5d4e1070",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -395,6 +395,21 @@
           "columns": [
             {
               "expression": "entry_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "entry_photos_media_id_idx": {
+          "name": "entry_photos_media_id_idx",
+          "columns": [
+            {
+              "expression": "media_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1496,6 +1511,21 @@
           "columns": [
             {
               "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "trips_cover_image_id_idx": {
+          "name": "trips_cover_image_id_idx",
+          "columns": [
+            {
+              "expression": "cover_image_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

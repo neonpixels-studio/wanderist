@@ -4,19 +4,12 @@ import { requireUser } from "../../utils/auth";
 import { getDb } from "../../db/index";
 import { entries, entryPhotos, entryTags, tags } from "../../db/schema";
 import { ENTRY_LIKEABLE, likedContentIds } from "../../utils/like-helpers";
+import { MAX_PAGE, parsePageParam, pageToOffset } from "../../utils/pagination";
 
 const VALID_TABS = ["timeline", "by-trip", "photos"] as const;
 type Tab = (typeof VALID_TABS)[number];
 
 const PAGE_SIZE = 20;
-
-function parsePageParam(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    return 1;
-  }
-  return parsed;
-}
 
 function resolveTab(value: unknown): Tab {
   if (VALID_TABS.includes(value as Tab)) {
@@ -108,7 +101,7 @@ async function fetchEntriesPage(
       desc(entries.createdAt),
     )
     .limit(PAGE_SIZE)
-    .offset((page - 1) * PAGE_SIZE);
+    .offset(pageToOffset(page, PAGE_SIZE));
 }
 
 export default defineEventHandler(async (event) => {
@@ -152,5 +145,10 @@ export default defineEventHandler(async (event) => {
     likedByCurrentUser: likedIds.has(row.id),
   }));
 
-  return { entries: result, tab, page, hasMore: rows.length === PAGE_SIZE };
+  return {
+    entries: result,
+    tab,
+    page,
+    hasMore: rows.length === PAGE_SIZE && page < MAX_PAGE,
+  };
 });
