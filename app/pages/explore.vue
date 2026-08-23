@@ -299,6 +299,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from "vue";
+import { PLACE_CATEGORIES } from "~/constants/placeCategories";
 import type {
   FeaturedTrip,
   DiscoverGuide,
@@ -336,14 +337,13 @@ const SEARCH_CHIPS = [
   "Off-season Europe",
 ] as const;
 
-const PLACE_FILTERS = [
+const PLACE_FILTERS: { label: string; category: string | null }[] = [
   { label: "All", category: null },
-  { label: "Nature", category: "nature" },
-  { label: "Cities", category: "city" },
-  { label: "Coast", category: "coast" },
-  { label: "Food", category: "food" },
-  { label: "Culture", category: "culture" },
-] as const;
+  ...PLACE_CATEGORIES.map((placeCategory) => ({
+    label: placeCategory.label,
+    category: placeCategory.value,
+  })),
+];
 
 const FEATURED_SKELETON_COUNT = 3;
 

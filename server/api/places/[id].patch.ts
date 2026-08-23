@@ -17,9 +17,15 @@ function applyOptionalString(
   field: keyof Pick<PlaceUpdates, "subtitle" | "country" | "category">,
 ): void {
   const value = optionalString(body[field], field);
-  if (value !== undefined) {
-    updates[field] = value;
+  if (value === undefined) {
+    return;
   }
+  // optionalString does not trim, so an empty-or-whitespace value clears the
+  // field: store NULL rather than "" (or "   ") so a cleared value matches "no
+  // value" in queries (e.g. the trending grouping by category) instead of
+  // becoming a second, distinct representation.
+  const trimmed = value.trim();
+  updates[field] = trimmed === "" ? null : trimmed;
 }
 
 function applyOptionalName(
