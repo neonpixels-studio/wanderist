@@ -137,6 +137,12 @@ describe("useEntriesStore", () => {
 
       await expect(store.fetchEntries()).rejects.toThrow(/exceeded 500 pages/);
       expect(store.error).toMatch(/exceeded 500 pages/);
+      expect(store.isLoading).toBe(false);
+      // Fail loud rather than expose a truncated list dressed up as the full one.
+      expect(store.entries).toEqual([]);
+      // Pins the cap boundary: pages 1..500 are fetched, then the 501st request
+      // is refused. A `>=` off-by-one would show up here as 499.
+      expect(mockApiFetch).toHaveBeenCalledTimes(500);
     });
 
     it("throws on a malformed response missing hasMore", async () => {
