@@ -114,6 +114,58 @@ describe("useEntriesStore", () => {
       );
     });
 
+    it("throws on a malformed response whose entries is not an array", async () => {
+      mockApiFetch.mockResolvedValue({
+        entries: null,
+        tab: "timeline",
+        page: 1,
+        hasMore: false,
+      });
+      const store = useEntriesStore();
+
+      await expect(store.fetchEntries()).rejects.toThrow(
+        /Malformed \/api\/entries response/,
+      );
+    });
+
+    it("preserves the existing list when a later page fails mid-walk", async () => {
+      const seeded = [{ ...BASE_ENTRY, id: "seed-1" }];
+      const firstPage = Array.from({ length: 20 }, (_, index) => ({
+        ...BASE_ENTRY,
+        id: `p1-${index}`,
+      }));
+
+      // Seed a known list via a first successful single-page fetch, then make
+      // the next fetch fail on its second page.
+      mockApiFetch.mockResolvedValueOnce({
+        entries: seeded,
+        tab: "timeline",
+        page: 1,
+        hasMore: false,
+      });
+
+      const store = useEntriesStore();
+      await store.fetchEntries();
+      expect(store.entries).toEqual(seeded);
+
+      mockApiFetch
+        .mockResolvedValueOnce({
+          entries: firstPage,
+          tab: "timeline",
+          page: 1,
+          hasMore: true,
+        })
+        .mockRejectedValueOnce(new Error("page 2 failed"));
+
+      await expect(store.fetchEntries()).rejects.toThrow("page 2 failed");
+
+      // A mid-walk failure must not leave the store holding a truncated list —
+      // the prior contents survive and the error surfaces.
+      expect(store.entries).toEqual(seeded);
+      expect(store.error).toBe("page 2 failed");
+      expect(store.isLoading).toBe(false);
+    });
+
     it("sets isLoading true during fetch and resets after", async () => {
       let capturedLoading = false;
       const store = useEntriesStore();
