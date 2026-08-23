@@ -42,56 +42,105 @@ const JUNE_28_2026: OnThisDayDate = { month: 6, day: 28, year: 2026 };
 const JULY_4_2026: OnThisDayDate = { month: 7, day: 4, year: 2026 };
 
 describe("parseLocalDateParam", () => {
+  // Pin "now" to a leap year so the year-bound (server year ± 1) and the
+  // leap-day branch are both deterministic: valid sample years stay within
+  // 2023-2025, and Feb 29 is a real date in the current (2024) year.
+  const LEAP_YEAR_NOW = new Date("2024-06-15T12:00:00.000Z");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(LEAP_YEAR_NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("parses a valid YYYY-MM-DD string into month/day/year parts", () => {
-    expect(parseLocalDateParam("2026-06-28")).toEqual(JUNE_28_2026);
+    expect(parseLocalDateParam("2024-06-28")).toEqual({
+      month: 6,
+      day: 28,
+      year: 2024,
+    });
   });
 
   it("trims surrounding whitespace before parsing", () => {
-    expect(parseLocalDateParam("  2026-06-28  ")).toEqual(JUNE_28_2026);
+    expect(parseLocalDateParam("  2024-06-28  ")).toEqual({
+      month: 6,
+      day: 28,
+      year: 2024,
+    });
   });
 
   it("returns null for non-string input", () => {
     expect(parseLocalDateParam(undefined)).toBeNull();
-    expect(parseLocalDateParam(20260628)).toBeNull();
-    expect(parseLocalDateParam(["2026-06-28"])).toBeNull();
+    expect(parseLocalDateParam(20240628)).toBeNull();
+    expect(parseLocalDateParam(["2024-06-28"])).toBeNull();
   });
 
   it("returns null for malformed strings", () => {
     expect(parseLocalDateParam("")).toBeNull();
-    expect(parseLocalDateParam("2026/06/28")).toBeNull();
-    expect(parseLocalDateParam("2026-6-28")).toBeNull();
-    expect(parseLocalDateParam("June 28, 2026")).toBeNull();
+    expect(parseLocalDateParam("2024/06/28")).toBeNull();
+    expect(parseLocalDateParam("2024-6-28")).toBeNull();
+    expect(parseLocalDateParam("June 28, 2024")).toBeNull();
   });
 
   it("returns null for out-of-range month or day", () => {
-    expect(parseLocalDateParam("2026-13-01")).toBeNull();
-    expect(parseLocalDateParam("2026-00-10")).toBeNull();
-    expect(parseLocalDateParam("2026-06-32")).toBeNull();
-    expect(parseLocalDateParam("2026-06-00")).toBeNull();
+    expect(parseLocalDateParam("2024-13-01")).toBeNull();
+    expect(parseLocalDateParam("2024-00-10")).toBeNull();
+    expect(parseLocalDateParam("2024-06-32")).toBeNull();
+    expect(parseLocalDateParam("2024-06-00")).toBeNull();
   });
 
   it("returns null for a day that does not exist in the month", () => {
-    expect(parseLocalDateParam("2026-02-30")).toBeNull();
+    expect(parseLocalDateParam("2024-06-31")).toBeNull(); // 30-day month
+    expect(parseLocalDateParam("2023-02-29")).toBeNull(); // 2023 is not a leap year
   });
 
-  it("returns null for an implausible year, so it can't widen the match set", () => {
+  it("accepts February 29 in a leap year", () => {
+    expect(parseLocalDateParam("2024-02-29")).toEqual({
+      month: 2,
+      day: 29,
+      year: 2024,
+    });
+  });
+
+  it("rejects a year further than one off the server clock", () => {
+    // Server year is 2024, so 2025 (next-year straddle) is allowed but 2026 is
+    // a stale/bogus clock and must be rejected, along with wildly-off years.
+    expect(parseLocalDateParam("2025-06-28")).toEqual({
+      month: 6,
+      day: 28,
+      year: 2025,
+    });
+    expect(parseLocalDateParam("2023-06-28")).toEqual({
+      month: 6,
+      day: 28,
+      year: 2023,
+    });
+    expect(parseLocalDateParam("2026-06-28")).toBeNull();
+    expect(parseLocalDateParam("2022-06-28")).toBeNull();
     expect(parseLocalDateParam("9999-06-28")).toBeNull();
-    expect(parseLocalDateParam("1969-06-28")).toBeNull();
   });
 
   it("returns identical parts regardless of the process timezone", () => {
     // parseLocalDateParam reads the literal string components (never an
     // instant), so a far-east and a far-west process timezone must yield the
     // same parts. A regression to `new Date(value).getMonth()` would diverge
-    // here and fail — that's the point of exercising two zones.
+    // here and fail — that's the point of exercising two zones. The sentinel
+    // assertions prove the zone reassignment actually took effect (otherwise
+    // both branches would run under the setup's pinned UTC and pass vacuously).
     const originalTimezone = process.env.TZ;
     try {
-      process.env.TZ = "Pacific/Kiritimati";
-      const easternResult = parseLocalDateParam("2026-01-01");
-      process.env.TZ = "Pacific/Niue";
-      const westernResult = parseLocalDateParam("2026-01-01");
+      process.env.TZ = "Pacific/Kiritimati"; // UTC+14
+      expect(new Date("2024-01-01T00:00:00.000Z").getDate()).toBe(1);
+      const easternResult = parseLocalDateParam("2024-01-01");
 
-      expect(easternResult).toEqual({ month: 1, day: 1, year: 2026 });
+      process.env.TZ = "Pacific/Niue"; // UTC-11, still Dec 31 for that instant
+      expect(new Date("2024-01-01T00:00:00.000Z").getDate()).toBe(31);
+      const westernResult = parseLocalDateParam("2024-01-01");
+
+      expect(easternResult).toEqual({ month: 1, day: 1, year: 2024 });
       expect(westernResult).toEqual(easternResult);
     } finally {
       process.env.TZ = originalTimezone;

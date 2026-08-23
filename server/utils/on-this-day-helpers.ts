@@ -20,11 +20,12 @@ export interface OnThisDayDate {
 
 const LOCAL_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MONTH_OFFSET = 1;
-// Sanity bounds on the client-supplied year, so a bogus value like 9999 can't
-// widen the "prior years" match to every entry. The floor is the Unix epoch;
-// the ceiling tolerates a viewer whose local date has rolled into next year
-// slightly ahead of the server clock.
-const MIN_REFERENCE_YEAR = 1970;
+// The reference is always the viewer's "today", so a legitimate year is the
+// server's current year give or take one (a viewer just past midnight can be a
+// day ahead of, or behind, the server at the New Year boundary). Anything
+// further off is a stale/bogus client clock: reject it so resolveReferenceDate
+// falls back to the server clock instead of returning a wrong (empty or overly
+// wide) result set.
 const MAX_YEAR_SKEW = 1;
 
 function isRealCalendarDate({ month, day, year }: OnThisDayDate): boolean {
@@ -41,8 +42,8 @@ function isRealCalendarDate({ month, day, year }: OnThisDayDate): boolean {
 }
 
 function isReasonableYear(year: number): boolean {
-  const maxYear = new Date().getUTCFullYear() + MAX_YEAR_SKEW;
-  return year >= MIN_REFERENCE_YEAR && year <= maxYear;
+  const serverYear = new Date().getUTCFullYear();
+  return Math.abs(year - serverYear) <= MAX_YEAR_SKEW;
 }
 
 /**

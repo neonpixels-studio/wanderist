@@ -59,17 +59,23 @@ describe("GET /api/entries/on-this-day", () => {
   it("keys off the viewer's local date from the query param", async () => {
     mockRequireUser.mockReturnValue("user-1");
     mockFetchOnThisDayEntries.mockResolvedValue([]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-16T12:00:00.000Z"));
 
-    const defaultHandler = "default" in handler ? handler.default : handler;
-    await (defaultHandler as (event: unknown) => unknown)({
-      query: { date: "2020-03-15" },
-    });
+    try {
+      const defaultHandler = "default" in handler ? handler.default : handler;
+      await (defaultHandler as (event: unknown) => unknown)({
+        query: { date: "2026-03-15" },
+      });
 
-    expect(mockFetchOnThisDayEntries).toHaveBeenCalledWith("user-1", {
-      month: 3,
-      day: 15,
-      year: 2020,
-    });
+      expect(mockFetchOnThisDayEntries).toHaveBeenCalledWith("user-1", {
+        month: 3,
+        day: 15,
+        year: 2026,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("falls back to the server clock's UTC date when no query param is given", async () => {
