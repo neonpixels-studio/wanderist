@@ -75,16 +75,21 @@ describe("GET /api/entries/on-this-day", () => {
   it("falls back to the server clock's UTC date when no query param is given", async () => {
     mockRequireUser.mockReturnValue("user-1");
     mockFetchOnThisDayEntries.mockResolvedValue([]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-28T12:00:00.000Z"));
 
-    const now = new Date();
-    const defaultHandler = "default" in handler ? handler.default : handler;
-    await (defaultHandler as (event: unknown) => unknown)({});
+    try {
+      const defaultHandler = "default" in handler ? handler.default : handler;
+      await (defaultHandler as (event: unknown) => unknown)({});
 
-    expect(mockFetchOnThisDayEntries).toHaveBeenCalledWith("user-1", {
-      month: now.getUTCMonth() + 1,
-      day: now.getUTCDate(),
-      year: now.getUTCFullYear(),
-    });
+      expect(mockFetchOnThisDayEntries).toHaveBeenCalledWith("user-1", {
+        month: 6,
+        day: 28,
+        year: 2026,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns an empty entries array when there are no matches", async () => {

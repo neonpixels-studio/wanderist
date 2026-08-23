@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { stubNitroGlobals } from "../test-utils";
 
 stubNitroGlobals();
@@ -74,15 +74,43 @@ describe("parseLocalDateParam", () => {
     expect(parseLocalDateParam("2026-02-30")).toBeNull();
   });
 
-  it("is independent of the parsing machine's timezone", () => {
-    // Same local-date string always yields the same parts — the whole point of
-    // sending the viewer's already-computed calendar day rather than an instant.
-    const parsed = parseLocalDateParam("2026-01-01");
-    expect(parsed).toEqual({ month: 1, day: 1, year: 2026 });
+  it("returns null for an implausible year, so it can't widen the match set", () => {
+    expect(parseLocalDateParam("9999-06-28")).toBeNull();
+    expect(parseLocalDateParam("1969-06-28")).toBeNull();
+  });
+
+  it("returns identical parts regardless of the process timezone", () => {
+    // parseLocalDateParam reads the literal string components (never an
+    // instant), so a far-east and a far-west process timezone must yield the
+    // same parts. A regression to `new Date(value).getMonth()` would diverge
+    // here and fail — that's the point of exercising two zones.
+    const originalTimezone = process.env.TZ;
+    try {
+      process.env.TZ = "Pacific/Kiritimati";
+      const easternResult = parseLocalDateParam("2026-01-01");
+      process.env.TZ = "Pacific/Niue";
+      const westernResult = parseLocalDateParam("2026-01-01");
+
+      expect(easternResult).toEqual({ month: 1, day: 1, year: 2026 });
+      expect(westernResult).toEqual(easternResult);
+    } finally {
+      process.env.TZ = originalTimezone;
+    }
   });
 });
 
 describe("resolveReferenceDate", () => {
+  const FIXED_NOW = new Date("2026-06-28T12:00:00.000Z");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("uses the viewer's local date when the param is valid", () => {
     // A user in UTC-8 late on Jan 1 sends "2026-01-01"; even though the server
     // clock (UTC) may already read Jan 2, the resolved reference stays Jan 1.
@@ -94,20 +122,18 @@ describe("resolveReferenceDate", () => {
   });
 
   it("falls back to the server clock's UTC date when the param is missing", () => {
-    const now = new Date();
     expect(resolveReferenceDate(undefined)).toEqual({
-      month: now.getUTCMonth() + 1,
-      day: now.getUTCDate(),
-      year: now.getUTCFullYear(),
+      month: 6,
+      day: 28,
+      year: 2026,
     });
   });
 
   it("falls back to the server clock when the param is malformed", () => {
-    const now = new Date();
     expect(resolveReferenceDate("not-a-date")).toEqual({
-      month: now.getUTCMonth() + 1,
-      day: now.getUTCDate(),
-      year: now.getUTCFullYear(),
+      month: 6,
+      day: 28,
+      year: 2026,
     });
   });
 });
