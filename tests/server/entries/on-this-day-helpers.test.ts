@@ -29,30 +29,105 @@ import { loadRelationsForEntries } from "../../../server/utils/entry-helpers";
 import {
   buildOnThisDayFilter,
   fetchOnThisDayEntries,
+  parseLocalDateParam,
+  resolveReferenceDate,
+  type OnThisDayDate,
 } from "../../../server/utils/on-this-day-helpers";
 
 const mockGetDb = vi.mocked(getDb);
 const mockEq = vi.mocked(eq);
 const mockLoadRelationsForEntries = vi.mocked(loadRelationsForEntries);
 
+const JUNE_28_2026: OnThisDayDate = { month: 6, day: 28, year: 2026 };
+const JULY_4_2026: OnThisDayDate = { month: 7, day: 4, year: 2026 };
+
+describe("parseLocalDateParam", () => {
+  it("parses a valid YYYY-MM-DD string into month/day/year parts", () => {
+    expect(parseLocalDateParam("2026-06-28")).toEqual(JUNE_28_2026);
+  });
+
+  it("trims surrounding whitespace before parsing", () => {
+    expect(parseLocalDateParam("  2026-06-28  ")).toEqual(JUNE_28_2026);
+  });
+
+  it("returns null for non-string input", () => {
+    expect(parseLocalDateParam(undefined)).toBeNull();
+    expect(parseLocalDateParam(20260628)).toBeNull();
+    expect(parseLocalDateParam(["2026-06-28"])).toBeNull();
+  });
+
+  it("returns null for malformed strings", () => {
+    expect(parseLocalDateParam("")).toBeNull();
+    expect(parseLocalDateParam("2026/06/28")).toBeNull();
+    expect(parseLocalDateParam("2026-6-28")).toBeNull();
+    expect(parseLocalDateParam("June 28, 2026")).toBeNull();
+  });
+
+  it("returns null for out-of-range month or day", () => {
+    expect(parseLocalDateParam("2026-13-01")).toBeNull();
+    expect(parseLocalDateParam("2026-00-10")).toBeNull();
+    expect(parseLocalDateParam("2026-06-32")).toBeNull();
+    expect(parseLocalDateParam("2026-06-00")).toBeNull();
+  });
+
+  it("returns null for a day that does not exist in the month", () => {
+    expect(parseLocalDateParam("2026-02-30")).toBeNull();
+  });
+
+  it("is independent of the parsing machine's timezone", () => {
+    // Same local-date string always yields the same parts — the whole point of
+    // sending the viewer's already-computed calendar day rather than an instant.
+    const parsed = parseLocalDateParam("2026-01-01");
+    expect(parsed).toEqual({ month: 1, day: 1, year: 2026 });
+  });
+});
+
+describe("resolveReferenceDate", () => {
+  it("uses the viewer's local date when the param is valid", () => {
+    // A user in UTC-8 late on Jan 1 sends "2026-01-01"; even though the server
+    // clock (UTC) may already read Jan 2, the resolved reference stays Jan 1.
+    expect(resolveReferenceDate("2026-01-01")).toEqual({
+      month: 1,
+      day: 1,
+      year: 2026,
+    });
+  });
+
+  it("falls back to the server clock's UTC date when the param is missing", () => {
+    const now = new Date();
+    expect(resolveReferenceDate(undefined)).toEqual({
+      month: now.getUTCMonth() + 1,
+      day: now.getUTCDate(),
+      year: now.getUTCFullYear(),
+    });
+  });
+
+  it("falls back to the server clock when the param is malformed", () => {
+    const now = new Date();
+    expect(resolveReferenceDate("not-a-date")).toEqual({
+      month: now.getUTCMonth() + 1,
+      day: now.getUTCDate(),
+      year: now.getUTCFullYear(),
+    });
+  });
+});
+
 describe("buildOnThisDayFilter", () => {
   it("returns a non-empty array of SQL filters", () => {
-    const filters = buildOnThisDayFilter("user-1", new Date("2026-06-28"));
+    const filters = buildOnThisDayFilter("user-1", JUNE_28_2026);
     expect(filters.length).toBeGreaterThan(0);
   });
 
   it("includes a user equality filter (first element is eq on userId)", () => {
-    const filters = buildOnThisDayFilter("user-1", new Date("2026-06-28"));
+    const filters = buildOnThisDayFilter("user-1", JUNE_28_2026);
     // The first filter is eq(entries.userId, userId). We verify the array
     // length and trust the SQL template tag for the month/day/year filters.
     expect(filters.length).toBe(5);
   });
 
   it("produces a different number of query values for different reference dates", () => {
-    const dateJune = new Date("2026-06-28T00:00:00.000Z");
-    const dateJuly = new Date("2026-07-04T00:00:00.000Z");
-    const filtersA = buildOnThisDayFilter("user-1", dateJune);
-    const filtersB = buildOnThisDayFilter("user-1", dateJuly);
+    const filtersA = buildOnThisDayFilter("user-1", JUNE_28_2026);
+    const filtersB = buildOnThisDayFilter("user-1", JULY_4_2026);
 
     // Both filter arrays have the same length (same structural shape).
     expect(filtersA.length).toBe(filtersB.length);
@@ -87,14 +162,14 @@ describe("fetchOnThisDayEntries", () => {
   it("returns an empty array when the database returns no rows", async () => {
     mockRowsReturned([]);
 
-    const result = await fetchOnThisDayEntries("user-1", new Date());
+    const result = await fetchOnThisDayEntries("user-1", JUNE_28_2026);
     expect(result).toEqual([]);
   });
 
   it("issues no relation queries when there are no matching entries", async () => {
     mockRowsReturned([]);
 
-    await fetchOnThisDayEntries("user-1", new Date());
+    await fetchOnThisDayEntries("user-1", JUNE_28_2026);
     expect(mockLoadRelationsForEntries).not.toHaveBeenCalled();
   });
 
@@ -107,7 +182,7 @@ describe("fetchOnThisDayEntries", () => {
       new Map([["e-1", { photos: [], tags: [] }]]),
     );
 
-    await expect(fetchOnThisDayEntries("user-1", new Date())).rejects.toThrow(
+    await expect(fetchOnThisDayEntries("user-1", JUNE_28_2026)).rejects.toThrow(
       /e-2/,
     );
   });
@@ -117,7 +192,7 @@ describe("fetchOnThisDayEntries", () => {
     // the two buildOnThisDayFilter calls below (the one fetchOnThisDayEntries
     // makes internally, and the one this test makes to compute what `where`
     // should have received).
-    const referenceDate = new Date("2026-06-28T00:00:00.000Z");
+    const referenceDate = JUNE_28_2026;
     const { whereMock } = mockRowsReturned([]);
 
     await fetchOnThisDayEntries("user-42", referenceDate);
@@ -143,7 +218,7 @@ describe("fetchOnThisDayEntries", () => {
       new Map([["e-1", { photos: [], tags: [] }]]),
     );
 
-    const result = await fetchOnThisDayEntries("user-1", new Date());
+    const result = await fetchOnThisDayEntries("user-1", JUNE_28_2026);
 
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ ...sampleRow, photos: [], tags: [] });
@@ -165,7 +240,7 @@ describe("fetchOnThisDayEntries", () => {
       ]),
     );
 
-    await fetchOnThisDayEntries("user-1", new Date());
+    await fetchOnThisDayEntries("user-1", JUNE_28_2026);
 
     expect(mockLoadRelationsForEntries).toHaveBeenCalledTimes(1);
     expect(mockLoadRelationsForEntries).toHaveBeenCalledWith(
@@ -208,7 +283,7 @@ describe("fetchOnThisDayEntries", () => {
       ]),
     );
 
-    const result = await fetchOnThisDayEntries("user-1", new Date());
+    const result = await fetchOnThisDayEntries("user-1", JUNE_28_2026);
 
     // Order must follow the DB's `ORDER BY occurred_at DESC` (i.e. `rows`
     // order), not relations-map insertion order.
@@ -245,7 +320,7 @@ describe("fetchOnThisDayEntries", () => {
       ]),
     );
 
-    const result = await fetchOnThisDayEntries("user-1", new Date());
+    const result = await fetchOnThisDayEntries("user-1", JUNE_28_2026);
     const entryWithoutRelations = result.find((entry) => entry.id === "e-2");
 
     expect(entryWithoutRelations?.photos).toEqual([]);

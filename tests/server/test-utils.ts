@@ -24,4 +24,9 @@ export function stubNitroGlobals() {
       return error;
     },
   );
+  vi.stubGlobal(
+    "getQuery",
+    (event: { query?: Record<string, unknown> } | undefined) =>
+      event?.query ?? {},
+  );
 }

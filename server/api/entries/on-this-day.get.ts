@@ -1,10 +1,14 @@
 import { requireUser } from "../../utils/auth";
-import { fetchOnThisDayEntries } from "../../utils/on-this-day-helpers";
+import {
+  fetchOnThisDayEntries,
+  resolveReferenceDate,
+} from "../../utils/on-this-day-helpers";
 
 export default defineEventHandler(async (event) => {
   const userId = requireUser(event);
 
-  const referenceDate = new Date();
+  const query = getQuery(event);
+  const referenceDate = resolveReferenceDate(query.date);
 
   const entries = await fetchOnThisDayEntries(userId, referenceDate);
 

@@ -8,26 +8,106 @@ import type { EntryRelations } from "./entry-helpers";
 export type OnThisDayEntry = typeof entries.$inferSelect & EntryRelations;
 
 /**
+ * The month/day/year "on this day" is keyed off. These come from the viewer's
+ * own local calendar date (passed by the client), not the server clock, so a
+ * user far from UTC sees their real calendar day rather than the server's.
+ */
+export interface OnThisDayDate {
+  month: number;
+  day: number;
+  year: number;
+}
+
+const LOCAL_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+const FIRST_MONTH = 1;
+const LAST_MONTH = 12;
+const FIRST_DAY = 1;
+const LAST_DAY = 31;
+const MONTH_OFFSET = 1;
+
+function isRealCalendarDate({ month, day, year }: OnThisDayDate): boolean {
+  // Reject impossible combinations like 2026-02-30. Build the date in UTC so
+  // the round-trip check never depends on the server's local timezone.
+  const asUtc = new Date(Date.UTC(year, month - MONTH_OFFSET, day));
+  return (
+    asUtc.getUTCFullYear() === year &&
+    asUtc.getUTCMonth() + MONTH_OFFSET === month &&
+    asUtc.getUTCDate() === day
+  );
+}
+
+/**
+ * Parses a client-provided local date string in `YYYY-MM-DD` form into its
+ * month/day/year parts. Returns null for anything malformed or not a real
+ * calendar date, so callers can fall back to the server clock.
+ */
+export function parseLocalDateParam(value: unknown): OnThisDayDate | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const match = LOCAL_DATE_PATTERN.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+
+  if (month < FIRST_MONTH || month > LAST_MONTH) {
+    return null;
+  }
+  if (day < FIRST_DAY || day > LAST_DAY) {
+    return null;
+  }
+
+  const parsed = { month, day, year };
+  if (!isRealCalendarDate(parsed)) {
+    return null;
+  }
+
+  return parsed;
+}
+
+/**
+ * Resolves the reference date "on this day" keys off. Prefers the viewer's
+ * local date (from the client) and falls back to the server clock's UTC date
+ * when the client sends nothing usable, preserving the old behaviour for
+ * callers that don't supply a local date.
+ */
+export function resolveReferenceDate(value: unknown): OnThisDayDate {
+  const localDate = parseLocalDateParam(value);
+  if (localDate) {
+    return localDate;
+  }
+
+  const now = new Date();
+  return {
+    month: now.getUTCMonth() + MONTH_OFFSET,
+    day: now.getUTCDate(),
+    year: now.getUTCFullYear(),
+  };
+}
+
+/**
  * Builds a SQL condition that matches rows whose `occurred_at` falls on the
  * same month/day as `referenceDate` but in a strictly earlier year.
  *
- * Uses EXTRACT so the comparison is timezone-agnostic at the database level
- * (timestamps are stored as UTC; the month/day extracted is UTC month/day).
+ * `referenceDate` carries the viewer's local month/day/year (see
+ * `resolveReferenceDate`). The DB extract stays UTC (timestamps are stored as
+ * UTC), so only the reference side reflects the viewer's timezone.
  */
 export function buildOnThisDayFilter(
   userId: string,
-  referenceDate: Date,
+  referenceDate: OnThisDayDate,
 ): SQL[] {
-  const referenceMonth = referenceDate.getUTCMonth() + 1;
-  const referenceDay = referenceDate.getUTCDate();
-  const referenceYear = referenceDate.getUTCFullYear();
-
   return [
     eq(entries.userId, userId),
     isNotNull(entries.occurredAt),
-    sql`EXTRACT(MONTH FROM ${entries.occurredAt}) = ${referenceMonth}`,
-    sql`EXTRACT(DAY FROM ${entries.occurredAt}) = ${referenceDay}`,
-    sql`EXTRACT(YEAR FROM ${entries.occurredAt}) < ${referenceYear}`,
+    sql`EXTRACT(MONTH FROM ${entries.occurredAt}) = ${referenceDate.month}`,
+    sql`EXTRACT(DAY FROM ${entries.occurredAt}) = ${referenceDate.day}`,
+    sql`EXTRACT(YEAR FROM ${entries.occurredAt}) < ${referenceDate.year}`,
   ];
 }
 
@@ -43,7 +123,7 @@ export function buildOnThisDayFilter(
  */
 export async function fetchOnThisDayEntries(
   userId: string,
-  referenceDate: Date,
+  referenceDate: OnThisDayDate,
 ): Promise<OnThisDayEntry[]> {
   const database = getDb();
   const filters = buildOnThisDayFilter(userId, referenceDate);
