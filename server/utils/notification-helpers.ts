@@ -41,6 +41,50 @@ export async function createNotification(
   }
 }
 
+export const LIKE_NOTIFICATION_TYPE = "like";
+
+// Matches the tone used for the other actor-attributed notification
+// (new_follower) so likes render with the same accent treatment.
+const LIKE_NOTIFICATION_TONE = "accent";
+
+export type LikeContentType = "entry" | "guide";
+
+// Generic fallback bodies — rendered when the actor can't be resolved (the
+// liker has since deleted their account). Complete sentences so any path that
+// shows the raw body still reads correctly, mirroring new_follower.
+const LIKE_BODY_BY_CONTENT: Record<LikeContentType, string> = {
+  entry: "Someone liked your entry",
+  guide: "Someone liked your guide",
+};
+
+export interface LikeNotificationInput {
+  authorId: string;
+  likerId: string;
+  contentType: LikeContentType;
+}
+
+/**
+ * Notifies a content author that someone liked their entry or guide, recording
+ * the liker as the actor. A no-op when the author liked their own content, so a
+ * self-like never notifies. Errors are swallowed inside createNotification, so
+ * a notification failure never breaks the like that triggered it.
+ */
+export async function notifyAuthorOfLike(
+  input: LikeNotificationInput,
+): Promise<void> {
+  if (input.authorId === input.likerId) {
+    return;
+  }
+
+  await createNotification({
+    userId: input.authorId,
+    type: LIKE_NOTIFICATION_TYPE,
+    tone: LIKE_NOTIFICATION_TONE,
+    body: LIKE_BODY_BY_CONTENT[input.contentType],
+    actorId: input.likerId,
+  });
+}
+
 export interface NotificationActor {
   id: string;
   displayName: string | null;

@@ -21,6 +21,10 @@ vi.mock("../../../../server/utils/like-helpers", () => ({
   likeContent: vi.fn(),
 }));
 
+vi.mock("../../../../server/utils/notification-helpers", () => ({
+  notifyAuthorOfLike: vi.fn(),
+}));
+
 import { requireRouterParam } from "../../../../server/utils/db-helpers";
 import { requireUser } from "../../../../server/utils/auth";
 import { getDb } from "../../../../server/db/index";
@@ -29,12 +33,14 @@ import {
   loadLikeableOrThrow,
   likeContent,
 } from "../../../../server/utils/like-helpers";
+import { notifyAuthorOfLike } from "../../../../server/utils/notification-helpers";
 
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
 const mockRequireUser = vi.mocked(requireUser);
 const mockGetDb = vi.mocked(getDb);
 const mockLoadLikeableOrThrow = vi.mocked(loadLikeableOrThrow);
 const mockLikeContent = vi.mocked(likeContent);
+const mockNotifyAuthorOfLike = vi.mocked(notifyAuthorOfLike);
 
 const handler = await import("../../../../server/api/entries/[id]/like.post");
 
@@ -61,9 +67,10 @@ describe("POST /api/entries/:id/like", () => {
     mockLoadLikeableOrThrow.mockResolvedValue(
       updated as unknown as Awaited<ReturnType<typeof loadLikeableOrThrow>>,
     );
-    mockLikeContent.mockResolvedValue(
-      updated as unknown as Awaited<ReturnType<typeof likeContent>>,
-    );
+    mockLikeContent.mockResolvedValue({
+      content: updated,
+      created: true,
+    } as unknown as Awaited<ReturnType<typeof likeContent>>);
 
     const result = await invoke();
 
@@ -87,6 +94,44 @@ describe("POST /api/entries/:id/like", () => {
       likeCount: 1,
       likedByCurrentUser: true,
     });
+  });
+
+  it("notifies the entry author, recording the liker as actor, on a new like", async () => {
+    const entry = { id: "e-1", userId: "author-1", likeCount: 1 };
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockRequireUser.mockReturnValue("liker-2");
+    mockLoadLikeableOrThrow.mockResolvedValue(
+      entry as unknown as Awaited<ReturnType<typeof loadLikeableOrThrow>>,
+    );
+    mockLikeContent.mockResolvedValue({
+      content: entry,
+      created: true,
+    } as unknown as Awaited<ReturnType<typeof likeContent>>);
+
+    await invoke();
+
+    expect(mockNotifyAuthorOfLike).toHaveBeenCalledWith({
+      authorId: "author-1",
+      likerId: "liker-2",
+      contentType: "entry",
+    });
+  });
+
+  it("does not notify when the like already existed (created:false)", async () => {
+    const entry = { id: "e-1", userId: "author-1", likeCount: 1 };
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockRequireUser.mockReturnValue("liker-2");
+    mockLoadLikeableOrThrow.mockResolvedValue(
+      entry as unknown as Awaited<ReturnType<typeof loadLikeableOrThrow>>,
+    );
+    mockLikeContent.mockResolvedValue({
+      content: entry,
+      created: false,
+    } as unknown as Awaited<ReturnType<typeof likeContent>>);
+
+    await invoke();
+
+    expect(mockNotifyAuthorOfLike).not.toHaveBeenCalled();
   });
 
   it("throws 400 when id param is missing", async () => {

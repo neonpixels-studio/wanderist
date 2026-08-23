@@ -24,6 +24,10 @@ vi.mock("../../../../server/utils/guide-queries", () => ({
   loadReadableGuide: vi.fn(),
 }));
 
+vi.mock("../../../../server/utils/notification-helpers", () => ({
+  notifyAuthorOfLike: vi.fn(),
+}));
+
 import { requireRouterParam } from "../../../../server/utils/db-helpers";
 import { requireUser } from "../../../../server/utils/auth";
 import { getDb } from "../../../../server/db/index";
@@ -32,12 +36,14 @@ import {
   likeContent,
 } from "../../../../server/utils/like-helpers";
 import { loadReadableGuide } from "../../../../server/utils/guide-queries";
+import { notifyAuthorOfLike } from "../../../../server/utils/notification-helpers";
 
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
 const mockRequireUser = vi.mocked(requireUser);
 const mockGetDb = vi.mocked(getDb);
 const mockLoadReadableGuide = vi.mocked(loadReadableGuide);
 const mockLikeContent = vi.mocked(likeContent);
+const mockNotifyAuthorOfLike = vi.mocked(notifyAuthorOfLike);
 
 const handler = await import("../../../../server/api/guides/[id]/like.post");
 
@@ -64,9 +70,10 @@ describe("POST /api/guides/:id/like", () => {
     mockLoadReadableGuide.mockResolvedValue(
       updated as unknown as Awaited<ReturnType<typeof loadReadableGuide>>,
     );
-    mockLikeContent.mockResolvedValue(
-      updated as unknown as Awaited<ReturnType<typeof likeContent>>,
-    );
+    mockLikeContent.mockResolvedValue({
+      content: updated,
+      created: true,
+    } as unknown as Awaited<ReturnType<typeof likeContent>>);
 
     const result = await invoke();
 
@@ -86,6 +93,44 @@ describe("POST /api/guides/:id/like", () => {
       likeCount: 1,
       likedByCurrentUser: true,
     });
+  });
+
+  it("notifies the guide author, recording the liker as actor, on a new like", async () => {
+    const guide = { id: "g-1", userId: "author-1", likeCount: 1 };
+    mockRequireRouterParam.mockReturnValue("g-1");
+    mockRequireUser.mockReturnValue("liker-2");
+    mockLoadReadableGuide.mockResolvedValue(
+      guide as unknown as Awaited<ReturnType<typeof loadReadableGuide>>,
+    );
+    mockLikeContent.mockResolvedValue({
+      content: guide,
+      created: true,
+    } as unknown as Awaited<ReturnType<typeof likeContent>>);
+
+    await invoke();
+
+    expect(mockNotifyAuthorOfLike).toHaveBeenCalledWith({
+      authorId: "author-1",
+      likerId: "liker-2",
+      contentType: "guide",
+    });
+  });
+
+  it("does not notify when the like already existed (created:false)", async () => {
+    const guide = { id: "g-1", userId: "author-1", likeCount: 1 };
+    mockRequireRouterParam.mockReturnValue("g-1");
+    mockRequireUser.mockReturnValue("liker-2");
+    mockLoadReadableGuide.mockResolvedValue(
+      guide as unknown as Awaited<ReturnType<typeof loadReadableGuide>>,
+    );
+    mockLikeContent.mockResolvedValue({
+      content: guide,
+      created: false,
+    } as unknown as Awaited<ReturnType<typeof likeContent>>);
+
+    await invoke();
+
+    expect(mockNotifyAuthorOfLike).not.toHaveBeenCalled();
   });
 
   it("throws 404 without recording a like when the guide is not readable (missing, private, or a lapsed/undiscoverable author)", async () => {

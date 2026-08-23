@@ -13,7 +13,7 @@ import { getDb } from "../../../server/db/index";
 
 const mockGetDb = vi.mocked(getDb);
 
-const { createNotification, fetchNotificationsForUser } =
+const { createNotification, fetchNotificationsForUser, notifyAuthorOfLike } =
   await import("../../../server/utils/notification-helpers");
 
 describe("createNotification", () => {
@@ -332,5 +332,69 @@ describe("fetchNotificationsForUser", () => {
     const result = await fetchNotificationsForUser(database, "user-1", LIMIT);
 
     expect(result).toEqual([]);
+  });
+});
+
+describe("notifyAuthorOfLike", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("notifies the entry author with the liker recorded as actor", async () => {
+    const insertChain = makeInsertChain();
+    mockGetDb.mockReturnValue(
+      insertChain as unknown as ReturnType<typeof getDb>,
+    );
+
+    await notifyAuthorOfLike({
+      authorId: "author-1",
+      likerId: "liker-2",
+      contentType: "entry",
+    });
+
+    const valuesCall = insertChain.insert.mock.results[0].value.values;
+    const insertedValue = valuesCall.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect(insertedValue.userId).toBe("author-1");
+    expect(insertedValue.type).toBe("like");
+    expect(insertedValue.actorId).toBe("liker-2");
+    expect(insertedValue.body).toBe("Someone liked your entry");
+  });
+
+  it("uses a guide-specific body for guide likes", async () => {
+    const insertChain = makeInsertChain();
+    mockGetDb.mockReturnValue(
+      insertChain as unknown as ReturnType<typeof getDb>,
+    );
+
+    await notifyAuthorOfLike({
+      authorId: "author-1",
+      likerId: "liker-2",
+      contentType: "guide",
+    });
+
+    const valuesCall = insertChain.insert.mock.results[0].value.values;
+    const insertedValue = valuesCall.mock.calls[0][0] as Record<
+      string,
+      unknown
+    >;
+    expect(insertedValue.body).toBe("Someone liked your guide");
+  });
+
+  it("does not notify when the author liked their own content (self-like)", async () => {
+    const insertChain = makeInsertChain();
+    mockGetDb.mockReturnValue(
+      insertChain as unknown as ReturnType<typeof getDb>,
+    );
+
+    await notifyAuthorOfLike({
+      authorId: "author-1",
+      likerId: "author-1",
+      contentType: "entry",
+    });
+
+    expect(insertChain.insert).not.toHaveBeenCalled();
   });
 });

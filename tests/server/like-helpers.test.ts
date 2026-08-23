@@ -42,11 +42,22 @@ type Db = ReturnType<typeof getDb>;
  */
 function makeLikeDb(
   repairedRow: Record<string, unknown>,
-  options: { returning?: Record<string, unknown>[] } = {},
+  options: {
+    returning?: Record<string, unknown>[];
+    insertReturning?: Record<string, unknown>[];
+  } = {},
 ) {
   const returningRows = options.returning ?? [repairedRow];
+  // Rows the like insert's RETURNING resolves to: one row means a new like was
+  // created; an empty array means ON CONFLICT DO NOTHING skipped the insert.
+  const insertReturningRows = options.insertReturning ?? [
+    { userId: "liker-2" },
+  ];
   const valuesSpy = vi.fn();
-  const onConflictDoNothing = vi.fn().mockResolvedValue(undefined);
+  const insertReturning = vi.fn().mockResolvedValue(insertReturningRows);
+  const onConflictDoNothing = vi
+    .fn()
+    .mockReturnValue({ returning: insertReturning });
   const insert = vi.fn().mockImplementation(() => ({
     values: (values: Record<string, unknown>) => {
       valuesSpy(values);
@@ -102,7 +113,18 @@ describe("likeContent", () => {
       entryId: "e-1",
       userId: "liker-2",
     });
-    expect(result).toEqual(repaired);
+    expect(result.content).toEqual(repaired);
+    expect(result.created).toBe(true);
+  });
+
+  it("reports created:false when the like already existed (ON CONFLICT skipped the insert)", async () => {
+    const repaired = { id: "e-1", likeCount: 1 };
+    const { db } = makeLikeDb(repaired, { insertReturning: [] });
+
+    const result = await likeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2");
+
+    expect(result.content).toEqual(repaired);
+    expect(result.created).toBe(false);
   });
 
   it("is idempotent: the insert always uses ON CONFLICT DO NOTHING", async () => {
@@ -126,7 +148,7 @@ describe("likeContent", () => {
     expect(update).toHaveBeenCalledTimes(1);
     // Guard against a dropped/broad WHERE that would rewrite every entry's count.
     expect(vi.mocked(eq)).toHaveBeenCalledWith(entries.id, "e-1");
-    expect(result).toEqual(repaired);
+    expect(result.content).toEqual(repaired);
   });
 
   it("throws 404 when the row vanished before the count repair", async () => {
