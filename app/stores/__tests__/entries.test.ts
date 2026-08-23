@@ -30,7 +30,10 @@ const BASE_ENTRY = {
 describe("useEntriesStore", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    vi.clearAllMocks();
+    // resetAllMocks (not clearAllMocks) so a persistent mockResolvedValue set by
+    // one test — e.g. the "hasMore forever" case — cannot leak its implementation
+    // into a later test that forgets to set its own.
+    vi.resetAllMocks();
   });
 
   // ---------------------------------------------------------------------------
@@ -91,6 +94,37 @@ describe("useEntriesStore", () => {
       expect(store.entries[24].id).toBe("p2-4");
     });
 
+    it("carries the filters onto every walked page, not just the first", async () => {
+      mockApiFetch
+        .mockResolvedValueOnce({
+          entries: Array.from({ length: 20 }, (_, index) => ({
+            ...BASE_ENTRY,
+            id: `p1-${index}`,
+          })),
+          tab: "by-trip",
+          page: 1,
+          hasMore: true,
+        })
+        .mockResolvedValueOnce({
+          entries: [BASE_ENTRY],
+          tab: "by-trip",
+          page: 2,
+          hasMore: false,
+        });
+
+      const store = useEntriesStore();
+      await store.fetchEntries({ tripId: "trip-1", tab: "by-trip" });
+
+      expect(mockApiFetch).toHaveBeenNthCalledWith(
+        1,
+        "/api/entries?tripId=trip-1&tab=by-trip&page=1",
+      );
+      expect(mockApiFetch).toHaveBeenNthCalledWith(
+        2,
+        "/api/entries?tripId=trip-1&tab=by-trip&page=2",
+      );
+    });
+
     it("throws when the API keeps reporting hasMore forever", async () => {
       mockApiFetch.mockResolvedValue({
         entries: [BASE_ENTRY],
@@ -112,6 +146,8 @@ describe("useEntriesStore", () => {
       await expect(store.fetchEntries()).rejects.toThrow(
         /Malformed \/api\/entries response/,
       );
+      expect(store.error).toMatch(/Malformed \/api\/entries response/);
+      expect(store.isLoading).toBe(false);
     });
 
     it("throws on a malformed response whose entries is not an array", async () => {
@@ -126,6 +162,8 @@ describe("useEntriesStore", () => {
       await expect(store.fetchEntries()).rejects.toThrow(
         /Malformed \/api\/entries response/,
       );
+      expect(store.error).toMatch(/Malformed \/api\/entries response/);
+      expect(store.isLoading).toBe(false);
     });
 
     it("preserves the existing list when a later page fails mid-walk", async () => {
