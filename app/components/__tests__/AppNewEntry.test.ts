@@ -21,6 +21,8 @@ const tripsStoreTrips = ref<
   Array<{ id: string; name: string; status: string }>
 >([]);
 const placesStorePlaces = ref<Array<{ id: string; name: string }>>([]);
+const placesStoreIsLoading = ref(false);
+const placesStoreError = ref<string | null>(null);
 
 vi.stubGlobal("useEntriesStore", () => ({
   createEntry: mockCreateEntry,
@@ -36,12 +38,20 @@ vi.stubGlobal("useTripsStore", () => ({
   isLoadingList: ref(false),
 }));
 
-// isLoading is a plain boolean here because Pinia unwraps store refs on
-// access; the drawer reads `placesStore.isLoading` as a boolean, not a ref.
+// Getters mirror how Pinia hands back reactive state unwrapped: the drawer
+// reads `placesStore.places`/`isLoading`/`error` as plain values, and tests
+// can flip the backing refs (e.g. places arriving after the drawer opens).
 vi.stubGlobal("usePlacesStore", () => ({
-  places: placesStorePlaces.value,
+  get places() {
+    return placesStorePlaces.value;
+  },
   fetchPlaces: mockFetchPlaces,
-  isLoading: false,
+  get isLoading() {
+    return placesStoreIsLoading.value;
+  },
+  get error() {
+    return placesStoreError.value;
+  },
 }));
 
 vi.stubGlobal("useMediaUpload", () => ({
@@ -79,6 +89,8 @@ describe("AppNewEntry", () => {
     vi.clearAllMocks();
     tripsStoreTrips.value = [];
     placesStorePlaces.value = [];
+    placesStoreIsLoading.value = false;
+    placesStoreError.value = null;
     mockLoadDraft.mockReturnValue(null);
     // Real fetchPlaces returns a Promise; the drawer chains .catch on it.
     mockFetchPlaces.mockResolvedValue(undefined);
@@ -451,6 +463,58 @@ describe("AppNewEntry", () => {
 
     const callArg = await publishAndReadPayload(wrapper);
     expect(callArg.placeId).toBeUndefined();
+  });
+
+  it("resolves a typed location once the places list arrives after opening", async () => {
+    stubSuccessfulPublish();
+    // Cold store: no places yet when the drawer opens and the user types.
+    const wrapper = mountOpen();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Harbour");
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(true);
+
+    // Places load afterwards — the resolution must recompute reactively.
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(false);
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBe("p-1");
+  });
+
+  it("does not warn about an unresolved location while places are still loading", async () => {
+    placesStoreIsLoading.value = true;
+    const wrapper = mountOpen();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Harbour");
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(false);
+  });
+
+  it("does not warn about an unresolved location when the places fetch failed", async () => {
+    placesStoreError.value = "network down";
+    const wrapper = mountOpen();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Harbour");
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(false);
+  });
+
+  it("carries a restored draft's saved placeId into the publish payload", async () => {
+    stubSuccessfulPublish();
+    mockLoadDraft.mockReturnValue({
+      title: "Restored",
+      body: "",
+      location: "Old Harbour",
+      placeId: "p-9",
+      tripId: "",
+      date: "2026-06-01",
+      visibility: "private",
+      tags: [],
+      weather: "",
+      uploadedPhotos: [],
+    });
+
+    const wrapper = mountOpen();
+    await wrapper.vm.$nextTick();
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBe("p-9");
   });
 
   it("passes occurredAt derived from the local date string the user chose", async () => {
