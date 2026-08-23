@@ -92,18 +92,31 @@
         <div class="field">
           <label class="field__label">Location</label>
           <div class="field__wrap">
-            <input v-model="form.location" class="field__input" />
+            <input
+              :value="form.location"
+              class="field__input"
+              data-test="location-input"
+              @input="onLocationInput"
+            />
             <span class="field__icon"><AppIcon name="pin" :size="16" /></span>
           </div>
-          <div v-if="locationSuggestions.length" class="chip-suggest">
+          <div v-if="placeSuggestions.length" class="chip-suggest">
             <span
-              v-for="suggestion in locationSuggestions"
-              :key="suggestion"
+              v-for="place in placeSuggestions"
+              :key="place.id"
               class="chip"
-              @click="form.location = suggestion"
-              >{{ suggestion }}</span
+              @click="selectPlace(place)"
+              >{{ place.name }}</span
             >
           </div>
+          <p
+            v-if="locationWillNotSave"
+            class="error-hint"
+            data-test="location-warning"
+          >
+            “{{ form.location }}” isn’t one of your saved places, so it won’t be
+            attached to this entry.
+          </p>
         </div>
 
         <!-- Trip -->
@@ -253,10 +266,19 @@ interface TripOption {
   label: string;
 }
 
+interface PlaceSuggestion {
+  id: string;
+  name: string;
+}
+
 interface FormState {
   title: string;
   body: string;
   location: string;
+  // Id of the saved place the location resolves to. Empty when the typed
+  // location does not name one of the user's places — the entries API models
+  // a place only by this FK, so unresolved free text cannot be persisted.
+  placeId: string;
   tripId: string;
   date: string;
   visibility: "private" | "public";
@@ -300,6 +322,7 @@ function buildInitialForm(trips: Trip[]): FormState {
     title: "",
     body: "",
     location: "",
+    placeId: "",
     tripId: defaultTripId(trips),
     date: localIsoDate(),
     visibility: "private",
@@ -326,11 +349,40 @@ const tripOptions = computed<TripOption[]>(() => {
   return [...options, { value: NO_TRIP_VALUE, label: "None" }];
 });
 
-const locationSuggestions = computed<string[]>(() =>
+const placeSuggestions = computed<PlaceSuggestion[]>(() =>
   placesStore.places
-    .map((place) => place.name)
+    .map((place) => ({ id: place.id, name: place.name }))
     .slice(0, MAX_LOCATION_SUGGESTIONS),
 );
+
+// True once the user has typed a non-empty location that names none of their
+// saved places: it has no placeId to persist, so warn instead of silently
+// dropping it. Suppressed while places are still loading — the match is
+// unknowable until the list arrives.
+const locationWillNotSave = computed<boolean>(() => {
+  if (!form.value.location.trim()) {
+    return false;
+  }
+  if (form.value.placeId) {
+    return false;
+  }
+  return !placesStore.isLoading;
+});
+
+// Picking a suggestion captures the place id directly, so a later entry is
+// attached to exactly the place the user chose even when place names collide.
+function selectPlace(place: PlaceSuggestion): void {
+  form.value.location = place.name;
+  form.value.placeId = place.id;
+}
+
+// Typing by hand can no longer trust a previously-selected id, so re-resolve
+// against the saved places on every keystroke.
+function onLocationInput(event: Event): void {
+  const value = (event.target as HTMLInputElement).value;
+  form.value.location = value;
+  form.value.placeId = resolvePlaceId(value) ?? "";
+}
 
 function selectTrip(tripId: string): void {
   form.value.tripId = tripId;
@@ -354,6 +406,9 @@ watch(
         title: draft.title,
         body: draft.body,
         location: draft.location,
+        // Prefer the saved id; fall back to resolving the name for drafts
+        // written before placeId was persisted.
+        placeId: draft.placeId || resolvePlaceId(draft.location) || "",
         tripId: draft.tripId,
         date: draft.date,
         visibility: draft.visibility,
@@ -376,7 +431,9 @@ watch(
     }
 
     if (!placesStore.places.length) {
-      placesStore.fetchPlaces();
+      // Non-fatal: the store records its own error; suggestions just won't
+      // appear. Caught so the fetch never surfaces an unhandled rejection.
+      placesStore.fetchPlaces().catch(() => {});
     }
   },
   { immediate: true },
@@ -467,15 +524,20 @@ function localDateToIso(dateString: string): string | undefined {
 // place), not as free-text — so a location the user typed can only be
 // persisted when it names a place they already have. Resolve the location
 // text to that place's id here; unmatched free text has nowhere to go.
+// A name shared by two places is ambiguous, so refuse to guess and return
+// undefined rather than attaching the entry to an arbitrary one.
 function resolvePlaceId(locationName: string): string | undefined {
   const trimmedName = locationName.trim().toLowerCase();
   if (!trimmedName) {
     return undefined;
   }
-  const match = placesStore.places.find(
+  const matches = placesStore.places.filter(
     (place) => place.name.trim().toLowerCase() === trimmedName,
   );
-  return match?.id;
+  if (matches.length !== 1) {
+    return undefined;
+  }
+  return matches[0].id;
 }
 
 function buildEntryPayload() {
@@ -484,7 +546,7 @@ function buildEntryPayload() {
     body: form.value.body || undefined,
     occurredAt: localDateToIso(form.value.date),
     tripId: form.value.tripId || undefined,
-    placeId: resolvePlaceId(form.value.location),
+    placeId: form.value.placeId || undefined,
     tags: form.value.tags.length ? form.value.tags : undefined,
     photoMediaIds: uploadedPhotos.value.map((photo) => photo.id),
     visibility: form.value.visibility,

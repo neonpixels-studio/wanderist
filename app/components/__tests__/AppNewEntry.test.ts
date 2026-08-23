@@ -36,10 +36,12 @@ vi.stubGlobal("useTripsStore", () => ({
   isLoadingList: ref(false),
 }));
 
+// isLoading is a plain boolean here because Pinia unwraps store refs on
+// access; the drawer reads `placesStore.isLoading` as a boolean, not a ref.
 vi.stubGlobal("usePlacesStore", () => ({
   places: placesStorePlaces.value,
   fetchPlaces: mockFetchPlaces,
-  isLoading: ref(false),
+  isLoading: false,
 }));
 
 vi.stubGlobal("useMediaUpload", () => ({
@@ -78,6 +80,8 @@ describe("AppNewEntry", () => {
     tripsStoreTrips.value = [];
     placesStorePlaces.value = [];
     mockLoadDraft.mockReturnValue(null);
+    // Real fetchPlaces returns a Promise; the drawer chains .catch on it.
+    mockFetchPlaces.mockResolvedValue(undefined);
   });
 
   it("renders nothing when closed", () => {
@@ -358,13 +362,26 @@ describe("AppNewEntry", () => {
     expect(wrapper.find(".error-hint").exists()).toBe(false);
   });
 
-  it("sends placeId when the location matches a known place name", async () => {
+  function stubSuccessfulPublish() {
     mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
     mockFetchEntries.mockResolvedValue({
       entries: [],
       tab: "timeline",
       page: 1,
     });
+  }
+
+  async function publishAndReadPayload(
+    wrapper: ReturnType<typeof mountOpen>,
+  ): Promise<Record<string, unknown>> {
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+    return mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+  }
+
+  it("sends the selected place's id as placeId when a suggestion is clicked", async () => {
+    stubSuccessfulPublish();
     placesStorePlaces.value = [
       { id: "p-1", name: "Old Harbour" },
       { id: "p-2", name: "Hallgrímskirkja" },
@@ -374,66 +391,65 @@ describe("AppNewEntry", () => {
     const chips = wrapper.findAll(".chip");
     await chips[0].trigger("click");
 
-    await wrapper.find(".btn--primary").trigger("click");
-    await wrapper.vm.$nextTick();
-    await wrapper.vm.$nextTick();
-
-    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    const callArg = await publishAndReadPayload(wrapper);
     expect(callArg.placeId).toBe("p-1");
   });
 
-  it("resolves placeId case-insensitively and ignores surrounding whitespace", async () => {
-    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
-    mockFetchEntries.mockResolvedValue({
-      entries: [],
-      tab: "timeline",
-      page: 1,
-    });
+  it("resolves placeId case-insensitively and ignores surrounding whitespace when typed", async () => {
+    stubSuccessfulPublish();
     placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
 
     const wrapper = mountOpen();
-    const locationInput = wrapper
-      .find(".chip-suggest")
-      .element.closest(".field")
-      ?.querySelector(".field__input") as HTMLInputElement;
-    // Type a differently-cased, padded version of the place name
-    const inputWrapper = wrapper
-      .findAll(".field__input")
-      .find((node) => node.element === locationInput);
-    await inputWrapper?.setValue("  old harbour  ");
+    const locationInput = wrapper.get('[data-test="location-input"]');
+    await locationInput.setValue("  old harbour  ");
 
-    await wrapper.find(".btn--primary").trigger("click");
-    await wrapper.vm.$nextTick();
-    await wrapper.vm.$nextTick();
-
-    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    const callArg = await publishAndReadPayload(wrapper);
     expect(callArg.placeId).toBe("p-1");
   });
 
-  it("omits placeId when the location does not match any known place", async () => {
-    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
-    mockFetchEntries.mockResolvedValue({
-      entries: [],
-      tab: "timeline",
-      page: 1,
-    });
+  it("omits placeId and warns when the typed location matches no known place", async () => {
+    stubSuccessfulPublish();
     placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
 
     const wrapper = mountOpen();
-    const locationInput = wrapper
-      .find(".chip-suggest")
-      .element.closest(".field")
-      ?.querySelector(".field__input") as HTMLInputElement;
-    const inputWrapper = wrapper
-      .findAll(".field__input")
-      .find((node) => node.element === locationInput);
-    await inputWrapper?.setValue("Somewhere unlisted");
+    const locationInput = wrapper.get('[data-test="location-input"]');
+    await locationInput.setValue("Somewhere unlisted");
 
-    await wrapper.find(".btn--primary").trigger("click");
-    await wrapper.vm.$nextTick();
-    await wrapper.vm.$nextTick();
+    // The user is told the free text will not be attached, rather than it
+    // being silently dropped.
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(true);
 
-    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBeUndefined();
+  });
+
+  it("clears a previously selected placeId when the location is edited to non-matching text", async () => {
+    stubSuccessfulPublish();
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+
+    const wrapper = mountOpen();
+    await wrapper.findAll(".chip")[0].trigger("click");
+    // User then hand-edits the field to something that is not a saved place.
+    await wrapper.get('[data-test="location-input"]').setValue("Elsewhere");
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBeUndefined();
+  });
+
+  it("refuses to guess a placeId when two saved places share the typed name", async () => {
+    stubSuccessfulPublish();
+    placesStorePlaces.value = [
+      { id: "p-1", name: "Old Town" },
+      { id: "p-2", name: "Old Town" },
+    ];
+
+    const wrapper = mountOpen();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Town");
+
+    // Ambiguous by name: no arbitrary place is attached, and the user is warned.
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(true);
+
+    const callArg = await publishAndReadPayload(wrapper);
     expect(callArg.placeId).toBeUndefined();
   });
 
