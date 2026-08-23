@@ -4,6 +4,7 @@ import { getDb } from "../../../db/index";
 import { guides } from "../../../db/schema";
 import { loadReadableGuide } from "../../../utils/guide-queries";
 import { GUIDE_LIKEABLE, likeContent } from "../../../utils/like-helpers";
+import { notifyAuthorOfLike } from "../../../utils/notification-helpers";
 
 type GuideRow = typeof guides.$inferSelect;
 
@@ -17,14 +18,22 @@ export default defineEventHandler(async (event) => {
   // public profile, effective entitlement, opted into explore). Reusing
   // loadReadableGuide keeps the like path from drifting from the read path, so
   // a lapsed author's guide that now 404s on read can't stay likeable by id.
-  await loadReadableGuide(database, id, userId);
+  const guide = await loadReadableGuide(database, id, userId);
 
-  const updated = await likeContent<GuideRow>(
+  const { content, created } = await likeContent<GuideRow>(
     database,
     GUIDE_LIKEABLE,
     id,
     userId,
   );
 
-  return { id, likeCount: updated.likeCount, likedByCurrentUser: true };
+  if (created) {
+    await notifyAuthorOfLike({
+      authorId: guide.userId,
+      likerId: userId,
+      contentType: "guide",
+    });
+  }
+
+  return { id, likeCount: content.likeCount, likedByCurrentUser: true };
 });
