@@ -62,7 +62,9 @@
             <AppIcon name="instagram" :size="13" style="vertical-align: -2px" />
             Instagram.
           </p>
-          <p v-if="uploadError" class="error-hint">{{ uploadError }}</p>
+          <p v-if="uploadError" class="error-hint" data-test="upload-error">
+            {{ uploadError }}
+          </p>
         </div>
 
         <!-- Title -->
@@ -214,7 +216,9 @@
           </div>
         </div>
 
-        <p v-if="publishError" class="error-hint">{{ publishError }}</p>
+        <p v-if="publishError" class="error-hint" data-test="publish-error">
+          {{ publishError }}
+        </p>
       </div>
 
       <footer class="drawer__foot">
@@ -355,16 +359,27 @@ const placeSuggestions = computed<PlaceSuggestion[]>(() =>
     .slice(0, MAX_LOCATION_SUGGESTIONS),
 );
 
+// An explicit chip choice is honoured while the text still names it, but only
+// as long as the place still exists: once places load, a chosen id absent from
+// the list (place deleted, or a draft from another user) must not be trusted —
+// the server would reject it — so we fall back to name resolution instead.
+function chosenMatchesLocation(place: PlaceSuggestion): boolean {
+  if (normalizeName(form.value.location) !== normalizeName(place.name)) {
+    return false;
+  }
+  if (!placesStore.places.length) {
+    return true;
+  }
+  return placesStore.places.some((candidate) => candidate.id === place.id);
+}
+
 // The place id this entry will actually be saved with. Derived reactively so
 // it stays correct as `placesStore.places` loads: an explicit chip choice wins
-// while the text still matches it, otherwise the typed location is resolved by
-// name against the loaded places (empty when it matches none).
+// while it holds, otherwise the typed location is resolved by name against the
+// loaded places (empty when it matches none).
 const resolvedPlaceId = computed<string>(() => {
   const chosen = selectedPlace.value;
-  if (
-    chosen &&
-    normalizeName(form.value.location) === normalizeName(chosen.name)
-  ) {
+  if (chosen && chosenMatchesLocation(chosen)) {
     return chosen.id;
   }
   return resolvePlaceId(form.value.location) ?? "";
@@ -372,8 +387,9 @@ const resolvedPlaceId = computed<string>(() => {
 
 // True once the user has typed a non-empty location that resolves to no saved
 // place: it has no placeId to persist, so warn instead of silently dropping
-// it. Suppressed while places are still loading or failed to load — the match
-// is unknowable then, so a load problem must not read as a user data problem.
+// it. Suppressed while places are still loading, and while a load failure left
+// us with no places at all — a load problem must not read as a user data
+// problem. A stale error alongside a populated list still warns.
 const locationWillNotSave = computed<boolean>(() => {
   if (!form.value.location.trim()) {
     return false;
@@ -381,7 +397,10 @@ const locationWillNotSave = computed<boolean>(() => {
   if (resolvedPlaceId.value) {
     return false;
   }
-  return !placesStore.isLoading && !placesStore.error;
+  if (placesStore.isLoading) {
+    return false;
+  }
+  return !(placesStore.error && !placesStore.places.length);
 });
 
 // Picking a suggestion captures the place directly, so the entry is attached

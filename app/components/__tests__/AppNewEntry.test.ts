@@ -321,7 +321,9 @@ describe("AppNewEntry", () => {
     await wrapper.vm.$nextTick();
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.find(".error-hint").text()).toContain("Server error");
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "Server error",
+    );
     expect(wrapper.emitted("close")).toBeFalsy();
   });
 
@@ -331,6 +333,16 @@ describe("AppNewEntry", () => {
     expect(mockSaveDraft).toHaveBeenCalledOnce();
     expect(mockSaveDraft).toHaveBeenCalledWith(
       expect.objectContaining({ uploadedPhotos: expect.any(Array) }),
+    );
+  });
+
+  it("saves the resolved placeId into the draft", async () => {
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    const wrapper = mountOpen();
+    await wrapper.findAll(".chip")[0].trigger("click");
+    await wrapper.find(".btn--ghost").trigger("click");
+    expect(mockSaveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ location: "Old Harbour", placeId: "p-1" }),
     );
   });
 
@@ -371,7 +383,7 @@ describe("AppNewEntry", () => {
     // close should fire even though fetchEntries rejected
     expect(wrapper.emitted("close")).toBeTruthy();
     // and the error should NOT be shown (it is a non-fatal refresh failure)
-    expect(wrapper.find(".error-hint").exists()).toBe(false);
+    expect(wrapper.find('[data-test="publish-error"]').exists()).toBe(false);
   });
 
   function stubSuccessfulPublish() {
@@ -517,6 +529,34 @@ describe("AppNewEntry", () => {
     expect(callArg.placeId).toBe("p-9");
   });
 
+  it("drops a restored placeId whose place no longer exists and warns", async () => {
+    stubSuccessfulPublish();
+    // The saved place (p-9) is gone; the loaded list has an unrelated place.
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    mockLoadDraft.mockReturnValue({
+      title: "Restored",
+      body: "",
+      location: "Deleted Spot",
+      placeId: "p-9",
+      tripId: "",
+      date: "2026-06-01",
+      visibility: "private",
+      tags: [],
+      weather: "",
+      uploadedPhotos: [],
+    });
+
+    const wrapper = mountOpen();
+    await wrapper.vm.$nextTick();
+
+    // The dead id must not be trusted (the server would reject it); the user
+    // is warned rather than trapped behind a failing publish.
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(true);
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBeUndefined();
+  });
+
   it("passes occurredAt derived from the local date string the user chose", async () => {
     mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
     mockFetchEntries.mockResolvedValue({
@@ -566,7 +606,7 @@ describe("AppNewEntry", () => {
     await wrapper.vm.$nextTick();
 
     // Error should be visible
-    expect(wrapper.find(".error-hint").exists()).toBe(true);
+    expect(wrapper.find('[data-test="upload-error"]').exists()).toBe(true);
 
     // Second upload succeeds — error should clear
     const successFile = new File(["ok"], "ok.jpg", { type: "image/jpeg" });
@@ -577,6 +617,6 @@ describe("AppNewEntry", () => {
     await fileInput.trigger("change");
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.find(".error-hint").exists()).toBe(false);
+    expect(wrapper.find('[data-test="upload-error"]').exists()).toBe(false);
   });
 });
