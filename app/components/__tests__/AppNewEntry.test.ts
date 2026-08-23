@@ -500,11 +500,45 @@ describe("AppNewEntry", () => {
     expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(false);
   });
 
-  it("does not warn about an unresolved location when the places fetch failed", async () => {
+  it("shows a load-failure hint (not the no-such-place warning) when the places fetch failed", async () => {
     placesStoreError.value = "network down";
     const wrapper = mountOpen();
     await wrapper.get('[data-test="location-input"]').setValue("Old Harbour");
+    // The failure is surfaced as a load problem, not blamed on the user's input.
     expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="places-load-error"]').exists()).toBe(true);
+  });
+
+  it("waits for the places prefetch before publishing a typed location", async () => {
+    stubSuccessfulPublish();
+    // fetchPlaces stays pending until we resolve it, mimicking a slow load; the
+    // place only becomes known when it settles.
+    let settleFetch: () => void = () => {};
+    mockFetchPlaces.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          settleFetch = () => {
+            placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+            resolve();
+          };
+        }),
+    );
+
+    const wrapper = mountOpen();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Harbour");
+
+    // Publish before the fetch settles — it must not create the entry yet.
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+
+    settleFetch();
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockCreateEntry).toHaveBeenCalledOnce();
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBe("p-1");
   });
 
   it("carries a restored draft's saved placeId into the publish payload", async () => {

@@ -118,6 +118,14 @@
             “{{ form.location }}” isn’t one of your saved places, so it won’t be
             attached to this entry.
           </p>
+          <p
+            v-if="placesUnavailable && form.location.trim()"
+            class="error-hint"
+            data-test="places-load-error"
+          >
+            We couldn’t load your saved places, so “{{ form.location }}” won’t
+            be attached to this entry.
+          </p>
         </div>
 
         <!-- Trip -->
@@ -336,6 +344,12 @@ const form = ref<FormState>(buildInitialForm(tripsStore.tripList));
 // two places share a name (resolving by name alone couldn't disambiguate).
 const selectedPlace = ref<PlaceSuggestion | null>(null);
 
+// Resolves once the places prefetch for this open has settled. `publish` awaits
+// it before reading `resolvedPlaceId` so a location typed during the cold-store
+// load window is not dropped for want of a loaded list. Stays already-resolved
+// when the store was warm, so a warm publish never waits.
+const placesReady = ref<Promise<unknown>>(Promise.resolve());
+
 function applyFreshForm(): void {
   form.value = buildInitialForm(tripsStore.tripList);
   selectedPlace.value = null;
@@ -403,6 +417,14 @@ const locationWillNotSave = computed<boolean>(() => {
   return !(placesStore.error && !placesStore.places.length);
 });
 
+// The places list failed to load entirely, so a typed location cannot be
+// matched. Distinct from `locationWillNotSave` (a real "no such place") — this
+// is a load failure, surfaced so the drop is not silent rather than blaming
+// the user's input.
+const placesUnavailable = computed<boolean>(
+  () => Boolean(placesStore.error) && !placesStore.places.length,
+);
+
 // Picking a suggestion captures the place directly, so the entry is attached
 // to exactly the place the user chose even when place names collide.
 function selectPlace(place: PlaceSuggestion): void {
@@ -459,10 +481,13 @@ watch(
       tripsStore.fetchTrips();
     }
 
-    if (!placesStore.places.length) {
+    if (placesStore.places.length) {
+      placesReady.value = Promise.resolve();
+    } else {
       // Non-fatal: the store records its own error; suggestions just won't
       // appear. Caught so the fetch never surfaces an unhandled rejection.
-      placesStore.fetchPlaces().catch(() => {});
+      // Held so publish can await it before resolving the location's placeId.
+      placesReady.value = placesStore.fetchPlaces().catch(() => {});
     }
   },
   { immediate: true },
@@ -604,6 +629,12 @@ async function publish(): Promise<void> {
   publishError.value = null;
 
   try {
+    // A location typed during the cold-store load window can only resolve to a
+    // placeId once the list arrives, so wait for it before building the payload.
+    if (form.value.location.trim()) {
+      await placesReady.value;
+    }
+
     await entriesStore.createEntry(buildEntryPayload());
 
     // Close first: once the entry is created, the drawer should close

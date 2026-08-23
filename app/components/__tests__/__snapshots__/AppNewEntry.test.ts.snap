@@ -32,6 +32,7 @@ exports[`AppNewEntry > renders the drawer when open and matches snapshot 1`] = `
         <div class="field__wrap"><input class="field__input" data-test="location-input"><span class="field__icon"><svg data-icon="" name="pin" size="16"></svg></span></div>
         <!--v-if-->
         <!--v-if-->
+        <!--v-if-->
       </div><!-- Trip -->
       <div class="field"><label class="field__label">Trip</label>
         <div class="pill-pick"><button class="pick is-active">None</button></div>
