@@ -39,17 +39,24 @@ const mockEq = vi.mocked(eq);
 const mockLoadRelationsForEntries = vi.mocked(loadRelationsForEntries);
 
 const JUNE_28_2026: OnThisDayDate = { month: 6, day: 28, year: 2026 };
-const JULY_4_2026: OnThisDayDate = { month: 7, day: 4, year: 2026 };
 
 describe("parseLocalDateParam", () => {
-  // Pin "now" to a leap year so the year-bound (server year ± 1) and the
-  // leap-day branch are both deterministic: valid sample years stay within
-  // 2023-2025, and Feb 29 is a real date in the current (2024) year.
-  const LEAP_YEAR_NOW = new Date("2024-06-15T12:00:00.000Z");
+  // Pin "now" to a leap day so both the leap-day branch and the ±1-day window
+  // are deterministic: Feb 29 is the current date, and its neighbours (Feb 28 /
+  // Mar 1) are the only other dates the window accepts.
+  const LEAP_DAY_NOW = new Date("2024-02-29T12:00:00.000Z");
+
+  function setTimezone(timezone: string | undefined): void {
+    if (timezone === undefined) {
+      delete process.env.TZ;
+      return;
+    }
+    process.env.TZ = timezone;
+  }
 
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.setSystemTime(LEAP_YEAR_NOW);
+    vi.setSystemTime(LEAP_DAY_NOW);
   });
 
   afterEach(() => {
@@ -57,43 +64,43 @@ describe("parseLocalDateParam", () => {
   });
 
   it("parses a valid YYYY-MM-DD string into month/day/year parts", () => {
-    expect(parseLocalDateParam("2024-06-28")).toEqual({
-      month: 6,
-      day: 28,
+    expect(parseLocalDateParam("2024-02-29")).toEqual({
+      month: 2,
+      day: 29,
       year: 2024,
     });
   });
 
   it("trims surrounding whitespace before parsing", () => {
-    expect(parseLocalDateParam("  2024-06-28  ")).toEqual({
-      month: 6,
-      day: 28,
+    expect(parseLocalDateParam("  2024-02-29  ")).toEqual({
+      month: 2,
+      day: 29,
       year: 2024,
     });
   });
 
   it("returns null for non-string input", () => {
     expect(parseLocalDateParam(undefined)).toBeNull();
-    expect(parseLocalDateParam(20240628)).toBeNull();
-    expect(parseLocalDateParam(["2024-06-28"])).toBeNull();
+    expect(parseLocalDateParam(20240229)).toBeNull();
+    expect(parseLocalDateParam(["2024-02-29"])).toBeNull();
   });
 
   it("returns null for malformed strings", () => {
     expect(parseLocalDateParam("")).toBeNull();
-    expect(parseLocalDateParam("2024/06/28")).toBeNull();
-    expect(parseLocalDateParam("2024-6-28")).toBeNull();
-    expect(parseLocalDateParam("June 28, 2024")).toBeNull();
+    expect(parseLocalDateParam("2024/02/29")).toBeNull();
+    expect(parseLocalDateParam("2024-2-29")).toBeNull();
+    expect(parseLocalDateParam("Feb 29, 2024")).toBeNull();
   });
 
   it("returns null for out-of-range month or day", () => {
     expect(parseLocalDateParam("2024-13-01")).toBeNull();
     expect(parseLocalDateParam("2024-00-10")).toBeNull();
-    expect(parseLocalDateParam("2024-06-32")).toBeNull();
-    expect(parseLocalDateParam("2024-06-00")).toBeNull();
+    expect(parseLocalDateParam("2024-02-32")).toBeNull();
+    expect(parseLocalDateParam("2024-02-00")).toBeNull();
   });
 
   it("returns null for a day that does not exist in the month", () => {
-    expect(parseLocalDateParam("2024-06-31")).toBeNull(); // 30-day month
+    expect(parseLocalDateParam("2024-02-30")).toBeNull(); // Feb never has 30
     expect(parseLocalDateParam("2023-02-29")).toBeNull(); // 2023 is not a leap year
   });
 
@@ -105,21 +112,26 @@ describe("parseLocalDateParam", () => {
     });
   });
 
-  it("rejects a year further than one off the server clock", () => {
-    // Server year is 2024, so 2025 (next-year straddle) is allowed but 2026 is
-    // a stale/bogus clock and must be rejected, along with wildly-off years.
-    expect(parseLocalDateParam("2025-06-28")).toEqual({
-      month: 6,
+  it("accepts the day either side of the server's date (timezone straddle)", () => {
+    expect(parseLocalDateParam("2024-02-28")).toEqual({
+      month: 2,
       day: 28,
-      year: 2025,
+      year: 2024,
     });
-    expect(parseLocalDateParam("2023-06-28")).toEqual({
-      month: 6,
-      day: 28,
-      year: 2023,
+    expect(parseLocalDateParam("2024-03-01")).toEqual({
+      month: 3,
+      day: 1,
+      year: 2024,
     });
-    expect(parseLocalDateParam("2026-06-28")).toBeNull();
-    expect(parseLocalDateParam("2022-06-28")).toBeNull();
+  });
+
+  it("rejects a date more than a day from the server's date", () => {
+    // Guards the "today only" contract: a stale/bogus clock or a hand-crafted
+    // request for an arbitrary day must not slip through.
+    expect(parseLocalDateParam("2024-02-27")).toBeNull();
+    expect(parseLocalDateParam("2024-03-02")).toBeNull();
+    expect(parseLocalDateParam("2024-06-28")).toBeNull();
+    expect(parseLocalDateParam("2026-02-28")).toBeNull();
     expect(parseLocalDateParam("9999-06-28")).toBeNull();
   });
 
@@ -132,18 +144,18 @@ describe("parseLocalDateParam", () => {
     // both branches would run under the setup's pinned UTC and pass vacuously).
     const originalTimezone = process.env.TZ;
     try {
-      process.env.TZ = "Pacific/Kiritimati"; // UTC+14
-      expect(new Date("2024-01-01T00:00:00.000Z").getDate()).toBe(1);
-      const easternResult = parseLocalDateParam("2024-01-01");
+      setTimezone("Pacific/Kiritimati"); // UTC+14
+      expect(new Date("2024-03-01T00:00:00.000Z").getDate()).toBe(1);
+      const easternResult = parseLocalDateParam("2024-02-29");
 
-      process.env.TZ = "Pacific/Niue"; // UTC-11, still Dec 31 for that instant
-      expect(new Date("2024-01-01T00:00:00.000Z").getDate()).toBe(31);
-      const westernResult = parseLocalDateParam("2024-01-01");
+      setTimezone("Pacific/Niue"); // UTC-11, so that instant is still Feb 29
+      expect(new Date("2024-03-01T00:00:00.000Z").getDate()).toBe(29);
+      const westernResult = parseLocalDateParam("2024-02-29");
 
-      expect(easternResult).toEqual({ month: 1, day: 1, year: 2024 });
+      expect(easternResult).toEqual({ month: 2, day: 29, year: 2024 });
       expect(westernResult).toEqual(easternResult);
     } finally {
-      process.env.TZ = originalTimezone;
+      setTimezone(originalTimezone);
     }
   });
 });
@@ -161,11 +173,11 @@ describe("resolveReferenceDate", () => {
   });
 
   it("uses the viewer's local date when the param is valid", () => {
-    // A user in UTC-8 late on Jan 1 sends "2026-01-01"; even though the server
-    // clock (UTC) may already read Jan 2, the resolved reference stays Jan 1.
-    expect(resolveReferenceDate("2026-01-01")).toEqual({
-      month: 1,
-      day: 1,
+    // Server clock (UTC) is June 28, but a viewer in UTC-8 is still on June 27;
+    // the resolved reference follows the viewer, not the server.
+    expect(resolveReferenceDate("2026-06-27")).toEqual({
+      month: 6,
+      day: 27,
       year: 2026,
     });
   });
@@ -200,23 +212,31 @@ describe("buildOnThisDayFilter", () => {
     expect(filters.length).toBe(5);
   });
 
-  it("produces a different number of query values for different reference dates", () => {
-    const filtersA = buildOnThisDayFilter("user-1", JUNE_28_2026);
-    const filtersB = buildOnThisDayFilter("user-1", JULY_4_2026);
-
-    // Both filter arrays have the same length (same structural shape).
-    expect(filtersA.length).toBe(filtersB.length);
-
-    // The SQL template literals embed month/day/year values from the reference
-    // date. Inspect the queryChunks to confirm the month value differs.
-    const getMonthChunk = (
+  it("embeds each reference component into its own filter position", () => {
+    // filters[2] is the MONTH extract, [3] the DAY extract, [4] the YEAR
+    // extract. Varying exactly one reference component must change exactly the
+    // matching filter and leave the others untouched — this catches a
+    // month/day (or year) swap that a "some chunk differs" assertion misses.
+    const chunkAt = (
       filters: ReturnType<typeof buildOnThisDayFilter>,
-    ) => {
-      const monthFilter = filters[2] as { queryChunks?: unknown[] };
-      return monthFilter?.queryChunks ?? [];
-    };
+      index: number,
+    ) => (filters[index] as { queryChunks?: unknown[] }).queryChunks ?? [];
 
-    expect(getMonthChunk(filtersA)).not.toEqual(getMonthChunk(filtersB));
+    const june28 = buildOnThisDayFilter("user-1", JUNE_28_2026);
+    const june30 = buildOnThisDayFilter("user-1", { ...JUNE_28_2026, day: 30 });
+    const june28LastYear = buildOnThisDayFilter("user-1", {
+      ...JUNE_28_2026,
+      year: 2025,
+    });
+
+    // Same month, different day: only the DAY filter moves.
+    expect(chunkAt(june30, 2)).toEqual(chunkAt(june28, 2));
+    expect(chunkAt(june30, 3)).not.toEqual(chunkAt(june28, 3));
+
+    // Same month/day, different year: only the YEAR filter moves.
+    expect(chunkAt(june28LastYear, 2)).toEqual(chunkAt(june28, 2));
+    expect(chunkAt(june28LastYear, 3)).toEqual(chunkAt(june28, 3));
+    expect(chunkAt(june28LastYear, 4)).not.toEqual(chunkAt(june28, 4));
   });
 });
 

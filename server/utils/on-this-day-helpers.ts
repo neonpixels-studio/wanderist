@@ -20,13 +20,14 @@ export interface OnThisDayDate {
 
 const LOCAL_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 const MONTH_OFFSET = 1;
-// The reference is always the viewer's "today", so a legitimate year is the
-// server's current year give or take one (a viewer just past midnight can be a
-// day ahead of, or behind, the server at the New Year boundary). Anything
-// further off is a stale/bogus client clock: reject it so resolveReferenceDate
-// falls back to the server clock instead of returning a wrong (empty or overly
-// wide) result set.
-const MAX_YEAR_SKEW = 1;
+// The reference is always the viewer's "today", which can differ from the
+// server's UTC date by at most one calendar day (timezone offsets span roughly
+// UTC-12 to UTC+14). Anything further off — a stale/bogus client clock, or a
+// hand-crafted request trying to browse an arbitrary date — is rejected so
+// resolveReferenceDate falls back to the server clock rather than returning a
+// wrong result. This keeps "on this day" to today in prior years, not an
+// arbitrary-date browser.
+const MAX_DAY_SKEW_MS = 24 * 60 * 60 * 1000;
 
 function isRealCalendarDate({ month, day, year }: OnThisDayDate): boolean {
   // Reject impossible combinations (wrong month/day ranges and non-existent
@@ -41,16 +42,22 @@ function isRealCalendarDate({ month, day, year }: OnThisDayDate): boolean {
   );
 }
 
-function isReasonableYear(year: number): boolean {
-  const serverYear = new Date().getUTCFullYear();
-  return Math.abs(year - serverYear) <= MAX_YEAR_SKEW;
+function isPlausibleToday({ year, month, day }: OnThisDayDate): boolean {
+  const now = new Date();
+  const serverToday = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  );
+  const candidate = Date.UTC(year, month - MONTH_OFFSET, day);
+  return Math.abs(candidate - serverToday) <= MAX_DAY_SKEW_MS;
 }
 
 /**
  * Parses a client-provided local date string in `YYYY-MM-DD` form into its
  * month/day/year parts. Returns null for anything malformed, not a real
- * calendar date, or carrying an implausible year, so callers can fall back to
- * the server clock.
+ * calendar date, or further than a day from the server's date, so callers can
+ * fall back to the server clock.
  */
 export function parseLocalDateParam(value: unknown): OnThisDayDate | null {
   if (typeof value !== "string") {
@@ -68,10 +75,10 @@ export function parseLocalDateParam(value: unknown): OnThisDayDate | null {
     day: Number(match[3]),
   };
 
-  if (!isReasonableYear(parsed.year)) {
+  if (!isRealCalendarDate(parsed)) {
     return null;
   }
-  if (!isRealCalendarDate(parsed)) {
+  if (!isPlausibleToday(parsed)) {
     return null;
   }
 
@@ -109,8 +116,10 @@ export function resolveReferenceDate(value: unknown): OnThisDayDate {
  * The `occurred_at` side is still extracted in UTC. `occurred_at` is stored as
  * the UTC instant of the entry's local midnight at creation time, so an entry
  * whose creation timezone differs from UTC can extract to the neighbouring UTC
- * day and match a day off. Fully aligning both sides needs the entry's own
- * timezone (or a date-only column) and is tracked as a follow-up.
+ * day and match a day off.
+ *
+ * @todo Fully align both sides using the entry's own timezone (or a date-only
+ * column); tracked as a follow-up.
  */
 export function buildOnThisDayFilter(
   userId: string,

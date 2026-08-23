@@ -98,6 +98,20 @@ describe("GET /api/entries/on-this-day", () => {
     }
   });
 
+  it("returns 400 when the date param is present but invalid", async () => {
+    mockRequireUser.mockReturnValue("user-1");
+    mockFetchOnThisDayEntries.mockResolvedValue([]);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+
+    await expect(
+      (defaultHandler as (event: unknown) => unknown)({
+        query: { date: "not-a-date" },
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(mockFetchOnThisDayEntries).not.toHaveBeenCalled();
+  });
+
   it("returns an empty entries array when there are no matches", async () => {
     mockRequireUser.mockReturnValue("user-1");
     mockFetchOnThisDayEntries.mockResolvedValue([]);
