@@ -358,6 +358,85 @@ describe("AppNewEntry", () => {
     expect(wrapper.find(".error-hint").exists()).toBe(false);
   });
 
+  it("sends placeId when the location matches a known place name", async () => {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+    placesStorePlaces.value = [
+      { id: "p-1", name: "Old Harbour" },
+      { id: "p-2", name: "Hallgrímskirkja" },
+    ];
+
+    const wrapper = mountOpen();
+    const chips = wrapper.findAll(".chip");
+    await chips[0].trigger("click");
+
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBe("p-1");
+  });
+
+  it("resolves placeId case-insensitively and ignores surrounding whitespace", async () => {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper
+      .find(".chip-suggest")
+      .element.closest(".field")
+      ?.querySelector(".field__input") as HTMLInputElement;
+    // Type a differently-cased, padded version of the place name
+    const inputWrapper = wrapper
+      .findAll(".field__input")
+      .find((node) => node.element === locationInput);
+    await inputWrapper?.setValue("  old harbour  ");
+
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBe("p-1");
+  });
+
+  it("omits placeId when the location does not match any known place", async () => {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper
+      .find(".chip-suggest")
+      .element.closest(".field")
+      ?.querySelector(".field__input") as HTMLInputElement;
+    const inputWrapper = wrapper
+      .findAll(".field__input")
+      .find((node) => node.element === locationInput);
+    await inputWrapper?.setValue("Somewhere unlisted");
+
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBeUndefined();
+  });
+
   it("passes occurredAt derived from the local date string the user chose", async () => {
     mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
     mockFetchEntries.mockResolvedValue({

@@ -463,12 +463,28 @@ function localDateToIso(dateString: string): string | undefined {
   return new Date(year, month - 1, day).toISOString();
 }
 
+// The entries API models a place only by `placeId` (an FK to an existing
+// place), not as free-text — so a location the user typed can only be
+// persisted when it names a place they already have. Resolve the location
+// text to that place's id here; unmatched free text has nowhere to go.
+function resolvePlaceId(locationName: string): string | undefined {
+  const trimmedName = locationName.trim().toLowerCase();
+  if (!trimmedName) {
+    return undefined;
+  }
+  const match = placesStore.places.find(
+    (place) => place.name.trim().toLowerCase() === trimmedName,
+  );
+  return match?.id;
+}
+
 function buildEntryPayload() {
   return {
     title: form.value.title,
     body: form.value.body || undefined,
     occurredAt: localDateToIso(form.value.date),
     tripId: form.value.tripId || undefined,
+    placeId: resolvePlaceId(form.value.location),
     tags: form.value.tags.length ? form.value.tags : undefined,
     photoMediaIds: uploadedPhotos.value.map((photo) => photo.id),
     visibility: form.value.visibility,
