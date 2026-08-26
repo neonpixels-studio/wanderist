@@ -30,7 +30,10 @@ const BASE_ENTRY = {
 describe("useEntriesStore", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    vi.clearAllMocks();
+    // resetAllMocks (not clearAllMocks) so a persistent mockResolvedValue set by
+    // one test — e.g. the "hasMore forever" case — cannot leak its implementation
+    // into a later test that forgets to set its own.
+    vi.resetAllMocks();
   });
 
   // ---------------------------------------------------------------------------
@@ -47,15 +50,164 @@ describe("useEntriesStore", () => {
         entries: mockEntries,
         tab: "timeline",
         page: 1,
+        hasMore: false,
       });
 
       const store = useEntriesStore();
-      const result = await store.fetchEntries();
+      await store.fetchEntries();
 
-      expect(result.entries).toEqual(mockEntries);
       expect(store.entries).toEqual(mockEntries);
       expect(store.isLoading).toBe(false);
       expect(store.error).toBeNull();
+    });
+
+    it("walks every page and concatenates entries when hasMore is true", async () => {
+      const pageOne = Array.from({ length: 20 }, (_, index) => ({
+        ...BASE_ENTRY,
+        id: `p1-${index}`,
+      }));
+      const pageTwo = Array.from({ length: 5 }, (_, index) => ({
+        ...BASE_ENTRY,
+        id: `p2-${index}`,
+      }));
+
+      mockApiFetch
+        .mockResolvedValueOnce({
+          entries: pageOne,
+          tab: "timeline",
+          page: 1,
+          hasMore: true,
+        })
+        .mockResolvedValueOnce({
+          entries: pageTwo,
+          tab: "timeline",
+          page: 2,
+          hasMore: false,
+        });
+
+      const store = useEntriesStore();
+      await store.fetchEntries();
+
+      expect(mockApiFetch).toHaveBeenNthCalledWith(1, "/api/entries?page=1");
+      expect(mockApiFetch).toHaveBeenNthCalledWith(2, "/api/entries?page=2");
+      expect(store.entries).toHaveLength(25);
+      expect(store.entries[24].id).toBe("p2-4");
+    });
+
+    it("carries the filters onto every walked page, not just the first", async () => {
+      mockApiFetch
+        .mockResolvedValueOnce({
+          entries: Array.from({ length: 20 }, (_, index) => ({
+            ...BASE_ENTRY,
+            id: `p1-${index}`,
+          })),
+          tab: "by-trip",
+          page: 1,
+          hasMore: true,
+        })
+        .mockResolvedValueOnce({
+          entries: [BASE_ENTRY],
+          tab: "by-trip",
+          page: 2,
+          hasMore: false,
+        });
+
+      const store = useEntriesStore();
+      await store.fetchEntries({ tripId: "trip-1", tab: "by-trip" });
+
+      expect(mockApiFetch).toHaveBeenNthCalledWith(
+        1,
+        "/api/entries?tripId=trip-1&tab=by-trip&page=1",
+      );
+      expect(mockApiFetch).toHaveBeenNthCalledWith(
+        2,
+        "/api/entries?tripId=trip-1&tab=by-trip&page=2",
+      );
+    });
+
+    it("throws when the API keeps reporting hasMore forever", async () => {
+      mockApiFetch.mockResolvedValue({
+        entries: [BASE_ENTRY],
+        tab: "timeline",
+        page: 1,
+        hasMore: true,
+      });
+
+      const store = useEntriesStore();
+
+      await expect(store.fetchEntries()).rejects.toThrow(/exceeded 500 pages/);
+      expect(store.error).toMatch(/exceeded 500 pages/);
+      expect(store.isLoading).toBe(false);
+      // Fail loud rather than expose a truncated list dressed up as the full one.
+      expect(store.entries).toEqual([]);
+      // Pins the cap boundary: pages 1..500 are fetched, then the 501st request
+      // is refused. A `>=` off-by-one would show up here as 499.
+      expect(mockApiFetch).toHaveBeenCalledTimes(500);
+    });
+
+    it("throws on a malformed response missing hasMore", async () => {
+      mockApiFetch.mockResolvedValue({ entries: [], tab: "timeline", page: 1 });
+      const store = useEntriesStore();
+
+      await expect(store.fetchEntries()).rejects.toThrow(
+        /Malformed \/api\/entries response/,
+      );
+      expect(store.error).toMatch(/Malformed \/api\/entries response/);
+      expect(store.isLoading).toBe(false);
+    });
+
+    it("throws on a malformed response whose entries is not an array", async () => {
+      mockApiFetch.mockResolvedValue({
+        entries: null,
+        tab: "timeline",
+        page: 1,
+        hasMore: false,
+      });
+      const store = useEntriesStore();
+
+      await expect(store.fetchEntries()).rejects.toThrow(
+        /Malformed \/api\/entries response/,
+      );
+      expect(store.error).toMatch(/Malformed \/api\/entries response/);
+      expect(store.isLoading).toBe(false);
+    });
+
+    it("preserves the existing list when a later page fails mid-walk", async () => {
+      const seeded = [{ ...BASE_ENTRY, id: "seed-1" }];
+      const firstPage = Array.from({ length: 20 }, (_, index) => ({
+        ...BASE_ENTRY,
+        id: `p1-${index}`,
+      }));
+
+      // Seed a known list via a first successful single-page fetch, then make
+      // the next fetch fail on its second page.
+      mockApiFetch.mockResolvedValueOnce({
+        entries: seeded,
+        tab: "timeline",
+        page: 1,
+        hasMore: false,
+      });
+
+      const store = useEntriesStore();
+      await store.fetchEntries();
+      expect(store.entries).toEqual(seeded);
+
+      mockApiFetch
+        .mockResolvedValueOnce({
+          entries: firstPage,
+          tab: "timeline",
+          page: 1,
+          hasMore: true,
+        })
+        .mockRejectedValueOnce(new Error("page 2 failed"));
+
+      await expect(store.fetchEntries()).rejects.toThrow("page 2 failed");
+
+      // A mid-walk failure must not leave the store holding a truncated list —
+      // the prior contents survive and the error surfaces.
+      expect(store.entries).toEqual(seeded);
+      expect(store.error).toBe("page 2 failed");
+      expect(store.isLoading).toBe(false);
     });
 
     it("sets isLoading true during fetch and resets after", async () => {
@@ -64,7 +216,7 @@ describe("useEntriesStore", () => {
 
       mockApiFetch.mockImplementation(async () => {
         capturedLoading = store.isLoading;
-        return { entries: [], tab: "timeline", page: 1 };
+        return { entries: [], tab: "timeline", page: 1, hasMore: false };
       });
 
       await store.fetchEntries();
@@ -83,53 +235,76 @@ describe("useEntriesStore", () => {
       expect(store.isLoading).toBe(false);
     });
 
-    it("calls /api/entries with no query when no filters", async () => {
-      mockApiFetch.mockResolvedValue({ entries: [], tab: "timeline", page: 1 });
+    it("requests page 1 with no other query when no filters", async () => {
+      mockApiFetch.mockResolvedValue({
+        entries: [],
+        tab: "timeline",
+        page: 1,
+        hasMore: false,
+      });
       const store = useEntriesStore();
       await store.fetchEntries();
 
-      expect(mockApiFetch).toHaveBeenCalledWith("/api/entries");
+      expect(mockApiFetch).toHaveBeenCalledWith("/api/entries?page=1");
     });
 
     it("appends tripId query param when provided", async () => {
-      mockApiFetch.mockResolvedValue({ entries: [], tab: "timeline", page: 1 });
+      mockApiFetch.mockResolvedValue({
+        entries: [],
+        tab: "timeline",
+        page: 1,
+        hasMore: false,
+      });
       const store = useEntriesStore();
       await store.fetchEntries({ tripId: "trip-1" });
 
-      expect(mockApiFetch).toHaveBeenCalledWith("/api/entries?tripId=trip-1");
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        "/api/entries?tripId=trip-1&page=1",
+      );
     });
 
     it("appends placeId query param when provided", async () => {
-      mockApiFetch.mockResolvedValue({ entries: [], tab: "timeline", page: 1 });
+      mockApiFetch.mockResolvedValue({
+        entries: [],
+        tab: "timeline",
+        page: 1,
+        hasMore: false,
+      });
       const store = useEntriesStore();
       await store.fetchEntries({ placeId: "place-1" });
 
-      expect(mockApiFetch).toHaveBeenCalledWith("/api/entries?placeId=place-1");
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        "/api/entries?placeId=place-1&page=1",
+      );
     });
 
     it("appends tab query param when provided", async () => {
-      mockApiFetch.mockResolvedValue({ entries: [], tab: "photos", page: 1 });
+      mockApiFetch.mockResolvedValue({
+        entries: [],
+        tab: "photos",
+        page: 1,
+        hasMore: false,
+      });
       const store = useEntriesStore();
       await store.fetchEntries({ tab: "photos" });
 
-      expect(mockApiFetch).toHaveBeenCalledWith("/api/entries?tab=photos");
-    });
-
-    it("appends page query param when provided", async () => {
-      mockApiFetch.mockResolvedValue({ entries: [], tab: "timeline", page: 2 });
-      const store = useEntriesStore();
-      await store.fetchEntries({ page: 2 });
-
-      expect(mockApiFetch).toHaveBeenCalledWith("/api/entries?page=2");
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        "/api/entries?tab=photos&page=1",
+      );
     });
 
     it("combines multiple filters", async () => {
-      mockApiFetch.mockResolvedValue({ entries: [], tab: "by-trip", page: 1 });
+      mockApiFetch.mockResolvedValue({
+        entries: [],
+        tab: "by-trip",
+        page: 1,
+        hasMore: false,
+      });
       const store = useEntriesStore();
-      await store.fetchEntries({ tripId: "trip-1", tab: "by-trip", page: 3 });
+      await store.fetchEntries({ tripId: "trip-1", tab: "by-trip" });
 
       expect(mockApiFetch).toHaveBeenCalledWith(
-        "/api/entries?tripId=trip-1&tab=by-trip&page=3",
+        "/api/entries?tripId=trip-1&tab=by-trip&page=1",
       );
     });
   });
@@ -191,6 +366,7 @@ describe("useEntriesStore", () => {
           entries: [BASE_ENTRY],
           tab: "timeline",
           page: 1,
+          hasMore: false,
         })
         .mockResolvedValueOnce(second);
 
@@ -226,6 +402,7 @@ describe("useEntriesStore", () => {
           entries: [BASE_ENTRY],
           tab: "timeline",
           page: 1,
+          hasMore: false,
         })
         .mockResolvedValueOnce(updated);
 
@@ -259,6 +436,7 @@ describe("useEntriesStore", () => {
           entries: [BASE_ENTRY, entry2],
           tab: "timeline",
           page: 1,
+          hasMore: false,
         })
         .mockResolvedValueOnce(updatedEntry1);
 
@@ -294,6 +472,7 @@ describe("useEntriesStore", () => {
           entries: [BASE_ENTRY, entry2],
           tab: "timeline",
           page: 1,
+          hasMore: false,
         })
         .mockResolvedValueOnce({ success: true });
 
@@ -336,6 +515,7 @@ describe("useEntriesStore", () => {
           entries: [BASE_ENTRY],
           tab: "timeline",
           page: 1,
+          hasMore: false,
         })
         .mockResolvedValueOnce(liked);
 
@@ -381,6 +561,7 @@ describe("useEntriesStore", () => {
           entries: [withLike],
           tab: "timeline",
           page: 1,
+          hasMore: false,
         })
         .mockResolvedValueOnce(unliked);
 
