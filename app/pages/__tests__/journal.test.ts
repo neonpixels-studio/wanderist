@@ -105,11 +105,7 @@ describe("Journal page (/journal)", () => {
 
     const entriesStore = useEntriesStore();
     entriesStore.entries = [...SAMPLE_ENTRIES];
-    vi.spyOn(entriesStore, "fetchEntries").mockResolvedValue({
-      entries: SAMPLE_ENTRIES,
-      tab: "timeline",
-      page: 1,
-    });
+    vi.spyOn(entriesStore, "fetchEntries").mockResolvedValue();
     vi.spyOn(entriesStore, "likeEntry").mockResolvedValue({
       ...SAMPLE_ENTRIES[0],
       likeCount: 25,

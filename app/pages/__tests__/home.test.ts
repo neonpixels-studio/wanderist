@@ -216,9 +216,7 @@ vi.stubGlobal(
     entries: entriesRef.value,
     isLoading: false,
     error: null,
-    fetchEntries: vi
-      .fn()
-      .mockResolvedValue({ entries: [], tab: "timeline", page: 1 }),
+    fetchEntries: vi.fn().mockResolvedValue(undefined),
     fetchEntry: vi.fn(),
     createEntry: vi.fn().mockResolvedValue({ id: "entry-1" }),
     updateEntry: vi.fn(),
