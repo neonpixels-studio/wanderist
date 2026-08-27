@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { ref, reactive, nextTick, unref } from "vue";
+import { ref, reactive, nextTick, unref, watch } from "vue";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TripDetailPage from "../trips/[id].vue";
@@ -10,6 +10,25 @@ import type { TripDetail } from "~/stores/trips";
 // change the trip id and assert the page's watched ref tracks it.
 const routeParams = reactive({ id: "trip-1" });
 vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
+
+// The page derives isOwner from the signed-in Clerk user id vs the trip owner.
+// Drive that from a shared ref so a test can view the trip as its owner (all
+// edit controls render) or as a non-owner / anonymous visitor (read-only).
+const clerkUserRef = ref<{ id: string } | null>(null);
+vi.stubGlobal("useClerkUser", () => ({ user: clerkUserRef }));
+
+// isOwner, the fetch's isClerkLoaded watch, and the not-found sign-in affordance
+// all read useClerkAuth; drive them from refs so a test can simulate the Clerk
+// bootstrap window, a signed-out visitor, and the owner arriving after load.
+const clerkLoadedRef = ref(true);
+const clerkSignedInRef = ref(false);
+vi.stubGlobal("useClerkAuth", () => ({
+  isLoaded: clerkLoadedRef,
+  isSignedIn: clerkSignedInRef,
+  getToken: vi.fn().mockResolvedValue(null),
+}));
+
+const TRIP_OWNER_ID = "user-1";
 
 // The global useAsyncData stub never invokes its handler and returns no status,
 // so the page's client-only fetch wiring is dead under test. Override it to run
@@ -30,6 +49,15 @@ vi.stubGlobal(
   ) => {
     lastAsyncDataOptions = options;
     handler();
+    // Honour the real refetch-on-watch contract so a test can assert an
+    // anonymous visitor fetches once while the owner's request re-runs when the
+    // session resolves — asserting the watch array alone would pass even if the
+    // page dropped the watcher entirely.
+    if (options?.watch) {
+      watch(options.watch as Parameters<typeof watch>[0], () => {
+        handler();
+      });
+    }
     return {
       data: ref(null),
       pending: ref(false),
@@ -123,6 +151,11 @@ describe("Trip Detail page (/trips/[id])", () => {
     routeParams.id = "trip-1";
     asyncDataStatus.value = "success";
     lastAsyncDataOptions = undefined;
+    // Default: Clerk resolved, viewing as the trip's owner, so the owner-only
+    // controls render.
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = true;
+    clerkUserRef.value = { id: TRIP_OWNER_ID };
     pinia = createPinia();
     setActivePinia(pinia);
 
@@ -324,6 +357,117 @@ describe("Trip Detail page (/trips/[id])", () => {
 
     expect(wrapper.find(".loading-state").exists()).toBe(false);
     expect(wrapper.find(".empty-state").exists()).toBe(true);
+  });
+
+  it("hides the hero edit/share actions from a non-owner viewer", () => {
+    clerkUserRef.value = { id: "someone-else" };
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    expect(wrapper.find(".thero__acts").exists()).toBe(false);
+  });
+
+  it("hides mutation controls (add stop, reorder, cover, invite) from an anonymous viewer", () => {
+    clerkUserRef.value = null;
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".add-btn").exists()).toBe(false);
+    expect(wrapper.find(".iti-head button").exists()).toBe(false);
+    expect(wrapper.find('input[type="file"]').exists()).toBe(false);
+    expect(wrapper.find(".stop__grip").exists()).toBe(false);
+    expect(wrapper.find(".companions").exists()).toBe(false);
+  });
+
+  it("still renders the public trip content for a non-owner (read-only)", () => {
+    clerkUserRef.value = { id: "someone-else" };
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".thero h1").text()).toContain(
+      "Iceland, the ring road",
+    );
+    expect(wrapper.findAll(".stop").length).toBe(3);
+    expect(wrapper.find(".trail").exists()).toBe(true);
+  });
+
+  it("renders a public trip read-only even if Clerk never loads (script blocked)", () => {
+    // isLoading must not depend on Clerk: an anonymous visitor following a
+    // shared link needs nothing from Clerk, so a blocked Clerk script degrades
+    // to the read-only page, never a permanent "Loading trip…".
+    clerkLoadedRef.value = false;
+    clerkUserRef.value = null;
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".loading-state").exists()).toBe(false);
+    expect(wrapper.find(".thero h1").text()).toContain(
+      "Iceland, the ring road",
+    );
+    expect(wrapper.find(".thero__acts").exists()).toBe(false);
+  });
+
+  it("fetches once for an anonymous visitor and retries once the owner's session resolves", async () => {
+    // Start anonymous with Clerk still loading.
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+    const tripsStore = useTripsStore();
+    const fetchSpy = tripsStore.fetchTripById as unknown as ReturnType<
+      typeof vi.fn
+    >;
+
+    mount(TripDetailPage, buildGlobalConfig(pinia));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // Clerk finishing its load for an anonymous visitor must NOT retry: they
+    // never gain a token, so a second identical request is wasted.
+    clerkLoadedRef.value = true;
+    await nextTick();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // A resolved, signed-in session triggers exactly one authenticated retry so
+    // the owner's own private trip loads after the anonymous first pass 404'd.
+    clerkSignedInRef.value = true;
+    await nextTick();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    expect(lastAsyncDataOptions?.watch).toHaveLength(2);
+  });
+
+  it("offers a sign-in link in the not-found state for a signed-out visitor", () => {
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    clerkSignedInRef.value = false;
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".empty-state__signin").exists()).toBe(true);
+  });
+
+  it("omits the sign-in link when the visitor is already signed in", () => {
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    clerkSignedInRef.value = true;
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".empty-state").exists()).toBe(true);
+    expect(wrapper.find(".empty-state__signin").exists()).toBe(false);
+  });
+
+  it("does not register auth middleware so a public trip opens without login", () => {
+    // definePageMeta is a compiler macro stubbed to capture its argument; the
+    // page must not declare middleware: "auth" or an anonymous visitor bounces
+    // to /login before the visibility-aware GET ever runs.
+    const definePageMetaMock = globalThis.definePageMeta as ReturnType<
+      typeof vi.fn
+    >;
+    definePageMetaMock.mockClear();
+
+    mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    const meta = definePageMetaMock.mock.calls.at(-1)?.[0] as
+      { middleware?: unknown; layout?: unknown } | undefined;
+    // Anchor on a known key so the assertion can't pass vacuously by the macro
+    // never being called.
+    expect(meta).toBeDefined();
+    expect(meta?.layout).toBe("app");
+    expect(meta?.middleware).toBeUndefined();
   });
 
   it("does not render a stale trip whose id no longer matches the route", async () => {

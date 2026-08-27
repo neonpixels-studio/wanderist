@@ -8,7 +8,16 @@
     class="content content--wide"
     style="padding-top: 0"
   >
-    <div class="empty-state">Trip not found.</div>
+    <div class="empty-state">
+      Trip not found.
+      <NuxtLink
+        v-if="isClerkLoaded && !isSignedIn"
+        to="/login"
+        class="empty-state__signin"
+      >
+        Sign in to view your trips
+      </NuxtLink>
+    </div>
   </div>
 
   <div v-else class="content content--wide" style="padding-top: 0">
@@ -24,7 +33,7 @@
     >
       <div class="topo" />
       <div class="thero__veil" />
-      <div class="thero__acts">
+      <div v-if="isOwner" class="thero__acts">
         <button
           class="btn btn--outline btn--sm"
           style="
@@ -104,6 +113,7 @@
             </h2>
           </div>
           <button
+            v-if="isOwner"
             class="btn btn--ghost btn--sm"
             :disabled="sortedStops.length < 2"
             @click="onReorder"
@@ -153,7 +163,7 @@
                     >
                   </div>
                 </div>
-                <span class="stop__grip">
+                <span v-if="isOwner" class="stop__grip">
                   <AppIcon name="grip" :size="16" />
                 </span>
               </div>
@@ -167,7 +177,7 @@
             </div>
           </div>
 
-          <div class="stop__add">
+          <div v-if="isOwner" class="stop__add">
             <div />
             <button class="add-btn" :disabled="isAddingStop" @click="onAddStop">
               <AppIcon name="plus" :size="15" />
@@ -254,7 +264,7 @@
           </div>
         </div>
 
-        <div class="rail-card">
+        <div v-if="isOwner" class="rail-card">
           <h4
             class="display"
             style="
@@ -301,12 +311,24 @@ import { useTripsStore } from "~/stores/trips";
 import type { Trip, TripStop } from "~/stores/trips";
 import { useMediaUpload } from "~/composables/useMediaUpload";
 
-definePageMeta({ layout: "app", middleware: "auth" });
+// No auth middleware: a public trip must open for anonymous visitors following
+// a shared link. The GET endpoint enforces visibility — a private trip returns
+// 404, which this page renders as its not-found state (it never redirects to
+// /login), so private trips stay protected. Owner-only controls below are gated
+// on isOwner, so a non-owner viewer gets a read-only page.
+definePageMeta({ layout: "app" });
 
 const route = useRoute();
 const tripId = computed(() => String(route.params.id));
 
 const tripsStore = useTripsStore();
+const { user: clerkUser } = useClerkUser();
+// isLoaded gates the read-only/owner split: until Clerk resolves, clerkUser is
+// null and every viewer would look like a non-owner, flashing the owner the
+// read-only page. isSignedIn drives the sign-in affordance in the not-found
+// state so a signed-out owner arriving from a bookmark/expired session isn't
+// dead-ended.
+const { isLoaded: isClerkLoaded, isSignedIn } = useClerkAuth();
 const {
   upload,
   isUploading: isUploadingCover,
@@ -329,19 +351,49 @@ const tripDetail = computed(() =>
     : null,
 );
 
+// A non-owner (including an anonymous visitor) viewing a public trip gets a
+// read-only page: every mutating/owner-only control below is gated on this.
+// Guarded on isClerkLoaded so the owner is never misread as a non-owner while
+// Clerk is still bootstrapping — until it resolves, clerkUser is null and this
+// stays false (read-only), then flips true once the real owner is known.
+const isOwner = computed(
+  () =>
+    isClerkLoaded.value &&
+    !!tripDetail.value &&
+    !!clerkUser.value &&
+    clerkUser.value.id === tripDetail.value.trip.userId,
+);
+
+// A refetch only changes the answer once the viewer is a signed-in user who can
+// carry a token; an anonymous visitor never gains one, so watching this instead
+// of isClerkLoaded gives them a single fetch while still re-issuing the owner's
+// request once their session resolves.
+const canRetryAuthenticated = computed(
+  () => isClerkLoaded.value && !!isSignedIn.value,
+);
+
 // `server: false` keeps the fetch client-only, mirroring guides/[id].vue and
 // u/[id].vue: the request carries the Clerk session token, which only exists on
 // the client (Clerk runs with skipServerMiddleware). Running it during SSR would
 // hang, since Clerk's getToken never resolves on the server.
+//
+// Watch canRetryAuthenticated as well as the id: the first pass can run before
+// Clerk is ready, sending an anonymous request that 404s the owner's own private
+// trip. Re-running once the session resolves re-issues the request with a token
+// so the owner gets their private trip; a public trip already resolved on the
+// anonymous pass.
 const { status: fetchStatus } = useAsyncData(
   () => `trip-detail-${tripId.value}`,
   () => tripsStore.fetchTripById(tripId.value),
-  { server: false, watch: [tripId] },
+  { server: false, watch: [tripId, canRetryAuthenticated] },
 );
 
 // Until the client fetch resolves, the SSR pass and hydration frame have no trip
 // yet. Treat that window as loading so a valid trip never flashes "Trip not
-// found" before its data arrives.
+// found" before its data arrives. This is deliberately NOT gated on
+// isClerkLoaded: an anonymous visitor following a shared link needs nothing from
+// Clerk, so if the Clerk script is blocked the page still renders the public
+// trip read-only rather than hanging on "Loading trip…" forever.
 const hasResolvedFetch = computed(
   () => fetchStatus.value === "success" || fetchStatus.value === "error",
 );
@@ -605,6 +657,15 @@ function onInvite(): void {
   text-align: center;
   color: var(--muted);
   font-size: 14px;
+}
+.empty-state__signin {
+  display: inline-block;
+  margin-top: 10px;
+  color: var(--accent-ink);
+  text-decoration: none;
+}
+.empty-state__signin:hover {
+  text-decoration: underline;
 }
 
 .thero {
