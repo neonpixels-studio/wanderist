@@ -42,6 +42,7 @@ import {
   processMediaImage,
   storeMediaBlobs,
 } from "../../../utils/mediaPipeline";
+import { removeMediaBlob, toThumbnailKey } from "../../../utils/mediaStore";
 import {
   fetchInstagramMedia,
   fetchInstagramImage,
@@ -250,17 +251,37 @@ async function rollbackOrThrow(
     originalError instanceof Error
       ? originalError.message
       : String(originalError);
+  // Preserve the original error's class/stack via `cause` so the per-item log
+  // still points at what actually broke, not just the rollback outcome.
   if (!mediaDeleted) {
     throw new Error(
       `${baseMessage} (rollback failed: media row ${mediaId} leaked; the item will be skipped on future runs and needs manual cleanup)`,
+      { cause: originalError },
     );
   }
   if (!entryDeleted) {
     throw new Error(
       `${baseMessage} (rollback failed: entry ${entryId} leaked; a re-import will duplicate it)`,
+      { cause: originalError },
     );
   }
   throw originalError;
+}
+
+// Best-effort removal of the original + thumbnail blobs for a storage key, used
+// when the DB rows are being rolled back after a blob write so a blob that did
+// land is not left orphaned. removeMediaBlob is a no-op on a missing key, and any
+// error here is swallowed — it must never mask the original failure.
+async function removeStoredBlobsQuietly(storageKey: string): Promise<void> {
+  try {
+    await removeMediaBlob(storageKey);
+    await removeMediaBlob(toThumbnailKey(storageKey));
+  } catch (blobError) {
+    console.error(
+      `instagram import: best-effort blob cleanup failed for ${storageKey}`,
+      blobError,
+    );
+  }
 }
 
 interface MediaInsertInput {
@@ -337,7 +358,15 @@ async function persistImportedPhotoRows(
       sortOrder: 0,
     });
   } catch (error) {
-    await rollbackOrThrow(database, userId, entryId, mediaInput.mediaId, error);
+    // rollbackOrThrow always throws; `throw await` keeps that a compile-time
+    // guarantee so `return { entryId }` is unreachable after a failure.
+    throw await rollbackOrThrow(
+      database,
+      userId,
+      entryId,
+      mediaInput.mediaId,
+      error,
+    );
   }
 
   return { entryId };
@@ -371,12 +400,11 @@ async function importSinglePhoto(
   // are already committed and the media row's URL would point at a blob that was
   // never written; because source_id is in the table, the item would otherwise be
   // skipped on every future run — permanently broken and un-retryable. So roll the
-  // rows back and rethrow, which frees source_id and lets the next run retry.
-  // Tradeoff: if putMediaBlob actually landed the object and then failed on the
-  // response, rolling the rows back orphans that blob (nothing references it); an
-  // orphaned blob is a storage cost, far cheaper than a permanently-stuck entry,
-  // and is preferable to the un-retryable row. (storeMediaBlobs only throws on the
-  // original blob; a thumbnail-store failure returns null, handled below.)
+  // rows back and rethrow, which frees source_id and lets the next run retry. If
+  // putMediaBlob actually landed the object before failing on the response, the
+  // rolled-back rows would orphan it, so best-effort remove both blobs first
+  // (removeMediaBlob is a no-op on a missing key). (storeMediaBlobs only throws on
+  // the original blob; a thumbnail-store failure returns null, handled below.)
   let thumbnailKey: string | null = null;
   try {
     thumbnailKey = await storeMediaBlobs(
@@ -386,7 +414,8 @@ async function importSinglePhoto(
       contentType,
     );
   } catch (error) {
-    await rollbackOrThrow(database, userId, entryId, mediaId, error);
+    await removeStoredBlobsQuietly(storageKey);
+    throw await rollbackOrThrow(database, userId, entryId, mediaId, error);
   }
 
   // Surface the best-effort thumbnail gap rather than swallowing it: the row is

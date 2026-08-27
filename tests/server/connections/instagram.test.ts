@@ -45,6 +45,7 @@ const {
   mockEnsureFreshInstagramToken,
   MockInstagramTokenExpiredError,
   mockPutMediaBlob,
+  mockRemoveMediaBlob,
   mockToThumbnailKey,
   mockProbeImageDimensions,
   mockGenerateThumbnail,
@@ -134,6 +135,7 @@ const {
     mockEnsureFreshInstagramToken: vi.fn().mockResolvedValue("long-token"),
     MockInstagramTokenExpiredError: class extends Error {},
     mockPutMediaBlob: vi.fn().mockResolvedValue(undefined),
+    mockRemoveMediaBlob: vi.fn().mockResolvedValue(undefined),
     // Mirrors the real suffix convention so tests can assert the derived key.
     mockToThumbnailKey: vi.fn((storageKey: string) => `${storageKey}-thumb`),
     mockProbeImageDimensions: vi
@@ -208,6 +210,7 @@ vi.mock("../../../server/utils/planLimits", () => ({
 
 vi.mock("../../../server/utils/mediaStore", () => ({
   putMediaBlob: mockPutMediaBlob,
+  removeMediaBlob: mockRemoveMediaBlob,
   toThumbnailKey: mockToThumbnailKey,
 }));
 
@@ -634,6 +637,13 @@ describe("POST /api/connections/instagram/import", () => {
     // here — otherwise a test that sets a one-off or null return leaks into the
     // next test.
     mockPutMediaBlob.mockReset().mockResolvedValue(undefined);
+    mockRemoveMediaBlob.mockReset().mockResolvedValue(undefined);
+    // A rollback test overrides mockDbDelete with a rejecting where(); reset it
+    // (mockClear does not) so that override never bleeds into the next test.
+    mockDbDelete.mockReset().mockImplementation(() => ({
+      where: mockDbDeleteWhere,
+    }));
+    mockDbDeleteWhere.mockReset().mockResolvedValue(undefined);
     mockFetchInstagramImage.mockReset().mockResolvedValue(Buffer.from("img"));
     mockProbeImageDimensions.mockResolvedValue({ width: 1200, height: 800 });
     mockGenerateThumbnail.mockResolvedValue(Buffer.from("thumb"));
@@ -826,6 +836,14 @@ describe("POST /api/connections/instagram/import", () => {
     // Rollback removed the entry and media rows so the next run can retry.
     expect(mockDbDelete).toHaveBeenNthCalledWith(1, entries);
     expect(mockDbDelete).toHaveBeenNthCalledWith(2, media);
+    // Best-effort blob cleanup runs first so a blob that did land is not orphaned
+    // by the row rollback (original key + derived thumbnail key).
+    expect(mockRemoveMediaBlob).toHaveBeenCalledWith(
+      expect.stringMatching(/^user-1\//),
+    );
+    expect(mockRemoveMediaBlob).toHaveBeenCalledWith(
+      expect.stringMatching(/-thumb$/),
+    );
   });
 
   it("still imports the original with null dimensions when the image can't be processed", async () => {
@@ -1202,6 +1220,9 @@ describe("POST /api/connections/instagram/import", () => {
 
     expect(result.imported).toBe(0);
     expect(result.errors[0]).toContain("ig-media-thumb");
+    // Both rollback deletes succeeded, so the error is the plain failure — no
+    // leak notice (which would otherwise be silently added if a delete failed).
+    expect(result.errors[0]).not.toContain("leaked");
     // Rollback deletes the entry first, then the media row (the media row's
     // unique index is the idempotency guard, so leaving it would make the item
     // unimportable forever).
@@ -1211,6 +1232,40 @@ describe("POST /api/connections/instagram/import", () => {
     // Blobs are only written after all rows commit, so a failed import never
     // reaches the blob store.
     expect(mockPutMediaBlob).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a duplicate notice when only the rollback entry delete fails", async () => {
+    // Entry delete fails, media delete succeeds: the media guard is gone so the
+    // item can re-import, but the leaked entry would then be duplicated — the
+    // per-item error must say so rather than read as a clean retry.
+    mockFilterGeotaggedMedia.mockReturnValue([geotaggedPhoto]);
+    mockFetchInstagramImage.mockResolvedValue(Buffer.from("img"));
+    mockDbSelectLimit
+      .mockReset()
+      .mockResolvedValueOnce([CONNECTED_ACCOUNT_ROW])
+      .mockResolvedValue([{ id: "existing-place" }]);
+    mockDbInsertReturning
+      .mockReset()
+      .mockResolvedValueOnce([{ id: "media-id" }])
+      .mockRejectedValueOnce(new Error("entry write failed"));
+    const importDb = makeImportDb();
+    // First rollback delete (entries) rejects; the second (media) succeeds.
+    mockDbDelete
+      .mockReturnValueOnce({
+        where: vi.fn().mockRejectedValue(new Error("entry delete failed")),
+      })
+      .mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    mockGetDb.mockReturnValue(importDb);
+
+    const result = (await call(importHandler, makeEvent())) as {
+      imported: number;
+      errors: string[];
+    };
+
+    expect(result.imported).toBe(0);
+    expect(mockDbDelete).toHaveBeenNthCalledWith(1, entries);
+    expect(mockDbDelete).toHaveBeenNthCalledWith(2, media);
+    expect(result.errors[0]).toContain("will duplicate");
   });
 
   it("surfaces a leak notice in errors when the media rollback delete fails", async () => {
@@ -1267,6 +1322,7 @@ describe("POST /api/connections/instagram/import", () => {
 
     expect(result.imported).toBe(0);
     expect(result.errors[0]).toContain("ig-media-thumb");
+    expect(result.errors[0]).not.toContain("leaked");
     expect(mockDbDelete).toHaveBeenNthCalledWith(1, entries);
     expect(mockDbDelete).toHaveBeenNthCalledWith(2, media);
     expect(mockPutMediaBlob).not.toHaveBeenCalled();
