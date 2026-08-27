@@ -599,9 +599,13 @@ describe("POST /api/connections/instagram/import", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockEnsureUser.mockResolvedValue("user-1");
-    // clearAllMocks wipes the insert-values implementation set by a prior
-    // makeImportDb(capturedInserts) call; re-establish the default (awaitable +
+    // vi.clearAllMocks() only clears call records (mockClear); it leaves
+    // implementations and queued mock*Once entries in place. Reset the mocks a
+    // prior test mutates so neither a stale implementation nor an unconsumed
+    // `once` (e.g. a test that threw before the connection lookup) bleeds into
+    // the next test. Then re-establish the insert default (awaitable +
     // .returning() + .onConflictDoUpdate()) so uncaptured tests still work.
+    mockDbInsertValues.mockReset();
     mockDbInsertValues.mockImplementation(() => {
       const thenable = Promise.resolve(undefined);
       return Object.assign(thenable, {
@@ -609,10 +613,11 @@ describe("POST /api/connections/instagram/import", () => {
         returning: mockDbInsertReturning,
       });
     });
-    mockDbInsertReturning.mockResolvedValue([{ id: "new-id" }]);
+    mockDbInsertReturning.mockReset().mockResolvedValue([{ id: "new-id" }]);
     // The connection lookup (.where().limit()) resolves first and returns the
     // connected account row; every later .limit() (resolveOrCreatePlace) resolves
     // to [] so the import path always inserts a fresh place.
+    mockDbSelectLimit.mockReset();
     mockDbSelectLimit.mockResolvedValue([]).mockResolvedValueOnce([
       {
         externalId: "ig-123",
@@ -802,14 +807,17 @@ describe("POST /api/connections/instagram/import", () => {
     expect(mockPutMediaBlob).toHaveBeenCalledTimes(2);
   });
 
-  it("reports an error and does not count the photo when the original blob store fails", async () => {
-    // The original store runs after the transaction commits, so a failure here
-    // leaves a committed media row with a broken URL (documented tradeoff) and
-    // must surface as a per-item error rather than a silent success.
+  it("rolls back the committed rows and reports an error when the original blob store fails", async () => {
+    // The original store runs after the rows commit. A failure there would leave
+    // a committed media row whose URL points at a blob that was never written,
+    // and (because source_id is in the table) the item would be skipped forever.
+    // So the rows are rolled back — freeing source_id for a retry — and the
+    // failure surfaces as a per-item error rather than a silent success.
     mockFilterGeotaggedMedia.mockReturnValue([geotaggedPhoto]);
     mockFetchInstagramImage.mockResolvedValue(Buffer.from("img"));
     mockPutMediaBlob.mockRejectedValueOnce(new Error("blob store down"));
-    mockGetDb.mockReturnValue(makeImportDb());
+    const importDb = makeImportDb();
+    mockGetDb.mockReturnValue(importDb);
 
     const result = (await call(importHandler, makeEvent())) as {
       imported: number;
@@ -818,6 +826,9 @@ describe("POST /api/connections/instagram/import", () => {
 
     expect(result.imported).toBe(0);
     expect(result.errors[0]).toContain("ig-media-thumb");
+    // Rollback removed the entry and media rows so the next run can retry.
+    expect(mockDbDelete).toHaveBeenNthCalledWith(1, entries);
+    expect(mockDbDelete).toHaveBeenNthCalledWith(2, media);
   });
 
   it("still imports the original with null dimensions when the image can't be processed", async () => {
@@ -1209,6 +1220,44 @@ describe("POST /api/connections/instagram/import", () => {
     // Blobs are only written after all rows commit, so a failed import never
     // reaches the blob store.
     expect(mockPutMediaBlob).not.toHaveBeenCalled();
+  });
+
+  it("still deletes the media row when the rollback entry delete fails", async () => {
+    // deleteQuietly isolates each rollback delete: a throwing entry delete must
+    // not suppress the media delete (the media row's unique index is the guard,
+    // so leaving it makes the item unimportable forever).
+    mockFilterGeotaggedMedia.mockReturnValue([geotaggedPhoto]);
+    mockFetchInstagramImage.mockResolvedValue(Buffer.from("img"));
+    mockDbSelectLimit
+      .mockReset()
+      .mockResolvedValueOnce([
+        {
+          externalId: "ig-123",
+          accessToken: "encrypted-token",
+          expiresAt: null,
+        },
+      ])
+      .mockResolvedValue([{ id: "existing-place" }]);
+    mockDbInsertReturning
+      .mockReset()
+      .mockResolvedValueOnce([{ id: "media-id" }])
+      .mockRejectedValueOnce(new Error("entry write failed"));
+    const importDb = makeImportDb();
+    // First rollback delete (entries) throws; the second (media) must still run.
+    mockDbDelete
+      .mockReturnValueOnce({
+        where: vi.fn().mockRejectedValue(new Error("entry delete failed")),
+      })
+      .mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
+    mockGetDb.mockReturnValue(importDb);
+
+    const result = (await call(importHandler, makeEvent())) as {
+      imported: number;
+    };
+
+    expect(result.imported).toBe(0);
+    expect(mockDbDelete).toHaveBeenNthCalledWith(1, entries);
+    expect(mockDbDelete).toHaveBeenNthCalledWith(2, media);
   });
 
   it("writes nothing to roll back when the media insert loses a race", async () => {

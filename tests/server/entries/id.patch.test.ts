@@ -402,6 +402,12 @@ describe("PATCH /api/entries/:id", () => {
     expect(mockDb.update.mock.invocationCallOrder[0]).toBeLessThan(
       mockDb.delete.mock.invocationCallOrder[0],
     );
+    // upsertTags runs before the destructive entryTags delete, so a tag-upsert
+    // failure leaves the entry's existing tags intact instead of deleting them
+    // and then failing (there is no transaction to roll back).
+    expect(mockUpsertTags.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDb.delete.mock.invocationCallOrder[0],
+    );
   });
 
   it("throws 404 and runs no transaction when a photoMediaId is not owned", async () => {
