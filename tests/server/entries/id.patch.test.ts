@@ -396,6 +396,12 @@ describe("PATCH /api/entries/:id", () => {
     expect(mockDb.delete).toHaveBeenCalled();
     expect(mockDb.insert).toHaveBeenCalled();
     expect(mockDb.transaction).not.toHaveBeenCalled();
+    // The non-destructive scalar update runs before the destructive tag replace,
+    // so a failure in the replace never discards an already-applied scalar edit
+    // silently — and matches the documented ordering.
+    expect(mockDb.update.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDb.delete.mock.invocationCallOrder[0],
+    );
   });
 
   it("throws 404 and runs no transaction when a photoMediaId is not owned", async () => {

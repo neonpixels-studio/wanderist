@@ -165,63 +165,83 @@ async function resolveOrCreatePlace(
   return placeRow.id;
 }
 
+// Runs one best-effort rollback delete in isolation so a failure in an earlier
+// delete cannot suppress a later one — the media delete is the important one
+// (its unique index is the idempotency guard, so a leftover media row makes the
+// item unimportable forever), and it must run even if the entry delete throws.
+async function deleteQuietly(
+  operation: Promise<unknown>,
+  description: string,
+): Promise<void> {
+  try {
+    await operation;
+  } catch (cleanupError) {
+    console.error(
+      `instagram import: rollback delete failed for ${description}`,
+      cleanupError,
+    );
+  }
+}
+
 // Best-effort rollback for a partially-written import. The app's drizzle client
 // uses the neon-http driver (see server/db/index.ts), which has no interactive
 // transactions, so a failed import is undone by hand: deleting the entry cascades
 // its entryPhotos, and deleting the media row cascades any entryPhotos that hung
 // off it (both FKs are ON DELETE CASCADE). Deleting a row that was never written
 // is a harmless no-op, so this is safe to call regardless of how far the write
-// sequence got. The place row is intentionally left: it is deduplicated on the
-// next run and shared across photos, so removing it could orphan a sibling.
+// sequence got. A newly-created place row is intentionally left: it is
+// deduplicated (matched on name + coordinates) and reused by the next import run
+// for the same location, so deleting it risks nulling a sibling entry's placeId.
 async function rollbackPartialImport(
   database: DbClient,
   entryId: string,
   mediaId: string,
 ): Promise<void> {
-  try {
-    await database.delete(entries).where(eq(entries.id, entryId));
-    await database.delete(media).where(eq(media.id, mediaId));
-  } catch (cleanupError) {
-    console.error(
-      `instagram import: rollback after partial write failed for entry ${entryId}, media ${mediaId}`,
-      cleanupError,
-    );
-  }
+  await deleteQuietly(
+    database.delete(entries).where(eq(entries.id, entryId)),
+    `entry ${entryId}`,
+  );
+  await deleteQuietly(
+    database.delete(media).where(eq(media.id, mediaId)),
+    `media ${mediaId}`,
+  );
 }
 
-interface ImportedPhotoRow {
+interface MediaInsertInput {
   mediaId: string;
   storageKey: string;
   contentType: string;
   dimensions: { width: number; height: number } | null;
 }
 
-// Writes the place, media, entry, and entryPhotos rows for one imported photo.
+// Writes the media, place, entry, and entryPhotos rows for one imported photo.
 // The neon-http driver has no interactive transactions (see server/db/index.ts),
 // so the rows are written sequentially and undone by hand on failure rather than
-// rolled back. The media row is inserted first because it carries the
+// rolled back. The media row is inserted FIRST because it carries the
 // (user_id, source, source_id) unique index: a concurrent race for the same item
-// loses here, before any entry or photo row exists, so the loser writes nothing
-// to clean up. If a later write fails, rollbackPartialImport removes the entry
-// and media rows (cascading their entryPhotos).
+// loses at this insert, before any other row is written, so the loser has
+// nothing to clean up. If a later write fails, rollbackPartialImport removes the
+// entry and media rows (cascading their entryPhotos). A place created between the
+// media insert and a later failure is deliberately left behind: it is deduplicated
+// by name + coordinates and reused by the next run, so it is harmless (see
+// rollbackPartialImport).
 async function persistImportedPhotoRows(
   database: DbClient,
   userId: string,
   item: InstagramMediaItem,
-  row: ImportedPhotoRow,
+  mediaInput: MediaInsertInput,
 ): Promise<void> {
-  const placeId = await resolveOrCreatePlace(database, userId, item);
   const entryId = crypto.randomUUID();
 
   const [mediaRow] = await database
     .insert(media)
     .values({
-      id: row.mediaId,
+      id: mediaInput.mediaId,
       userId,
-      url: row.storageKey,
-      contentType: row.contentType,
-      width: row.dimensions?.width ?? null,
-      height: row.dimensions?.height ?? null,
+      url: mediaInput.storageKey,
+      contentType: mediaInput.contentType,
+      width: mediaInput.dimensions?.width ?? null,
+      height: mediaInput.dimensions?.height ?? null,
       source: MEDIA_SOURCE.INSTAGRAM,
       sourceId: item.id,
     })
@@ -234,6 +254,8 @@ async function persistImportedPhotoRows(
   }
 
   try {
+    const placeId = await resolveOrCreatePlace(database, userId, item);
+
     const [entryRow] = await database
       .insert(entries)
       .values({
@@ -258,7 +280,7 @@ async function persistImportedPhotoRows(
       sortOrder: 0,
     });
   } catch (error) {
-    await rollbackPartialImport(database, entryId, row.mediaId);
+    await rollbackPartialImport(database, entryId, mediaInput.mediaId);
     throw error;
   }
 }

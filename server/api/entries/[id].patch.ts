@@ -74,9 +74,13 @@ async function replaceEntryTags(
   entryId: string,
   tagNames: string[],
 ): Promise<void> {
+  // Upsert the tag rows before touching the entry's links so a failure here (a
+  // separate HTTP round trip, no transaction to roll it back) leaves the entry's
+  // existing tags intact rather than deleting them and then failing.
+  const tagIds = await upsertTags(database, tagNames);
+
   await database.delete(entryTags).where(eq(entryTags.entryId, entryId));
 
-  const tagIds = await upsertTags(database, tagNames);
   if (tagIds.length === 0) {
     return;
   }
@@ -181,6 +185,64 @@ async function cleanupReplacedPhotoMedia(
   }
 }
 
+interface EntryWritePlan {
+  updates: EntryUpdates;
+  hasScalarUpdates: boolean;
+  tagNames: string[] | undefined;
+  photoMediaIds: string[] | undefined;
+}
+
+// Runs the entry's multi-statement update sequentially on the base client. The
+// neon-http driver has no interactive transactions (see server/db/index.ts), so
+// there is no transaction to wrap this in. The non-destructive scalar update
+// goes first and the destructive tag/photo replaces (delete-then-insert) go
+// last, so a mid-sequence failure leaves the least-bad state. Tradeoff: without
+// a rollback, a failure between a replace's delete and its re-insert can leave
+// that entry's tags or photos partially replaced; this ordering minimises the
+// blast radius. Returns the updated entry plus the photo media the patch released
+// so the caller can clean it up after the writes commit.
+async function applyEntryWrites(
+  database: DbClient,
+  id: string,
+  plan: EntryWritePlan,
+): Promise<{ updated: Entry | undefined; removedMediaIds: string[] }> {
+  const { updates, hasScalarUpdates, tagNames, photoMediaIds } = plan;
+  let updated: Entry | undefined;
+
+  if (hasScalarUpdates) {
+    const rows = await database
+      .update(entries)
+      .set(updates)
+      .where(eq(entries.id, id))
+      .returning();
+    updated = rows[0];
+  }
+
+  if (tagNames !== undefined) {
+    await replaceEntryTags(database, id, tagNames);
+  }
+
+  let removedMediaIds: string[] = [];
+  if (photoMediaIds !== undefined) {
+    const previousMediaIds = await collectEntryPhotoMediaIds(database, id);
+    await replaceEntryPhotos(database, id, photoMediaIds);
+    removedMediaIds = mediaIdsNoLongerReferenced(
+      previousMediaIds,
+      photoMediaIds,
+    );
+  }
+
+  if (!updated) {
+    const rows = await database
+      .select()
+      .from(entries)
+      .where(eq(entries.id, id));
+    updated = rows[0];
+  }
+
+  return { updated, removedMediaIds };
+}
+
 export default defineEventHandler(async (event) => {
   const id = requireRouterParam(event, "id");
 
@@ -250,46 +312,12 @@ export default defineEventHandler(async (event) => {
   // place. A no-op when the patch does not touch placeId.
   await assertPlaceOwnedIfPresent(database, entry.userId, placeId);
 
-  // The neon-http driver has no interactive transactions (see server/db/index.ts),
-  // so the multi-statement write runs sequentially on the base client. The
-  // non-destructive scalar update goes first and the destructive tag/photo
-  // replaces (delete-then-insert) go last, so a mid-sequence failure leaves the
-  // least-bad state. Tradeoff: there is no rollback, so a failure between a
-  // replace's delete and its re-insert can leave that entry's tags or photos
-  // partially replaced; the neon-http driver's lack of transactions is the
-  // constraint, and this ordering minimises the blast radius.
-  let updated: Entry | null = null;
-
-  if (hasScalarUpdates) {
-    const rows = await database
-      .update(entries)
-      .set(updates)
-      .where(eq(entries.id, id))
-      .returning();
-    updated = rows[0];
-  }
-
-  if (tagNames !== undefined) {
-    await replaceEntryTags(database, id, tagNames);
-  }
-
-  let removedMediaIds: string[] = [];
-  if (photoMediaIds !== undefined) {
-    const previousMediaIds = await collectEntryPhotoMediaIds(database, id);
-    await replaceEntryPhotos(database, id, photoMediaIds);
-    removedMediaIds = mediaIdsNoLongerReferenced(
-      previousMediaIds,
-      photoMediaIds,
-    );
-  }
-
-  if (!updated) {
-    const rows = await database
-      .select()
-      .from(entries)
-      .where(eq(entries.id, id));
-    updated = rows[0];
-  }
+  const { updated, removedMediaIds } = await applyEntryWrites(database, id, {
+    updates,
+    hasScalarUpdates,
+    tagNames,
+    photoMediaIds,
+  });
 
   const relations = await loadEntryRelations(database, id);
   const payload = { ...updated, ...relations };

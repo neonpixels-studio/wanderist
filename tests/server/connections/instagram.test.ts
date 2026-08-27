@@ -5,6 +5,7 @@
  * are mocked so no network or database access occurs.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { entries, media } from "../../../server/db/schema";
 
 // ---------------------------------------------------------------------------
 // Hoist mock factories
@@ -774,6 +775,13 @@ describe("POST /api/connections/instagram/import", () => {
       height: 800,
       source: "instagram",
     });
+    // The media row (its unique index is the idempotency guard) must be inserted
+    // before the entry, so a concurrent race loses at the media insert with
+    // nothing else written. Reordering back to entry-first would silently
+    // reintroduce orphaned entries on a race.
+    const mediaIndex = capturedInserts.findIndex((row) => "sourceId" in row);
+    const entryIndex = capturedInserts.findIndex((row) => "occurredAt" in row);
+    expect(mediaIndex).toBeLessThan(entryIndex);
   });
 
   it("still counts the photo as imported when the thumbnail blob store fails", async () => {
@@ -1192,10 +1200,37 @@ describe("POST /api/connections/instagram/import", () => {
 
     expect(result.imported).toBe(0);
     expect(result.errors[0]).toContain("ig-media-thumb");
-    // Rollback deletes the entry then the media row (both best-effort).
+    // Rollback deletes the entry first, then the media row (the media row's
+    // unique index is the idempotency guard, so leaving it would make the item
+    // unimportable forever).
     expect(mockDbDelete).toHaveBeenCalledTimes(2);
+    expect(mockDbDelete).toHaveBeenNthCalledWith(1, entries);
+    expect(mockDbDelete).toHaveBeenNthCalledWith(2, media);
     // Blobs are only written after all rows commit, so a failed import never
     // reaches the blob store.
+    expect(mockPutMediaBlob).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing to roll back when the media insert loses a race", async () => {
+    // The media insert carries the unique index and runs first. When a concurrent
+    // import already wrote the same (user, source, source_id), this insert fails
+    // before any other row exists — so no rollback delete should run.
+    mockFilterGeotaggedMedia.mockReturnValue([geotaggedPhoto]);
+    mockFetchInstagramImage.mockResolvedValue(Buffer.from("img"));
+    mockDbInsertReturning
+      .mockReset()
+      .mockRejectedValueOnce(new Error("duplicate key value"));
+    const importDb = makeImportDb();
+    mockGetDb.mockReturnValue(importDb);
+
+    const result = (await call(importHandler, makeEvent())) as {
+      imported: number;
+      errors: string[];
+    };
+
+    expect(result.imported).toBe(0);
+    expect(result.errors[0]).toContain("ig-media-thumb");
+    expect(mockDbDelete).not.toHaveBeenCalled();
     expect(mockPutMediaBlob).not.toHaveBeenCalled();
   });
 });
