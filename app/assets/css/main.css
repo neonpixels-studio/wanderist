@@ -1349,6 +1349,18 @@ textarea.field__input {
   background: var(--accent-weak);
 }
 
+.location-create {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+}
+.location-create__hint {
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
 .pill-pick {
   display: flex;
   flex-wrap: wrap;

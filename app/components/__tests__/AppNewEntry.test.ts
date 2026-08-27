@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import { ref } from "vue";
 import AppNewEntry from "../AppNewEntry.vue";
 import type { EntryDraft } from "~/composables/useEntryDraft";
@@ -12,6 +12,7 @@ const mockCreateEntry = vi.fn();
 const mockFetchEntries = vi.fn();
 const mockFetchTrips = vi.fn();
 const mockFetchPlaces = vi.fn();
+const mockCreatePlace = vi.fn();
 const mockUpload = vi.fn();
 const mockSaveDraft = vi.fn();
 const mockClearDraft = vi.fn();
@@ -21,6 +22,7 @@ const tripsStoreTrips = ref<
   Array<{ id: string; name: string; status: string }>
 >([]);
 const placesStorePlaces = ref<Array<{ id: string; name: string }>>([]);
+const placesStoreLoading = ref(false);
 
 vi.stubGlobal("useEntriesStore", () => ({
   createEntry: mockCreateEntry,
@@ -36,10 +38,18 @@ vi.stubGlobal("useTripsStore", () => ({
   isLoadingList: ref(false),
 }));
 
+// Mirror Pinia's setup-store proxy: refs are unwrapped when read off the store,
+// so `places`/`isLoading` read as plain values, not Refs. Getters keep them live
+// across reassignment (matching the real store's `places.value = [...]`).
 vi.stubGlobal("usePlacesStore", () => ({
-  places: placesStorePlaces.value,
+  get places() {
+    return placesStorePlaces.value;
+  },
+  get isLoading() {
+    return placesStoreLoading.value;
+  },
   fetchPlaces: mockFetchPlaces,
-  isLoading: ref(false),
+  createPlace: mockCreatePlace,
 }));
 
 vi.stubGlobal("useMediaUpload", () => ({
@@ -77,7 +87,11 @@ describe("AppNewEntry", () => {
     vi.clearAllMocks();
     tripsStoreTrips.value = [];
     placesStorePlaces.value = [];
+    placesStoreLoading.value = false;
     mockLoadDraft.mockReturnValue(null);
+    // fetchPlaces returns a Promise in the real store (the open-watch calls
+    // `.catch` on it), so the default mock must resolve rather than return void.
+    mockFetchPlaces.mockResolvedValue(undefined);
   });
 
   it("renders nothing when closed", () => {
@@ -384,6 +398,417 @@ describe("AppNewEntry", () => {
     expect(parsed.getFullYear()).toBe(2026);
     expect(parsed.getMonth()).toBe(5); // 0-indexed: 5 = June
     expect(parsed.getDate()).toBe(14); // local calendar date, not UTC
+  });
+
+  it("hides the inline create-place affordance when the location is empty", () => {
+    const wrapper = mountOpen();
+    expect(wrapper.find(".location-create").exists()).toBe(false);
+  });
+
+  it("offers inline place creation when the typed location matches no saved place", async () => {
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    const wrapper = mountOpen();
+
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Blue Lagoon");
+
+    const affordance = wrapper.find(".location-create");
+    expect(affordance.exists()).toBe(true);
+    expect(affordance.text()).toContain("Blue Lagoon");
+  });
+
+  it("suppresses the create-place affordance while places are still loading", async () => {
+    placesStoreLoading.value = true;
+    const wrapper = mountOpen();
+
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Blue Lagoon");
+
+    expect(wrapper.find(".location-create").exists()).toBe(false);
+  });
+
+  it("suppresses the create-place affordance when the places list failed to load", async () => {
+    mockFetchPlaces.mockRejectedValue(new Error("offline"));
+    const wrapper = mountOpen();
+    await flushPromises();
+
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Blue Lagoon");
+
+    expect(wrapper.find(".location-create").exists()).toBe(false);
+  });
+
+  it("does not offer creation when the typed location matches a saved place (case-insensitive)", async () => {
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    const wrapper = mountOpen();
+
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("  old harbour  ");
+
+    expect(wrapper.find(".location-create").exists()).toBe(false);
+  });
+
+  it("matches an existing place across internal whitespace and Unicode form", async () => {
+    // Saved with a precomposed e-acute (U+00E9) and a single space.
+    const savedName = "Caf\u00e9 Central";
+    placesStorePlaces.value = [{ id: "p-1", name: savedName }];
+    const wrapper = mountOpen();
+
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    // Typed with a decomposed e + combining acute (U+0301) and a double space;
+    // only NFC + whitespace collapse folds this onto the saved name.
+    await locationInput.setValue("cafe\u0301  central");
+
+    expect(wrapper.find(".location-create").exists()).toBe(false);
+  });
+
+  it("creates a place from the typed location and attaches its id on publish", async () => {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+    mockCreatePlace.mockImplementation(async ({ name }: { name: string }) => {
+      const created = { id: "place-new", name };
+      // Reassign, matching the real store's `places.value = [...places.value, x]`.
+      placesStorePlaces.value = [...placesStorePlaces.value, created];
+      return created;
+    });
+
+    const wrapper = mountOpen();
+
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Blue Lagoon");
+
+    await wrapper.find(".location-create__btn").trigger("click");
+    await wrapper.vm.$nextTick();
+
+    expect(mockCreatePlace).toHaveBeenCalledWith({ name: "Blue Lagoon" });
+    // Affordance disappears once the new place matches the field.
+    expect(wrapper.find(".location-create").exists()).toBe(false);
+
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBe("place-new");
+    // Publish must reuse the place created via the button, not mint a second.
+    expect(mockCreatePlace).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends no placeId and creates no place when the location is left empty", async () => {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+
+    const wrapper = mountOpen();
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockCreatePlace).not.toHaveBeenCalled();
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBeUndefined();
+  });
+
+  it("attaches the id of an existing saved place when the location matches it", async () => {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Old Harbour");
+
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBe("p-1");
+    expect(mockCreatePlace).not.toHaveBeenCalled();
+  });
+
+  it("creates only one place when the create button is double-clicked", async () => {
+    placesStorePlaces.value = [];
+    let resolveCreate: (place: { id: string; name: string }) => void = () => {};
+    mockCreatePlace.mockImplementation(
+      ({ name }: { name: string }) =>
+        new Promise((resolve) => {
+          resolveCreate = () => resolve({ id: "place-new", name });
+        }),
+    );
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Blue Lagoon");
+
+    const button = wrapper.find(".location-create__btn");
+    // Fire both clicks before awaiting either, so the disabled attribute hasn't
+    // flushed and only the synchronous isCreatingPlace guard can stop the second.
+    const firstClick = button.trigger("click");
+    const secondClick = button.trigger("click");
+    await Promise.all([firstClick, secondClick]);
+
+    resolveCreate({ id: "place-new", name: "Blue Lagoon" });
+    await wrapper.vm.$nextTick();
+
+    expect(mockCreatePlace).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not overwrite the location if the user retypes while the create is in flight", async () => {
+    placesStorePlaces.value = [];
+    let resolveCreate: (place: { id: string; name: string }) => void = () => {};
+    mockCreatePlace.mockImplementation(
+      ({ name }: { name: string }) =>
+        new Promise((resolve) => {
+          resolveCreate = () => resolve({ id: "place-new", name });
+        }),
+    );
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Blue Lagoon");
+    await wrapper.find(".location-create__btn").trigger("click");
+
+    // User keeps typing before the POST resolves.
+    await locationInput.setValue("Red Bay");
+    resolveCreate({ id: "place-new", name: "Blue Lagoon" });
+    // flushPromises (not a single nextTick) so the resolution fully propagates
+    // through runCreatePlace before we assert the guard suppressed the write.
+    await flushPromises();
+
+    expect((locationInput.element as HTMLInputElement).value).toBe("Red Bay");
+    expect(wrapper.find(".error-hint").exists()).toBe(false);
+  });
+
+  it("auto-creates the place on publish when the user did not use the create button", async () => {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+    placesStorePlaces.value = [];
+    mockCreatePlace.mockImplementation(async ({ name }: { name: string }) => {
+      const created = { id: "place-auto", name };
+      placesStorePlaces.value = [...placesStorePlaces.value, created];
+      return created;
+    });
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    // Sloppy whitespace: the persisted body must be canonicalized.
+    await locationInput.setValue("  Blue   Lagoon  ");
+
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockCreatePlace).toHaveBeenCalledWith({ name: "Blue Lagoon" });
+    expect(mockCreatePlace).toHaveBeenCalledTimes(1);
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBe("place-auto");
+    expect(wrapper.emitted("close")).toBeTruthy();
+  });
+
+  it("aborts publish and keeps the drawer open when auto-creating the place fails", async () => {
+    placesStorePlaces.value = [];
+    mockCreatePlace.mockRejectedValue(new Error("Place limit reached"));
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Blue Lagoon");
+
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+    expect(wrapper.emitted("close")).toBeFalsy();
+    expect(wrapper.find(".error-hint").text()).toContain("Place limit reached");
+  });
+
+  it("shows an error and keeps the affordance when place creation fails", async () => {
+    placesStorePlaces.value = [];
+    mockCreatePlace.mockRejectedValue(new Error("Place limit reached"));
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Blue Lagoon");
+
+    await wrapper.find(".location-create__btn").trigger("click");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".location-create__error").text()).toContain(
+      "Place limit reached",
+    );
+    expect(wrapper.find(".location-create").exists()).toBe(true);
+  });
+
+  it("does not stamp a stale create error onto a fresh form after the drawer reopens", async () => {
+    placesStorePlaces.value = [];
+    // Reopen restores the SAME location via a draft, so the field-name check
+    // alone would not suppress the stale error — only the token guard does.
+    const draft: EntryDraft = {
+      title: "",
+      body: "",
+      location: "Blue Lagoon",
+      tripId: "",
+      date: "2026-06-01",
+      visibility: "private",
+      tags: [],
+      weather: "",
+      uploadedPhotos: [],
+    };
+    mockLoadDraft.mockReturnValue(draft);
+
+    let rejectCreate: (reason: Error) => void = () => {};
+    mockCreatePlace.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectCreate = reject;
+        }),
+    );
+
+    const wrapper = mountOpen();
+    await wrapper.find(".location-create__btn").trigger("click");
+
+    // Reopen while the create is in flight; the draft restores "Blue Lagoon".
+    await wrapper.setProps({ open: false });
+    await wrapper.setProps({ open: true });
+
+    rejectCreate(new Error("Place limit reached"));
+    // flushPromises (not a single nextTick) so the rejection reaches the catch
+    // before we assert the token guard suppressed the stale error.
+    await flushPromises();
+
+    // The fresh form holds the restored "Blue Lagoon" but shows no stale error
+    // (the failed create belonged to the pre-reopen request).
+    const freshLocationInput = wrapper.findAll("input.field__input")[1];
+    expect((freshLocationInput.element as HTMLInputElement).value).toBe(
+      "Blue Lagoon",
+    );
+    expect(wrapper.find(".location-create__error").exists()).toBe(false);
+  });
+
+  it("still persists a typed location on publish even when the places list failed to load", async () => {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+    // Failed-to-load (untrustworthy) list: the affordance is hidden, but publish
+    // must not silently drop the typed location.
+    mockFetchPlaces.mockRejectedValue(new Error("offline"));
+    placesStorePlaces.value = [];
+    mockCreatePlace.mockImplementation(async ({ name }: { name: string }) => {
+      const created = { id: "place-auto", name };
+      placesStorePlaces.value = [...placesStorePlaces.value, created];
+      return created;
+    });
+
+    const wrapper = mountOpen();
+    await flushPromises();
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Blue Lagoon");
+    // Affordance stays hidden because the list is untrustworthy.
+    expect(wrapper.find(".location-create").exists()).toBe(false);
+
+    await wrapper.find(".btn--primary").trigger("click");
+    await flushPromises();
+
+    expect(mockCreatePlace).toHaveBeenCalledWith({ name: "Blue Lagoon" });
+    expect(mockCreatePlace).toHaveBeenCalledTimes(1);
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBe("place-auto");
+  });
+
+  it("re-fetches a failed list on publish and reuses an existing place instead of creating a duplicate", async () => {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+    placesStorePlaces.value = [];
+    // First load (on open) fails; the retry during publish succeeds and surfaces
+    // a place that matches the typed location.
+    mockFetchPlaces
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockImplementationOnce(async () => {
+        placesStorePlaces.value = [{ id: "p-1", name: "Blue Lagoon" }];
+      });
+
+    const wrapper = mountOpen();
+    await flushPromises();
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Blue Lagoon");
+
+    await wrapper.find(".btn--primary").trigger("click");
+    await flushPromises();
+
+    expect(mockCreatePlace).not.toHaveBeenCalled();
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBe("p-1");
+  });
+
+  it("settles an in-flight list on publish and creates from the location snapshot, not a mid-flight edit", async () => {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+    placesStorePlaces.value = [];
+    // List is mid-load at publish time, so resolvePlaceId settles it first.
+    placesStoreLoading.value = true;
+    let resolveFetch: () => void = () => {};
+    mockFetchPlaces.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    mockCreatePlace.mockImplementation(async ({ name }: { name: string }) => ({
+      id: "place-auto",
+      name,
+    }));
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper.findAll("input.field__input")[1];
+    await locationInput.setValue("Blue Lagoon");
+
+    await wrapper.find(".btn--primary").trigger("click");
+    // The settle fetch is in flight; the user clears the field before it resolves.
+    await locationInput.setValue("");
+    resolveFetch();
+    await flushPromises();
+
+    // The list was re-fetched (settle path) and the place was created from the
+    // snapshot taken at publish time, not the now-empty field.
+    expect(mockFetchPlaces).toHaveBeenCalled();
+    expect(mockCreatePlace).toHaveBeenCalledWith({ name: "Blue Lagoon" });
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBe("place-auto");
+  });
+
+  it("shows a fail-loud hint when the places list could not be loaded", async () => {
+    mockFetchPlaces.mockRejectedValue(new Error("offline"));
+    const wrapper = mountOpen();
+    await flushPromises();
+
+    expect(wrapper.find(".places-load__error").exists()).toBe(true);
   });
 
   it("clears uploadError before starting a new upload batch", async () => {
