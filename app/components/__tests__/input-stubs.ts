@@ -5,10 +5,10 @@
  * consuming component's refs.
  */
 export const inputStub = {
-  props: ["modelValue", "label", "placeholder", "required"],
+  props: ["modelValue", "label", "placeholder", "required", "disabled"],
   emits: ["update:modelValue"],
   template:
-    '<input :placeholder="placeholder" :value="modelValue" @input="$emit(\'update:modelValue\', $event.target.value)" />',
+    '<input :placeholder="placeholder" :value="modelValue" :disabled="disabled" @input="$emit(\'update:modelValue\', $event.target.value)" />',
 };
 
 export const textareaStub = {

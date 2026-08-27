@@ -109,7 +109,7 @@ export function useMapbox() {
     mapboxGl: MapboxGlModule,
     map: MapInstance,
     place: Place,
-    onClick: (place: Place) => void,
+    onClick: (placeId: string) => void,
   ): void {
     if (place.latitude === null || place.longitude === null) {
       return;
@@ -123,7 +123,7 @@ export function useMapbox() {
     }
 
     const markerElement = buildMarkerElement(place.id);
-    markerElement.addEventListener("click", () => onClick(place));
+    markerElement.addEventListener("click", () => onClick(place.id));
 
     const marker = new mapboxGl.Marker({ element: markerElement })
       .setLngLat([place.longitude, place.latitude])
@@ -179,7 +179,7 @@ export function useMapbox() {
     map: MapInstance,
     places: Place[],
     activePlaceId: string | null,
-    onClick: (place: Place) => void,
+    onClick: (placeId: string) => void,
   ): Promise<void> {
     const mapboxGl = await loadMapboxGl();
 
