@@ -237,6 +237,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import type { Trip } from "~/stores/trips";
+import { localDateToIso } from "~/utils/localDate";
 
 const MAX_LOCATION_SUGGESTIONS = 5;
 
@@ -450,17 +451,6 @@ async function handleFileChange(event: Event): Promise<void> {
 
 function handleSaveDraft(): void {
   saveDraft({ ...form.value, uploadedPhotos: uploadedPhotos.value });
-}
-
-function localDateToIso(dateString: string): string | undefined {
-  if (!dateString) {
-    return undefined;
-  }
-  // new Date(year, month-1, day) builds local midnight; .toISOString() converts
-  // to UTC, preserving the semantic "this event happened on this calendar date
-  // in the user's timezone."
-  const [year, month, day] = dateString.split("-").map(Number);
-  return new Date(year, month - 1, day).toISOString();
 }
 
 function buildEntryPayload() {

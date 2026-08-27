@@ -378,12 +378,11 @@ describe("AppNewEntry", () => {
     const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
     const occurredAt = callArg.occurredAt as string;
 
-    // The ISO string should represent local midnight for June 14. Parsing it
-    // back and reading local date components is timezone-stable on any host.
-    const parsed = new Date(occurredAt);
-    expect(parsed.getFullYear()).toBe(2026);
-    expect(parsed.getMonth()).toBe(5); // 0-indexed: 5 = June
-    expect(parsed.getDate()).toBe(14); // local calendar date, not UTC
+    // Asserts the payload shape: occurred_at is anchored at UTC midnight of the
+    // picked date and displayed via UTC components (JournalEntry uses timeZone
+    // "UTC"). Timezone independence itself is proven in
+    // app/utils/__tests__/localDate.test.ts, since vitest.setup.ts pins TZ=UTC here.
+    expect(occurredAt).toBe("2026-06-14T00:00:00.000Z");
   });
 
   it("clears uploadError before starting a new upload batch", async () => {
