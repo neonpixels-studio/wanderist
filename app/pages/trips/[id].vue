@@ -24,7 +24,7 @@
     >
       <div class="topo" />
       <div class="thero__veil" />
-      <div class="thero__acts">
+      <div v-if="isOwner" class="thero__acts">
         <button
           class="btn btn--outline btn--sm"
           style="
@@ -104,6 +104,7 @@
             </h2>
           </div>
           <button
+            v-if="isOwner"
             class="btn btn--ghost btn--sm"
             :disabled="sortedStops.length < 2"
             @click="onReorder"
@@ -167,7 +168,7 @@
             </div>
           </div>
 
-          <div class="stop__add">
+          <div v-if="isOwner" class="stop__add">
             <div />
             <button class="add-btn" :disabled="isAddingStop" @click="onAddStop">
               <AppIcon name="plus" :size="15" />
@@ -254,7 +255,7 @@
           </div>
         </div>
 
-        <div class="rail-card">
+        <div v-if="isOwner" class="rail-card">
           <h4
             class="display"
             style="
@@ -301,12 +302,18 @@ import { useTripsStore } from "~/stores/trips";
 import type { Trip, TripStop } from "~/stores/trips";
 import { useMediaUpload } from "~/composables/useMediaUpload";
 
-definePageMeta({ layout: "app", middleware: "auth" });
+// No auth middleware: a public trip must open for anonymous visitors following
+// a shared link. The GET endpoint enforces visibility — a private trip returns
+// 404, which this page renders as its not-found state (it never redirects to
+// /login), so private trips stay protected. Owner-only controls below are gated
+// on isOwner, so a non-owner viewer gets a read-only page.
+definePageMeta({ layout: "app" });
 
 const route = useRoute();
 const tripId = computed(() => String(route.params.id));
 
 const tripsStore = useTripsStore();
+const { user: clerkUser } = useClerkUser();
 const {
   upload,
   isUploading: isUploadingCover,
@@ -327,6 +334,15 @@ const tripDetail = computed(() =>
   tripsStore.currentTripDetail?.trip.id === tripId.value
     ? tripsStore.currentTripDetail
     : null,
+);
+
+// A non-owner (including an anonymous visitor) viewing a public trip gets a
+// read-only page: every mutating/owner-only control below is gated on this.
+const isOwner = computed(
+  () =>
+    !!tripDetail.value &&
+    !!clerkUser.value &&
+    clerkUser.value.id === tripDetail.value.trip.userId,
 );
 
 // `server: false` keeps the fetch client-only, mirroring guides/[id].vue and

@@ -11,6 +11,13 @@ const HTTP_GET = "GET";
 // /api/guides/<id>/like. The route handler still enforces visibility.
 const PUBLIC_READ_GUIDE_PATH = /^\/api\/guides\/[^/]+$/;
 
+// GET /api/trips/<id> serves a single trip, which may be public and shared with
+// anonymous visitors via its link. Matches exactly one path segment after
+// /trips/ so it never covers the owner-only collection (/api/trips) or
+// sub-resources like /api/trips/<id>/stops. The route handler still enforces
+// visibility.
+const PUBLIC_READ_TRIP_PATH = /^\/api\/trips\/[^/]+$/;
+
 function isApiPath(path: string): boolean {
   return path.startsWith(API_PATH_PREFIX);
 }
@@ -30,9 +37,12 @@ function pathname(event: H3Event): string {
 }
 
 function isOptionalAuthRoute(event: H3Event): boolean {
-  return (
-    event.method === HTTP_GET && PUBLIC_READ_GUIDE_PATH.test(pathname(event))
-  );
+  if (event.method !== HTTP_GET) {
+    return false;
+  }
+
+  const path = pathname(event);
+  return PUBLIC_READ_GUIDE_PATH.test(path) || PUBLIC_READ_TRIP_PATH.test(path);
 }
 
 function extractBearerToken(event: H3Event): string | null {

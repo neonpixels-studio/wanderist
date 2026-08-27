@@ -1,7 +1,9 @@
 import { eq, asc, count } from "drizzle-orm";
 import { getDb } from "../../db/index";
 import { trips, tripStops, entries, entryPhotos } from "../../db/schema";
-import { requireTripId, loadOwnedTrip } from "../../utils/trip-helpers";
+import { requireTripId } from "../../utils/trip-helpers";
+import { loadReadableTrip } from "../../utils/trip-queries";
+import { optionalUser } from "../../utils/auth";
 
 type Database = ReturnType<typeof getDb>;
 type Trip = typeof trips.$inferSelect;
@@ -78,9 +80,23 @@ export default defineEventHandler(
   async (event): Promise<TripDetailResponse> => {
     const tripId = requireTripId(event);
 
-    const trip = await loadOwnedTrip(event, tripId);
+    // Auth is optional here: a shared public trip must open for anonymous
+    // visitors. loadReadableTrip still gates strictly — an anonymous (null)
+    // reader is a non-owner and reads only public trips; private trips stay
+    // hidden behind a 404.
+    const userId = optionalUser(event);
 
     const database = getDb();
+
+    // This response varies by caller (the owner reads a private trip; everyone
+    // else gets only public trips or a 404), discriminated by the Authorization
+    // header. Forbid shared caching so a proxy/CDN keyed on URL alone can't
+    // serve one viewer's private trip to another, and vary on Authorization for
+    // any cache that honors it.
+    setResponseHeader(event, "Cache-Control", "private, no-store");
+    setResponseHeader(event, "Vary", "Authorization");
+
+    const trip = await loadReadableTrip(database, tripId, userId);
 
     const [stops, photoCount] = await Promise.all([
       fetchOrderedStops(database, tripId),
