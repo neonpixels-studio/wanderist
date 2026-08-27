@@ -51,6 +51,10 @@ export interface CreateEntryInput {
 
 export type UpdateEntryInput = Partial<CreateEntryInput>;
 
+// Opens the entry drawer in edit mode for the given entry. Provided by the app
+// layout and injected by the pages that list entries.
+export type EditEntryHandler = (entry: Entry) => void;
+
 export interface FetchEntriesFilters {
   tripId?: string;
   placeId?: string;

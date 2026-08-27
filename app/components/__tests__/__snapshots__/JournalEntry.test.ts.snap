@@ -5,7 +5,7 @@ exports[`JournalEntry component > renders without crashing and matches snapshot 
   <div class="post__head"><span class="post__av"><svg data-icon="" name="user" size="18"></svg></span>
     <div class="post__who"><b>Me</b>
       <div class="post__meta"><svg data-icon="" name="pin" size="11"></svg> Jun 12, 4:12 AM</div>
-    </div><button class="post__menu icon-btn" style="border: none none;" aria-label="More"><svg data-icon="" name="chevron" size="16" style="transform: rotate(90deg);"></svg></button>
+    </div><button class="post__edit icon-btn" style="border: none none; margin-left: auto;" aria-label="Edit entry"><svg data-icon="" name="edit" size="15"></svg></button><button class="post__menu icon-btn" style="border: none none;" aria-label="More"><svg data-icon="" name="chevron" size="16" style="transform: rotate(90deg);"></svg></button>
   </div>
   <!--v-if-->
   <div class="post__body">

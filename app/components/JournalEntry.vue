@@ -12,6 +12,14 @@
         </div>
       </div>
       <button
+        class="post__edit icon-btn"
+        style="border: none; margin-left: auto"
+        aria-label="Edit entry"
+        @click="emit('edit', entry)"
+      >
+        <AppIcon name="edit" :size="15" />
+      </button>
+      <button
         class="post__menu icon-btn"
         style="border: none"
         aria-label="More"
@@ -88,6 +96,10 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   "toggle-like": [entry: Entry];
+  // The journal feed only ever renders the current user's own entries (GET
+  // /api/entries is scoped to the caller), so the edit affordance is always for
+  // an editable entry.
+  edit: [entry: Entry];
 }>();
 
 const visiblePhotos = computed(() =>

@@ -3,18 +3,25 @@
     v-if="open"
     class="drawer new-entry is-open"
     role="dialog"
-    aria-label="New entry"
+    :aria-label="isEditing ? 'Edit entry' : 'New entry'"
   >
     <div class="drawer__scrim" @click="!isPublishing && emit('close')" />
     <aside class="drawer__panel">
       <header class="drawer__head">
         <div>
-          <div class="label">// new entry</div>
+          <div class="label">
+            // {{ isEditing ? "edit entry" : "new entry" }}
+          </div>
           <h3 class="display" style="font-size: 18px; margin-top: 6px">
-            Capture a moment
+            {{ isEditing ? "Edit this moment" : "Capture a moment" }}
           </h3>
         </div>
-        <button class="icon-btn" aria-label="Close" @click="emit('close')">
+        <button
+          class="icon-btn"
+          aria-label="Close"
+          :disabled="isPublishing"
+          @click="emit('close')"
+        >
           <AppIcon name="x" :size="18" />
         </button>
       </header>
@@ -29,10 +36,12 @@
               class="ph dz-thumb"
             >
               <img
+                v-if="photo.url"
                 :src="photo.url"
                 alt=""
                 style="width: 100%; height: 100%; object-fit: cover"
               />
+              <div v-else class="topo" />
             </div>
             <div v-if="uploadedPhotos.length < 2" class="ph dz-thumb">
               <div class="topo" />
@@ -207,6 +216,7 @@
 
       <footer class="drawer__foot">
         <button
+          v-if="!isEditing"
           class="btn btn--ghost btn--sm"
           :disabled="isPublishing"
           @click="handleSaveDraft"
@@ -227,7 +237,7 @@
           @click="publish"
         >
           <AppIcon name="check" :size="14" />
-          {{ isPublishing ? "publishing…" : "publish" }}
+          {{ primaryActionLabel }}
         </button>
       </footer>
     </aside>
@@ -237,6 +247,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import type { Trip } from "~/stores/trips";
+import type { Entry } from "~/stores/entries";
 
 const MAX_LOCATION_SUGGESTIONS = 5;
 
@@ -264,8 +275,13 @@ interface FormState {
   weather: string;
 }
 
-const props = defineProps<{ open: boolean }>();
+const props = withDefaults(
+  defineProps<{ open: boolean; entry?: Entry | null }>(),
+  { entry: null },
+);
 const emit = defineEmits<{ close: [] }>();
+
+const isEditing = computed(() => props.entry !== null);
 
 const entriesStore = useEntriesStore();
 const tripsStore = useTripsStore();
@@ -280,6 +296,13 @@ const tagInput = ref("");
 const isPublishing = ref(false);
 const publishError = ref<string | null>(null);
 
+const primaryActionLabel = computed(() => {
+  if (isPublishing.value) {
+    return isEditing.value ? "saving…" : "publishing…";
+  }
+  return isEditing.value ? "save changes" : "publish";
+});
+
 // One-shot flag: true once the default tripId has been applied, so a later
 // trips-store update does not clobber an explicit "None" selection.
 const tripDefaulted = ref(false);
@@ -288,6 +311,24 @@ function localIsoDate(): string {
   const now = new Date();
   const offsetMs = now.getTimezoneOffset() * 60_000;
   return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10);
+}
+
+// Inverse of localDateToIso: read an entry's stored occurredAt back into the
+// date input's local YYYY-MM-DD, so editing then re-saving round-trips the same
+// calendar date instead of shifting it by the UTC offset.
+function isoToLocalDate(iso: string): string {
+  const date = new Date(iso);
+
+  // A malformed occurredAt would yield "NaN-NaN-NaN", which the date input
+  // silently rejects and blanks; fall back to today so the field stays valid.
+  if (Number.isNaN(date.getTime())) {
+    return localIsoDate();
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function defaultTripId(trips: Trip[]): string {
@@ -318,6 +359,33 @@ function applyFreshForm(): void {
   }
 }
 
+function buildFormFromEntry(entry: Entry): FormState {
+  return {
+    title: entry.title,
+    body: entry.body ?? "",
+    location: "",
+    tripId: entry.tripId ?? NO_TRIP_VALUE,
+    date: entry.occurredAt ? isoToLocalDate(entry.occurredAt) : localIsoDate(),
+    visibility: entry.visibility,
+    tags: entry.tags.map((tag) => tag.name),
+    weather: entry.weather ?? "",
+  };
+}
+
+// Existing photos carry only a mediaId (no URL on the entry resource), so they
+// seed the uploader with an empty url and render as a placeholder. Keeping them
+// in uploadedPhotos means the save payload preserves them — the PATCH replaces
+// the whole photo set, so dropping them here would silently delete the photos.
+function applyEntryForm(entry: Entry): void {
+  form.value = buildFormFromEntry(entry);
+  uploadedPhotos.value = entry.photos.map((photo) => ({
+    id: photo.mediaId,
+    url: "",
+  }));
+  // The entry's trip is an explicit choice; guard it from the trips-load watch.
+  tripDefaulted.value = true;
+}
+
 const tripOptions = computed<TripOption[]>(() => {
   const options = tripsStore.tripList.map((trip) => ({
     value: trip.id,
@@ -338,46 +406,67 @@ function selectTrip(tripId: string): void {
   tripDefaulted.value = true;
 }
 
+function applyDraftOrFreshForm(): void {
+  tripDefaulted.value = false;
+
+  const draft = loadDraft();
+
+  if (!draft) {
+    applyFreshForm();
+    return;
+  }
+
+  form.value = {
+    title: draft.title,
+    body: draft.body,
+    location: draft.location,
+    tripId: draft.tripId,
+    date: draft.date,
+    visibility: draft.visibility,
+    tags: draft.tags,
+    weather: draft.weather,
+  };
+  uploadedPhotos.value = draft.uploadedPhotos ?? [];
+  // Treat a restored draft's tripId as already-defaulted so it is preserved
+  tripDefaulted.value = true;
+}
+
+function ensureReferenceData(): void {
+  if (!tripsStore.tripList.length) {
+    tripsStore.fetchTrips();
+  }
+
+  if (!placesStore.places.length) {
+    placesStore.fetchPlaces();
+  }
+}
+
+// Keyed on the entry's identity (id) as well as open: the drawer is a single
+// shared instance, so switching between create and edit (or between two
+// entries) while it stays open must re-seed the form. Watching only `open`
+// would leave stale edit data in a now-create drawer and let "publish"
+// duplicate the entry being edited. Keying on `id` rather than the object
+// reference means a background refetch that swaps in an equal entry object does
+// not blow away an in-progress edit.
 watch(
-  () => props.open,
-  (isOpen) => {
+  [() => props.open, () => props.entry?.id ?? null],
+  ([isOpen]) => {
     if (!isOpen) {
       return;
     }
 
-    tripDefaulted.value = false;
-
-    const draft = loadDraft();
-
-    if (draft) {
-      form.value = {
-        title: draft.title,
-        body: draft.body,
-        location: draft.location,
-        tripId: draft.tripId,
-        date: draft.date,
-        visibility: draft.visibility,
-        tags: draft.tags,
-        weather: draft.weather,
-      };
-      uploadedPhotos.value = draft.uploadedPhotos ?? [];
-      // Treat a restored draft's tripId as already-defaulted so it is preserved
-      tripDefaulted.value = true;
+    // Editing pre-fills from the entry and ignores the create-only draft.
+    if (props.entry) {
+      applyEntryForm(props.entry);
     } else {
-      applyFreshForm();
+      applyDraftOrFreshForm();
     }
 
     tagInput.value = "";
     publishError.value = null;
     uploadError.value = null;
 
-    if (!tripsStore.tripList.length) {
-      tripsStore.fetchTrips();
-    }
-
-    if (!placesStore.places.length) {
-      placesStore.fetchPlaces();
-    }
+    ensureReferenceData();
   },
   { immediate: true },
 );
@@ -464,14 +553,31 @@ function localDateToIso(dateString: string): string | undefined {
 }
 
 function buildEntryPayload() {
-  return {
+  const shared = {
     title: form.value.title,
-    body: form.value.body || undefined,
     occurredAt: localDateToIso(form.value.date),
     tripId: form.value.tripId || undefined,
-    tags: form.value.tags.length ? form.value.tags : undefined,
     photoMediaIds: uploadedPhotos.value.map((photo) => photo.id),
     visibility: form.value.visibility,
+  };
+
+  // Editing sends body/weather/tags verbatim so clearing a field actually
+  // persists the clear ("" / []); the PATCH route treats an omitted key as
+  // "leave unchanged", which would silently revert a deletion. The create path
+  // keeps them optional so a blank new entry omits them entirely.
+  if (props.entry) {
+    return {
+      ...shared,
+      body: form.value.body,
+      weather: form.value.weather,
+      tags: form.value.tags,
+    };
+  }
+
+  return {
+    ...shared,
+    body: form.value.body || undefined,
+    tags: form.value.tags.length ? form.value.tags : undefined,
     weather: form.value.weather || undefined,
   };
 }
@@ -484,24 +590,43 @@ async function refreshEntriesNonFatal(): Promise<void> {
   }
 }
 
+async function persistEntry(editedEntryId: string | null): Promise<void> {
+  const payload = buildEntryPayload();
+
+  if (editedEntryId) {
+    await entriesStore.updateEntry(editedEntryId, payload);
+    return;
+  }
+
+  await entriesStore.createEntry(payload);
+}
+
 async function publish(): Promise<void> {
+  // Snapshot the mode before any await: a mid-save close resets props.entry to
+  // null, and reading it afterward would misclassify an in-flight edit as a
+  // create and clear an unrelated saved draft.
+  const editedEntryId = props.entry?.id ?? null;
   isPublishing.value = true;
   publishError.value = null;
 
   try {
-    await entriesStore.createEntry(buildEntryPayload());
+    await persistEntry(editedEntryId);
 
-    // Close first: once the entry is created, the drawer should close
-    // regardless of whether the list refresh below succeeds.
-    clearDraft();
+    // Close first: once the entry is saved, the drawer should close regardless
+    // of whether the list refresh below succeeds. The draft is a create-only
+    // concept, so editing leaves any unrelated saved draft untouched.
+    if (!editedEntryId) {
+      clearDraft();
+    }
     emit("close");
 
     await refreshEntriesNonFatal();
   } catch (caught) {
+    const fallbackMessage = editedEntryId
+      ? "Failed to save changes. Please try again."
+      : "Failed to publish. Please try again.";
     publishError.value =
-      caught instanceof Error
-        ? caught.message
-        : "Failed to publish. Please try again.";
+      caught instanceof Error ? caught.message : fallbackMessage;
   } finally {
     isPublishing.value = false;
   }

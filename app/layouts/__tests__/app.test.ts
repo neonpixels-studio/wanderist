@@ -24,9 +24,10 @@ const sidebarStub = defineComponent({
 
 const newEntryStub = defineComponent({
   name: "AppNewEntryStub",
-  props: ["open"],
+  props: ["open", "entry"],
   emits: ["close"],
-  template: '<div class="new-entry-stub" :data-open="open" />',
+  template:
+    '<div class="new-entry-stub" :data-open="open" :data-entry-id="entry ? entry.id : \'\'" />',
 });
 
 const notificationsStub = defineComponent({
@@ -75,6 +76,45 @@ function mountLayout() {
   });
 }
 
+// Injects both entry-drawer openers so the test can drive the create/edit mode
+// wiring the same way a page (journal.vue) does.
+const entryHost = defineComponent({
+  name: "EntryHost",
+  setup() {
+    const openEditEntry = inject<((entry: { id: string }) => void) | undefined>(
+      "openEditEntry",
+      undefined,
+    );
+    const openNewEntry = inject<(() => void) | undefined>(
+      "openNewEntry",
+      undefined,
+    );
+    return () =>
+      h("div", [
+        h(
+          "button",
+          { class: "edit", onClick: () => openEditEntry?.({ id: "entry-9" }) },
+          "edit",
+        ),
+        h("button", { class: "new", onClick: () => openNewEntry?.() }, "new"),
+      ]);
+  },
+});
+
+function mountLayoutWithEntryHost() {
+  return mount(AppLayout, {
+    slots: { default: () => h(entryHost) },
+    global: {
+      stubs: {
+        AppSidebar: sidebarStub,
+        AppNewEntry: newEntryStub,
+        AppNotifications: notificationsStub,
+        AppCommandPalette: commandPaletteStub,
+      },
+    },
+  });
+}
+
 describe("layouts/app.vue", () => {
   it("mounts the command palette closed by default", () => {
     const wrapper = mountLayout();
@@ -103,6 +143,51 @@ describe("layouts/app.vue", () => {
 
     expect(wrapper.find(".command-palette-stub").attributes("data-open")).toBe(
       "true",
+    );
+  });
+
+  it("passes the entry to the drawer when openEditEntry is called", async () => {
+    const wrapper = mountLayoutWithEntryHost();
+    expect(wrapper.find(".new-entry-stub").attributes("data-entry-id")).toBe(
+      "",
+    );
+
+    await wrapper.find(".edit").trigger("click");
+
+    expect(wrapper.find(".new-entry-stub").attributes("data-open")).toBe(
+      "true",
+    );
+    expect(wrapper.find(".new-entry-stub").attributes("data-entry-id")).toBe(
+      "entry-9",
+    );
+  });
+
+  it("clears edit mode when openNewEntry is called after an edit", async () => {
+    const wrapper = mountLayoutWithEntryHost();
+    await wrapper.find(".edit").trigger("click");
+
+    await wrapper.find(".new").trigger("click");
+
+    expect(wrapper.find(".new-entry-stub").attributes("data-open")).toBe(
+      "true",
+    );
+    expect(wrapper.find(".new-entry-stub").attributes("data-entry-id")).toBe(
+      "",
+    );
+  });
+
+  it("clears edit mode when the drawer emits close", async () => {
+    const wrapper = mountLayoutWithEntryHost();
+    await wrapper.find(".edit").trigger("click");
+
+    await wrapper.findComponent(newEntryStub).vm.$emit("close");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".new-entry-stub").attributes("data-open")).toBe(
+      "false",
+    );
+    expect(wrapper.find(".new-entry-stub").attributes("data-entry-id")).toBe(
+      "",
     );
   });
 

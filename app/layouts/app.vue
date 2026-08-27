@@ -9,7 +9,11 @@
     <div class="main">
       <slot />
     </div>
-    <AppNewEntry :open="newEntryOpen" @close="newEntryOpen = false" />
+    <AppNewEntry
+      :open="newEntryOpen"
+      :entry="editingEntry"
+      @close="closeNewEntry"
+    />
     <AppNotifications
       :open="notificationsOpen"
       @close="notificationsOpen = false"
@@ -22,6 +26,8 @@
 </template>
 
 <script setup lang="ts">
+import type { Entry, EditEntryHandler } from "~/stores/entries";
+
 // Auth resolves client-side only (Clerk's skipServerMiddleware: true), so this
 // SSR-rendered shell is interactive-looking before Clerk finishes loading and
 // its watchers/redirects settle. Exposing isLoaded as a data attribute gives
@@ -33,13 +39,30 @@ const newEntryOpen = ref(false);
 const notificationsOpen = ref(false);
 const commandPaletteOpen = ref(false);
 
+// The entry being edited, or null for a fresh "new entry". The drawer switches
+// to edit mode when this is set; both open paths reset it so the mode is never
+// stale.
+const editingEntry = ref<Entry | null>(null);
+
+function closeNewEntry(): void {
+  newEntryOpen.value = false;
+  editingEntry.value = null;
+}
+
 provide("openSidebar", () => {
   sidebarOpen.value = true;
 });
 
 provide("openNewEntry", () => {
+  editingEntry.value = null;
   newEntryOpen.value = true;
 });
+
+const openEditEntry: EditEntryHandler = (entry) => {
+  editingEntry.value = entry;
+  newEntryOpen.value = true;
+};
+provide("openEditEntry", openEditEntry);
 
 provide("openNotifications", () => {
   notificationsOpen.value = true;
