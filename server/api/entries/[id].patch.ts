@@ -319,13 +319,14 @@ export default defineEventHandler(async (event) => {
     photoMediaIds,
   });
 
-  const relations = await loadEntryRelations(database, id);
-  const payload = { ...updated, ...relations };
-
-  // Cleanup runs only after the photo replace has committed so
-  // deleteMediaIfUnreferenced sees the new photo rows and never deletes media
-  // the replace kept.
+  // Cleanup runs after the photo replace commits (so deleteMediaIfUnreferenced
+  // sees the new photo rows and never deletes media the replace kept) but before
+  // the relations read below: the read is not a write, so a transient read
+  // failure must not skip cleanup and leak the released media rows. Ordering is
+  // safe — deleteMediaIfUnreferenced re-checks live references, so running it
+  // ahead of the read cannot change what the response reports.
   await cleanupReplacedPhotoMedia(database, entry.userId, id, removedMediaIds);
 
-  return payload;
+  const relations = await loadEntryRelations(database, id);
+  return { ...updated, ...relations };
 });

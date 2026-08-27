@@ -171,51 +171,96 @@ async function resolveOrCreatePlace(
 // item unimportable forever), and it must run even if the entry delete throws.
 // Takes a thunk (not an already-started promise) so both deletes are not in
 // flight at once — a second query rejecting before the first is awaited would
-// otherwise surface as an unhandled rejection.
+// otherwise surface as an unhandled rejection. Returns whether the delete
+// succeeded so the caller can surface a leak loudly rather than swallowing it.
 async function deleteQuietly(
   runDelete: () => Promise<unknown>,
   description: string,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await runDelete();
+    return true;
   } catch (cleanupError) {
     console.error(
       `instagram import: rollback delete failed for ${description}`,
       cleanupError,
     );
+    return false;
   }
+}
+
+interface RollbackResult {
+  entryDeleted: boolean;
+  mediaDeleted: boolean;
 }
 
 // Best-effort rollback for a partially-written import. The app's drizzle client
 // uses the neon-http driver (see server/db/index.ts), which has no interactive
 // transactions, so a failed import is undone by hand: deleting the entry cascades
 // its entryPhotos, and deleting the media row cascades any entryPhotos that hung
-// off it (both FKs are ON DELETE CASCADE). Deleting a row that was never written
-// is a harmless no-op, so this is safe to call regardless of how far the write
-// sequence got. Both deletes are scoped to the owner as defence in depth. A
-// newly-created place row is intentionally left: it is deduplicated (matched on
-// name + coordinates) and reused by the next import run for the same location,
-// so deleting it risks nulling a sibling entry's placeId.
+// off it (both FKs are ON DELETE CASCADE). Deletes are id-scoped (and owner-scoped
+// as defence in depth), so deleting a row that was never written — or a race
+// loser's row that lost the unique-index insert — is a harmless no-op that cannot
+// touch the race winner's differently-keyed row. A newly-created place row is
+// intentionally left: it is deduplicated (matched on name + coordinates) and
+// reused by the next import run for the same location, so deleting it risks
+// nulling a sibling entry's placeId. Returns which deletes succeeded.
 async function rollbackPartialImport(
   database: DbClient,
   userId: string,
   entryId: string,
   mediaId: string,
-): Promise<void> {
-  await deleteQuietly(
+): Promise<RollbackResult> {
+  const entryDeleted = await deleteQuietly(
     () =>
       database
         .delete(entries)
         .where(and(eq(entries.id, entryId), eq(entries.userId, userId))),
     `entry ${entryId}`,
   );
-  await deleteQuietly(
+  const mediaDeleted = await deleteQuietly(
     () =>
       database
         .delete(media)
         .where(and(eq(media.id, mediaId), eq(media.userId, userId))),
     `media ${mediaId}`,
   );
+  return { entryDeleted, mediaDeleted };
+}
+
+// Rolls back a partially-written import, then always throws. When a rollback
+// delete itself failed we throw a message that names the leak so it lands in the
+// per-item errors[] (and thus in front of the user) instead of being reported as
+// a plain retryable failure: a leaked media row makes the item skip forever, and
+// a leaked entry makes the next re-import duplicate it.
+async function rollbackOrThrow(
+  database: DbClient,
+  userId: string,
+  entryId: string,
+  mediaId: string,
+  originalError: unknown,
+): Promise<never> {
+  const { entryDeleted, mediaDeleted } = await rollbackPartialImport(
+    database,
+    userId,
+    entryId,
+    mediaId,
+  );
+  const baseMessage =
+    originalError instanceof Error
+      ? originalError.message
+      : String(originalError);
+  if (!mediaDeleted) {
+    throw new Error(
+      `${baseMessage} (rollback failed: media row ${mediaId} leaked; the item will be skipped on future runs and needs manual cleanup)`,
+    );
+  }
+  if (!entryDeleted) {
+    throw new Error(
+      `${baseMessage} (rollback failed: entry ${entryId} leaked; a re-import will duplicate it)`,
+    );
+  }
+  throw originalError;
 }
 
 interface MediaInsertInput {
@@ -230,12 +275,13 @@ interface MediaInsertInput {
 // so the rows are written sequentially and undone by hand on failure rather than
 // rolled back. The media row is inserted FIRST because it carries the
 // (user_id, source, source_id) unique index: a concurrent race for the same item
-// loses at this insert, before any other row is written, so the loser has
-// nothing to clean up. If a later write fails, rollbackPartialImport removes the
-// entry and media rows (cascading their entryPhotos). A place created between the
-// media insert and a later failure is deliberately left behind: it is deduplicated
-// by name + coordinates and reused by the next run, so it is harmless (see
-// rollbackPartialImport).
+// loses at that insert, and rollbackOrThrow's id-scoped delete of the loser's own
+// (never-committed or self-owned) row is a no-op that never touches the winner.
+// Wrapping the whole sequence means even a media insert that commits but then
+// fails on the HTTP response (timeout/502) is rolled back rather than left as an
+// unreferenced, permanently-skipped row. A place created before a later failure
+// is deliberately left behind: it is deduplicated by name + coordinates and
+// reused by the next run, so it is harmless (see rollbackPartialImport).
 async function persistImportedPhotoRows(
   database: DbClient,
   userId: string,
@@ -244,25 +290,21 @@ async function persistImportedPhotoRows(
 ): Promise<{ entryId: string }> {
   const entryId = crypto.randomUUID();
 
-  const [mediaRow] = await database
-    .insert(media)
-    .values({
-      id: mediaInput.mediaId,
-      userId,
-      url: mediaInput.storageKey,
-      contentType: mediaInput.contentType,
-      width: mediaInput.dimensions?.width ?? null,
-      height: mediaInput.dimensions?.height ?? null,
-      source: MEDIA_SOURCE.INSTAGRAM,
-      sourceId: item.id,
-    })
-    .returning({ id: media.id });
-
-  // A race loser fails at the media insert above (unique index) having written
-  // nothing, so it must NOT roll back. Everything from here on is guarded: an
-  // empty RETURNING means the media row may have committed without giving us the
-  // id back, so it is rolled back like any other partial write.
   try {
+    const [mediaRow] = await database
+      .insert(media)
+      .values({
+        id: mediaInput.mediaId,
+        userId,
+        url: mediaInput.storageKey,
+        contentType: mediaInput.contentType,
+        width: mediaInput.dimensions?.width ?? null,
+        height: mediaInput.dimensions?.height ?? null,
+        source: MEDIA_SOURCE.INSTAGRAM,
+        sourceId: item.id,
+      })
+      .returning({ id: media.id });
+
     if (!mediaRow) {
       throw new Error(
         `Failed to insert media record for Instagram item ${item.id}`,
@@ -295,8 +337,7 @@ async function persistImportedPhotoRows(
       sortOrder: 0,
     });
   } catch (error) {
-    await rollbackPartialImport(database, userId, entryId, mediaInput.mediaId);
-    throw error;
+    await rollbackOrThrow(database, userId, entryId, mediaInput.mediaId, error);
   }
 
   return { entryId };
@@ -318,8 +359,7 @@ async function importSinglePhoto(
   // blocking the import.
   const { dimensions, thumbnailBuffer } = await processMediaImage(imageBuffer);
 
-  // Commit DB rows first; then write the blobs, so a failed write never leaves
-  // an orphaned blob.
+  // Commit the DB rows first, then write the blobs.
   const { entryId } = await persistImportedPhotoRows(database, userId, item, {
     mediaId,
     storageKey,
@@ -329,12 +369,15 @@ async function importSinglePhoto(
 
   // The original blob store is the only remaining write. If it fails, the rows
   // are already committed and the media row's URL would point at a blob that was
-  // never written; because source_id is in the table, the item would be skipped
-  // on every future run — permanently broken and un-retryable. So roll the rows
-  // back and rethrow, which frees the source_id and lets the next run retry.
-  // (storeMediaBlobs only throws on the original blob; a thumbnail-store failure
-  // returns null and is handled as best-effort below.)
-  let thumbnailKey: string | null;
+  // never written; because source_id is in the table, the item would otherwise be
+  // skipped on every future run — permanently broken and un-retryable. So roll the
+  // rows back and rethrow, which frees source_id and lets the next run retry.
+  // Tradeoff: if putMediaBlob actually landed the object and then failed on the
+  // response, rolling the rows back orphans that blob (nothing references it); an
+  // orphaned blob is a storage cost, far cheaper than a permanently-stuck entry,
+  // and is preferable to the un-retryable row. (storeMediaBlobs only throws on the
+  // original blob; a thumbnail-store failure returns null, handled below.)
+  let thumbnailKey: string | null = null;
   try {
     thumbnailKey = await storeMediaBlobs(
       storageKey,
@@ -343,8 +386,7 @@ async function importSinglePhoto(
       contentType,
     );
   } catch (error) {
-    await rollbackPartialImport(database, userId, entryId, mediaId);
-    throw error;
+    await rollbackOrThrow(database, userId, entryId, mediaId, error);
   }
 
   // Surface the best-effort thumbnail gap rather than swallowing it: the row is
