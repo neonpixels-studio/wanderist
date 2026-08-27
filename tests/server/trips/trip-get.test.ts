@@ -41,6 +41,14 @@ vi.mock("../../../server/db/index", () => ({
   getDb: () => ({ select: mockSelect }),
 }));
 
+// Wrap the real eq so loadReadableTrip and the photo-count filter still build
+// genuine conditions, while letting a test assert whether the non-owner
+// visibility gate (eq(entries.visibility, "public")) was applied.
+vi.mock("drizzle-orm", async (importOriginal) => {
+  const original = await importOriginal<typeof import("drizzle-orm")>();
+  return { ...original, eq: vi.fn(original.eq) };
+});
+
 const mockSetResponseHeader = vi.fn();
 
 Object.assign(globalThis, {
@@ -50,7 +58,18 @@ Object.assign(globalThis, {
   setResponseHeader: mockSetResponseHeader,
 });
 
+import { eq } from "drizzle-orm";
+import { entries } from "../../../server/db/schema";
+
+const mockEq = vi.mocked(eq);
+
 const { default: handler } = await import("@trips-id.get");
+
+function visibilityGateApplied(): boolean {
+  return mockEq.mock.calls.some(
+    (call) => call[0] === entries.visibility && call[1] === "public",
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -224,6 +243,24 @@ describe("GET /api/trips/[id]", () => {
 
     expect(result.facts.loggedDistanceKm).toBe(100);
     expect(result.facts.nights).toBe(2);
+  });
+
+  it("excludes private-entry photos from a non-owner's photo count", async () => {
+    mockOptionalUser.mockReturnValue(OTHER_ID);
+    setupSelectChain(makeTrip({ visibility: "public", userId: OWNER_ID }));
+
+    await (handler as (event: object) => unknown)(buildEvent(OTHER_ID));
+
+    expect(visibilityGateApplied()).toBe(true);
+  });
+
+  it("counts all photos, including private entries, for the owner", async () => {
+    mockOptionalUser.mockReturnValue(OWNER_ID);
+    setupSelectChain(makeTrip({ visibility: "private", userId: OWNER_ID }));
+
+    await (handler as (event: object) => unknown)(buildEvent(OWNER_ID));
+
+    expect(visibilityGateApplied()).toBe(false);
   });
 
   it("marks the response private/uncacheable and varies on Authorization", async () => {

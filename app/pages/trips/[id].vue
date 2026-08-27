@@ -353,8 +353,12 @@ const tripDetail = computed(() =>
 
 // A non-owner (including an anonymous visitor) viewing a public trip gets a
 // read-only page: every mutating/owner-only control below is gated on this.
+// Guarded on isClerkLoaded so the owner is never misread as a non-owner while
+// Clerk is still bootstrapping — until it resolves, clerkUser is null and this
+// stays false (read-only), then flips true once the real owner is known.
 const isOwner = computed(
   () =>
+    isClerkLoaded.value &&
     !!tripDetail.value &&
     !!clerkUser.value &&
     clerkUser.value.id === tripDetail.value.trip.userId,
@@ -364,23 +368,28 @@ const isOwner = computed(
 // u/[id].vue: the request carries the Clerk session token, which only exists on
 // the client (Clerk runs with skipServerMiddleware). Running it during SSR would
 // hang, since Clerk's getToken never resolves on the server.
+//
+// Watch isClerkLoaded as well as the id: the first pass can run before Clerk is
+// ready, sending an anonymous request that 404s the owner's own private trip.
+// Re-running once Clerk resolves re-issues the request with a token so the owner
+// gets their private trip; a public trip already resolved on the anonymous pass.
 const { status: fetchStatus } = useAsyncData(
   () => `trip-detail-${tripId.value}`,
   () => tripsStore.fetchTripById(tripId.value),
-  { server: false, watch: [tripId] },
+  { server: false, watch: [tripId, isClerkLoaded] },
 );
 
 // Until the client fetch resolves, the SSR pass and hydration frame have no trip
 // yet. Treat that window as loading so a valid trip never flashes "Trip not
-// found" before its data arrives.
+// found" before its data arrives. This is deliberately NOT gated on
+// isClerkLoaded: an anonymous visitor following a shared link needs nothing from
+// Clerk, so if the Clerk script is blocked the page still renders the public
+// trip read-only rather than hanging on "Loading trip…" forever.
 const hasResolvedFetch = computed(
   () => fetchStatus.value === "success" || fetchStatus.value === "error",
 );
 const isLoading = computed(
-  () =>
-    !isClerkLoaded.value ||
-    tripsStore.isLoadingDetail ||
-    !hasResolvedFetch.value,
+  () => tripsStore.isLoadingDetail || !hasResolvedFetch.value,
 );
 
 useHead(

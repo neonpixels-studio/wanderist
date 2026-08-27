@@ -17,6 +17,17 @@ vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
 const clerkUserRef = ref<{ id: string } | null>(null);
 vi.stubGlobal("useClerkUser", () => ({ user: clerkUserRef }));
 
+// isOwner, the fetch's isClerkLoaded watch, and the not-found sign-in affordance
+// all read useClerkAuth; drive them from refs so a test can simulate the Clerk
+// bootstrap window, a signed-out visitor, and the owner arriving after load.
+const clerkLoadedRef = ref(true);
+const clerkSignedInRef = ref(false);
+vi.stubGlobal("useClerkAuth", () => ({
+  isLoaded: clerkLoadedRef,
+  isSignedIn: clerkSignedInRef,
+  getToken: vi.fn().mockResolvedValue(null),
+}));
+
 const TRIP_OWNER_ID = "user-1";
 
 // The global useAsyncData stub never invokes its handler and returns no status,
@@ -131,7 +142,10 @@ describe("Trip Detail page (/trips/[id])", () => {
     routeParams.id = "trip-1";
     asyncDataStatus.value = "success";
     lastAsyncDataOptions = undefined;
-    // Default: viewing as the trip's owner, so the owner-only controls render.
+    // Default: Clerk resolved, viewing as the trip's owner, so the owner-only
+    // controls render.
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = true;
     clerkUserRef.value = { id: TRIP_OWNER_ID };
     pinia = createPinia();
     setActivePinia(pinia);
@@ -362,6 +376,57 @@ describe("Trip Detail page (/trips/[id])", () => {
     );
     expect(wrapper.findAll(".stop").length).toBe(3);
     expect(wrapper.find(".trail").exists()).toBe(true);
+  });
+
+  it("renders a public trip read-only even if Clerk never loads (script blocked)", () => {
+    // isLoading must not depend on Clerk: an anonymous visitor following a
+    // shared link needs nothing from Clerk, so a blocked Clerk script degrades
+    // to the read-only page, never a permanent "Loading trip…".
+    clerkLoadedRef.value = false;
+    clerkUserRef.value = null;
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".loading-state").exists()).toBe(false);
+    expect(wrapper.find(".thero h1").text()).toContain(
+      "Iceland, the ring road",
+    );
+    expect(wrapper.find(".thero__acts").exists()).toBe(false);
+  });
+
+  it("watches Clerk's load state so the owner's private trip refetches once a token exists", async () => {
+    mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    // The second watched source is Clerk's isLoaded: the first fetch can run
+    // anonymously (404-ing the owner's private trip), so it must re-run when
+    // Clerk resolves and a token becomes available.
+    const watchedClerkLoaded = lastAsyncDataOptions?.watch?.[1];
+    expect(unref(watchedClerkLoaded)).toBe(true);
+
+    clerkLoadedRef.value = false;
+    await nextTick();
+
+    expect(unref(watchedClerkLoaded)).toBe(false);
+  });
+
+  it("offers a sign-in link in the not-found state for a signed-out visitor", () => {
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    clerkSignedInRef.value = false;
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".empty-state__signin").exists()).toBe(true);
+  });
+
+  it("omits the sign-in link when the visitor is already signed in", () => {
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    clerkSignedInRef.value = true;
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".empty-state").exists()).toBe(true);
+    expect(wrapper.find(".empty-state__signin").exists()).toBe(false);
   });
 
   it("does not register auth middleware so a public trip opens without login", () => {
