@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { ref, reactive, nextTick, unref } from "vue";
+import { ref, reactive, nextTick, unref, watch } from "vue";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TripDetailPage from "../trips/[id].vue";
@@ -49,6 +49,15 @@ vi.stubGlobal(
   ) => {
     lastAsyncDataOptions = options;
     handler();
+    // Honour the real refetch-on-watch contract so a test can assert an
+    // anonymous visitor fetches once while the owner's request re-runs when the
+    // session resolves — asserting the watch array alone would pass even if the
+    // page dropped the watcher entirely.
+    if (options?.watch) {
+      watch(options.watch as Parameters<typeof watch>[0], () => {
+        handler();
+      });
+    }
     return {
       data: ref(null),
       pending: ref(false),
@@ -393,27 +402,31 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(wrapper.find(".thero__acts").exists()).toBe(false);
   });
 
-  it("refetches only once the viewer is a signed-in user, not for anonymous visitors", async () => {
-    // Start anonymous with Clerk still loading, so the retry source is false.
+  it("fetches once for an anonymous visitor and retries once the owner's session resolves", async () => {
+    // Start anonymous with Clerk still loading.
     clerkLoadedRef.value = false;
     clerkSignedInRef.value = false;
+    const tripsStore = useTripsStore();
+    const fetchSpy = tripsStore.fetchTripById as unknown as ReturnType<
+      typeof vi.fn
+    >;
+
     mount(TripDetailPage, buildGlobalConfig(pinia));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-    // The second watched source tracks "can retry authenticated" — Clerk loaded
-    // AND signed in — so an anonymous visitor (who never gains a token) fetches
-    // once, while the owner's request re-runs when their session resolves.
-    const watchedRetry = lastAsyncDataOptions?.watch?.[1];
-    expect(unref(watchedRetry)).toBe(false);
-
-    // Clerk finishing its load for an anonymous visitor must not flip it.
+    // Clerk finishing its load for an anonymous visitor must NOT retry: they
+    // never gain a token, so a second identical request is wasted.
     clerkLoadedRef.value = true;
     await nextTick();
-    expect(unref(watchedRetry)).toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-    // A resolved, signed-in session is what flips it and triggers the retry.
+    // A resolved, signed-in session triggers exactly one authenticated retry so
+    // the owner's own private trip loads after the anonymous first pass 404'd.
     clerkSignedInRef.value = true;
     await nextTick();
-    expect(unref(watchedRetry)).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    expect(lastAsyncDataOptions?.watch).toHaveLength(2);
   });
 
   it("offers a sign-in link in the not-found state for a signed-out visitor", () => {
@@ -449,7 +462,11 @@ describe("Trip Detail page (/trips/[id])", () => {
     mount(TripDetailPage, buildGlobalConfig(pinia));
 
     const meta = definePageMetaMock.mock.calls.at(-1)?.[0] as
-      { middleware?: unknown } | undefined;
+      { middleware?: unknown; layout?: unknown } | undefined;
+    // Anchor on a known key so the assertion can't pass vacuously by the macro
+    // never being called.
+    expect(meta).toBeDefined();
+    expect(meta?.layout).toBe("app");
     expect(meta?.middleware).toBeUndefined();
   });
 
