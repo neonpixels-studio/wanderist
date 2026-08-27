@@ -70,34 +70,34 @@ function applyOccurredAt(
 }
 
 async function replaceEntryTags(
-  tx: DbClient,
+  database: DbClient,
   entryId: string,
   tagNames: string[],
 ): Promise<void> {
-  await tx.delete(entryTags).where(eq(entryTags.entryId, entryId));
+  await database.delete(entryTags).where(eq(entryTags.entryId, entryId));
 
-  const tagIds = await upsertTags(tx, tagNames);
+  const tagIds = await upsertTags(database, tagNames);
   if (tagIds.length === 0) {
     return;
   }
 
-  await tx
+  await database
     .insert(entryTags)
     .values(tagIds.map((tagId) => ({ entryId, tagId })));
 }
 
 async function replaceEntryPhotos(
-  tx: DbClient,
+  database: DbClient,
   entryId: string,
   mediaIds: string[],
 ): Promise<void> {
-  await tx.delete(entryPhotos).where(eq(entryPhotos.entryId, entryId));
+  await database.delete(entryPhotos).where(eq(entryPhotos.entryId, entryId));
 
   if (mediaIds.length === 0) {
     return;
   }
 
-  await tx.insert(entryPhotos).values(
+  await database.insert(entryPhotos).values(
     mediaIds.map((mediaId, index) => ({
       id: generateId(),
       entryId,
@@ -110,10 +110,10 @@ async function replaceEntryPhotos(
 // Captured BEFORE the replace: once replaceEntryPhotos deletes the old rows
 // there is nothing left to tell us which media they pointed at.
 async function collectEntryPhotoMediaIds(
-  tx: DbClient,
+  database: DbClient,
   entryId: string,
 ): Promise<string[]> {
-  const rows = await tx
+  const rows = await database
     .select({ mediaId: entryPhotos.mediaId })
     .from(entryPhotos)
     .where(eq(entryPhotos.entryId, entryId));
@@ -155,9 +155,9 @@ async function cleanupOneReplacedMedia(
   }
 }
 
-// Runs after the entry's photo rows are replaced and the transaction has
-// committed, so the reference check does not see the row that just released the
-// media. Cleanups run concurrently and each swallows its own error, so one
+// Runs after the entry's photo rows are replaced and committed, so the
+// reference check does not see the row that just released the media. Cleanups
+// run concurrently and each swallows its own error, so one
 // failure never aborts the others; a summary line surfaces partial failures
 // beyond the per-media logs.
 async function cleanupReplacedPhotoMedia(
@@ -235,66 +235,68 @@ export default defineEventHandler(async (event) => {
   }
 
   // After synchronous validation (malformed body 400s without a DB hit),
-  // before the transaction (never move an entry to a trip the caller doesn't
-  // own). A no-op when the patch does not touch tripId.
+  // before any write (never move an entry to a trip the caller doesn't own). A
+  // no-op when the patch does not touch tripId.
   await assertTripOwnershipIfPresent(event, tripId);
 
-  // Reject foreign/nonexistent photo media before the transaction: a media id
-  // the entry owner doesn't own would otherwise replace the entry's photos.
+  // Reject foreign/nonexistent photo media before any write: a media id the
+  // entry owner doesn't own would otherwise replace the entry's photos.
   if (photoMediaIds !== undefined) {
     await assertPhotoMediaOwned(database, entry.userId, photoMediaIds);
   }
 
-  // Reject a foreign/nonexistent place before the transaction: a placeId the
-  // entry owner doesn't own would otherwise re-point this entry at another
-  // user's place. A no-op when the patch does not touch placeId.
+  // Reject a foreign/nonexistent place before any write: a placeId the entry
+  // owner doesn't own would otherwise re-point this entry at another user's
+  // place. A no-op when the patch does not touch placeId.
   await assertPlaceOwnedIfPresent(database, entry.userId, placeId);
 
-  const { payload, removedMediaIds } = await database.transaction(
-    async (transaction) => {
-      const txClient = transaction as unknown as DbClient;
+  // The neon-http driver has no interactive transactions (see server/db/index.ts),
+  // so the multi-statement write runs sequentially on the base client. The
+  // non-destructive scalar update goes first and the destructive tag/photo
+  // replaces (delete-then-insert) go last, so a mid-sequence failure leaves the
+  // least-bad state. Tradeoff: there is no rollback, so a failure between a
+  // replace's delete and its re-insert can leave that entry's tags or photos
+  // partially replaced; the neon-http driver's lack of transactions is the
+  // constraint, and this ordering minimises the blast radius.
+  let updated: Entry | null = null;
 
-      let updated: Entry | null = null;
+  if (hasScalarUpdates) {
+    const rows = await database
+      .update(entries)
+      .set(updates)
+      .where(eq(entries.id, id))
+      .returning();
+    updated = rows[0];
+  }
 
-      if (hasScalarUpdates) {
-        const rows = await txClient
-          .update(entries)
-          .set(updates)
-          .where(eq(entries.id, id))
-          .returning();
-        updated = rows[0];
-      }
+  if (tagNames !== undefined) {
+    await replaceEntryTags(database, id, tagNames);
+  }
 
-      if (tagNames !== undefined) {
-        await replaceEntryTags(txClient, id, tagNames);
-      }
+  let removedMediaIds: string[] = [];
+  if (photoMediaIds !== undefined) {
+    const previousMediaIds = await collectEntryPhotoMediaIds(database, id);
+    await replaceEntryPhotos(database, id, photoMediaIds);
+    removedMediaIds = mediaIdsNoLongerReferenced(
+      previousMediaIds,
+      photoMediaIds,
+    );
+  }
 
-      let removedMediaIds: string[] = [];
-      if (photoMediaIds !== undefined) {
-        const previousMediaIds = await collectEntryPhotoMediaIds(txClient, id);
-        await replaceEntryPhotos(txClient, id, photoMediaIds);
-        removedMediaIds = mediaIdsNoLongerReferenced(
-          previousMediaIds,
-          photoMediaIds,
-        );
-      }
+  if (!updated) {
+    const rows = await database
+      .select()
+      .from(entries)
+      .where(eq(entries.id, id));
+    updated = rows[0];
+  }
 
-      if (!updated) {
-        const rows = await txClient
-          .select()
-          .from(entries)
-          .where(eq(entries.id, id));
-        updated = rows[0];
-      }
+  const relations = await loadEntryRelations(database, id);
+  const payload = { ...updated, ...relations };
 
-      const relations = await loadEntryRelations(txClient, id);
-
-      return { payload: { ...updated, ...relations }, removedMediaIds };
-    },
-  );
-
-  // Cleanup runs only after the transaction commits so deleteMediaIfUnreferenced
-  // sees the new photo rows and never deletes media the replace kept.
+  // Cleanup runs only after the photo replace has committed so
+  // deleteMediaIfUnreferenced sees the new photo rows and never deletes media
+  // the replace kept.
   await cleanupReplacedPhotoMedia(database, entry.userId, id, removedMediaIds);
 
   return payload;

@@ -121,7 +121,7 @@ async function fetchAlreadyImportedIds(
 }
 
 async function resolveOrCreatePlace(
-  transactionDb: DbClient,
+  database: DbClient,
   userId: string,
   item: InstagramMediaItem,
 ): Promise<string> {
@@ -129,7 +129,7 @@ async function resolveOrCreatePlace(
   const latitude = item.location!.latitude;
   const longitude = item.location!.longitude;
 
-  const existingRows = await transactionDb
+  const existingRows = await database
     .select({ id: places.id })
     .from(places)
     .where(
@@ -146,7 +146,7 @@ async function resolveOrCreatePlace(
     return existingRows[0].id;
   }
 
-  const [placeRow] = await transactionDb
+  const [placeRow] = await database
     .insert(places)
     .values({
       id: crypto.randomUUID(),
@@ -165,37 +165,76 @@ async function resolveOrCreatePlace(
   return placeRow.id;
 }
 
-async function importSinglePhoto(
+// Best-effort rollback for a partially-written import. The app's drizzle client
+// uses the neon-http driver (see server/db/index.ts), which has no interactive
+// transactions, so a failed import is undone by hand: deleting the entry cascades
+// its entryPhotos, and deleting the media row cascades any entryPhotos that hung
+// off it (both FKs are ON DELETE CASCADE). Deleting a row that was never written
+// is a harmless no-op, so this is safe to call regardless of how far the write
+// sequence got. The place row is intentionally left: it is deduplicated on the
+// next run and shared across photos, so removing it could orphan a sibling.
+async function rollbackPartialImport(
+  database: DbClient,
+  entryId: string,
+  mediaId: string,
+): Promise<void> {
+  try {
+    await database.delete(entries).where(eq(entries.id, entryId));
+    await database.delete(media).where(eq(media.id, mediaId));
+  } catch (cleanupError) {
+    console.error(
+      `instagram import: rollback after partial write failed for entry ${entryId}, media ${mediaId}`,
+      cleanupError,
+    );
+  }
+}
+
+interface ImportedPhotoRow {
+  mediaId: string;
+  storageKey: string;
+  contentType: string;
+  dimensions: { width: number; height: number } | null;
+}
+
+// Writes the place, media, entry, and entryPhotos rows for one imported photo.
+// The neon-http driver has no interactive transactions (see server/db/index.ts),
+// so the rows are written sequentially and undone by hand on failure rather than
+// rolled back. The media row is inserted first because it carries the
+// (user_id, source, source_id) unique index: a concurrent race for the same item
+// loses here, before any entry or photo row exists, so the loser writes nothing
+// to clean up. If a later write fails, rollbackPartialImport removes the entry
+// and media rows (cascading their entryPhotos).
+async function persistImportedPhotoRows(
+  database: DbClient,
   userId: string,
   item: InstagramMediaItem,
+  row: ImportedPhotoRow,
 ): Promise<void> {
-  const database = getDb();
-  const imageBuffer = await fetchInstagramImage(item.media_url);
-  const contentType = detectContentType(item.media_url);
-  const mediaId = crypto.randomUUID();
-  const storageKey = `${userId}/${mediaId}`;
+  const placeId = await resolveOrCreatePlace(database, userId, item);
+  const entryId = crypto.randomUUID();
 
-  // Probe dimensions and generate the thumbnail before opening the transaction
-  // so width/height land on the media row in the same insert the upload path
-  // uses. Best-effort: a bad image yields null dimensions and no thumbnail
-  // without blocking the import.
-  const { dimensions, thumbnailBuffer } = await processMediaImage(imageBuffer);
+  const [mediaRow] = await database
+    .insert(media)
+    .values({
+      id: row.mediaId,
+      userId,
+      url: row.storageKey,
+      contentType: row.contentType,
+      width: row.dimensions?.width ?? null,
+      height: row.dimensions?.height ?? null,
+      source: MEDIA_SOURCE.INSTAGRAM,
+      sourceId: item.id,
+    })
+    .returning({ id: media.id });
 
-  // Commit DB rows first; then write the blobs. This ordering ensures a race on
-  // the (user_id, source, source_id) unique index rolls back cleanly without
-  // leaving an orphaned blob. The tradeoff: if the original blob store fails
-  // after the transaction commits, the media row exists but its URL is broken
-  // (the thumbnail store is best-effort and never fails the import). In that
-  // case the item will be skipped on the next import run (source_id is already
-  // in the table), so the broken-URL entry requires manual cleanup. Accepted
-  // as the less-common failure mode vs. blob orphans on concurrent imports.
-  await database.transaction(async (transaction) => {
-    const transactionDb = transaction as unknown as DbClient;
+  if (!mediaRow) {
+    throw new Error(
+      `Failed to insert media record for Instagram item ${item.id}`,
+    );
+  }
 
-    const placeId = await resolveOrCreatePlace(transactionDb, userId, item);
-
-    const entryId = crypto.randomUUID();
-    const [entryRow] = await transactionDb
+  try {
+    const [entryRow] = await database
       .insert(entries)
       .values({
         id: entryId,
@@ -212,32 +251,47 @@ async function importSinglePhoto(
       throw new Error(`Failed to insert entry for Instagram item ${item.id}`);
     }
 
-    const [mediaRow] = await transactionDb
-      .insert(media)
-      .values({
-        id: mediaId,
-        userId,
-        url: storageKey,
-        contentType,
-        width: dimensions?.width ?? null,
-        height: dimensions?.height ?? null,
-        source: MEDIA_SOURCE.INSTAGRAM,
-        sourceId: item.id,
-      })
-      .returning({ id: media.id });
-
-    if (!mediaRow) {
-      throw new Error(
-        `Failed to insert media record for Instagram item ${item.id}`,
-      );
-    }
-
-    await transactionDb.insert(entryPhotos).values({
+    await database.insert(entryPhotos).values({
       id: crypto.randomUUID(),
       entryId: entryRow.id,
       mediaId: mediaRow.id,
       sortOrder: 0,
     });
+  } catch (error) {
+    await rollbackPartialImport(database, entryId, row.mediaId);
+    throw error;
+  }
+}
+
+async function importSinglePhoto(
+  userId: string,
+  item: InstagramMediaItem,
+): Promise<void> {
+  const database = getDb();
+  const imageBuffer = await fetchInstagramImage(item.media_url);
+  const contentType = detectContentType(item.media_url);
+  const mediaId = crypto.randomUUID();
+  const storageKey = `${userId}/${mediaId}`;
+
+  // Probe dimensions and generate the thumbnail before writing any row so
+  // width/height land on the media row in the same insert the upload path uses.
+  // Best-effort: a bad image yields null dimensions and no thumbnail without
+  // blocking the import.
+  const { dimensions, thumbnailBuffer } = await processMediaImage(imageBuffer);
+
+  // Commit DB rows first; then write the blobs, so a failed write never leaves
+  // an orphaned blob.
+  //
+  // Residual tradeoff: if the original blob store fails after the rows commit,
+  // the media row exists but its URL is broken (the thumbnail store is
+  // best-effort and never fails the import). That item is skipped on the next
+  // run (source_id is already in the table), so the broken-URL entry requires
+  // manual cleanup. Accepted as the less-common failure mode.
+  await persistImportedPhotoRows(database, userId, item, {
+    mediaId,
+    storageKey,
+    contentType,
+    dimensions,
   });
 
   const thumbnailKey = await storeMediaBlobs(
