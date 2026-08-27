@@ -342,12 +342,14 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(wrapper.find(".thero__acts").exists()).toBe(false);
   });
 
-  it("hides mutation controls (add stop, reorder, invite) from an anonymous viewer", () => {
+  it("hides mutation controls (add stop, reorder, cover, invite) from an anonymous viewer", () => {
     clerkUserRef.value = null;
     const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
 
     expect(wrapper.find(".add-btn").exists()).toBe(false);
-    expect(wrapper.html()).not.toContain("reorder");
+    expect(wrapper.find(".iti-head button").exists()).toBe(false);
+    expect(wrapper.find('input[type="file"]').exists()).toBe(false);
+    expect(wrapper.find(".stop__grip").exists()).toBe(false);
     expect(wrapper.find(".companions").exists()).toBe(false);
   });
 

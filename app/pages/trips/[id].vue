@@ -8,7 +8,16 @@
     class="content content--wide"
     style="padding-top: 0"
   >
-    <div class="empty-state">Trip not found.</div>
+    <div class="empty-state">
+      Trip not found.
+      <NuxtLink
+        v-if="isClerkLoaded && !isSignedIn"
+        to="/login"
+        class="empty-state__signin"
+      >
+        Sign in to view your trips
+      </NuxtLink>
+    </div>
   </div>
 
   <div v-else class="content content--wide" style="padding-top: 0">
@@ -154,7 +163,7 @@
                     >
                   </div>
                 </div>
-                <span class="stop__grip">
+                <span v-if="isOwner" class="stop__grip">
                   <AppIcon name="grip" :size="16" />
                 </span>
               </div>
@@ -314,6 +323,12 @@ const tripId = computed(() => String(route.params.id));
 
 const tripsStore = useTripsStore();
 const { user: clerkUser } = useClerkUser();
+// isLoaded gates the read-only/owner split: until Clerk resolves, clerkUser is
+// null and every viewer would look like a non-owner, flashing the owner the
+// read-only page. isSignedIn drives the sign-in affordance in the not-found
+// state so a signed-out owner arriving from a bookmark/expired session isn't
+// dead-ended.
+const { isLoaded: isClerkLoaded, isSignedIn } = useClerkAuth();
 const {
   upload,
   isUploading: isUploadingCover,
@@ -362,7 +377,10 @@ const hasResolvedFetch = computed(
   () => fetchStatus.value === "success" || fetchStatus.value === "error",
 );
 const isLoading = computed(
-  () => tripsStore.isLoadingDetail || !hasResolvedFetch.value,
+  () =>
+    !isClerkLoaded.value ||
+    tripsStore.isLoadingDetail ||
+    !hasResolvedFetch.value,
 );
 
 useHead(
@@ -621,6 +639,15 @@ function onInvite(): void {
   text-align: center;
   color: var(--muted);
   font-size: 14px;
+}
+.empty-state__signin {
+  display: inline-block;
+  margin-top: 10px;
+  color: var(--accent-ink);
+  text-decoration: none;
+}
+.empty-state__signin:hover {
+  text-decoration: underline;
 }
 
 .thero {

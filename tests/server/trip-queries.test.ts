@@ -14,7 +14,9 @@ const mockCreateError = vi.fn(
 
 Object.assign(globalThis, { createError: mockCreateError });
 
-import { loadReadableTrip } from "../../server/utils/trip-queries";
+// Imported dynamically after the createError global is installed so the module
+// evaluates with the stub in place (a static import hoists above the assign).
+const { loadReadableTrip } = await import("../../server/utils/trip-queries");
 
 const OWNER_ID = "user-owner";
 const OTHER_ID = "user-other";

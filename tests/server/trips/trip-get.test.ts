@@ -146,12 +146,13 @@ describe("GET /api/trips/[id]", () => {
     )) as {
       trip: { id: string };
       stops: unknown[];
-      facts: { photoCount: number };
+      facts: { photoCount: number; stopCount: number };
     };
 
     expect(result.trip).toMatchObject({ id: "trip-1" });
     expect(result.stops).toHaveLength(1);
     expect(result.facts.photoCount).toBe(5);
+    expect(result.facts.stopCount).toBe(1);
   });
 
   it("returns a public trip to a signed-in non-owner", async () => {
