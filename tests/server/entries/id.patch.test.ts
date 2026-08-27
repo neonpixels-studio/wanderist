@@ -102,6 +102,7 @@ import {
   loadOwnedOrThrow,
 } from "../../../server/utils/db-helpers";
 import { getDb } from "../../../server/db/index";
+import { upsertTags } from "../../../server/utils/entry-helpers";
 import { deleteMediaIfUnreferenced } from "../../../server/utils/coverImageCleanup";
 import { assertPhotoMediaOwned } from "../../../server/utils/media-helpers";
 import { assertPlaceOwnedIfPresent } from "../../../server/utils/place-helpers";
@@ -110,6 +111,7 @@ import { assertTripOwnershipIfPresent } from "../../../server/utils/trip-helpers
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
 const mockLoadOwnedOrThrow = vi.mocked(loadOwnedOrThrow);
 const mockGetDb = vi.mocked(getDb);
+const mockUpsertTags = vi.mocked(upsertTags);
 const mockDeleteMediaIfUnreferenced = vi.mocked(deleteMediaIfUnreferenced);
 const mockAssertPhotoMediaOwned = vi.mocked(assertPhotoMediaOwned);
 const mockAssertPlaceOwnedIfPresent = vi.mocked(assertPlaceOwnedIfPresent);
@@ -117,6 +119,11 @@ const mockAssertTripOwnershipIfPresent = vi.mocked(
   assertTripOwnershipIfPresent,
 );
 
+// The neon-http driver has no interactive transactions, so the handler runs its
+// writes sequentially on the base client. Each mock therefore exposes the write
+// methods directly (no transaction wrapper) plus a `transaction` spy that must
+// stay uncalled — the regression guard for issue #200, where a stray
+// database.transaction() call 500s every entry PATCH.
 function makeDbForPatch(updatedEntry: Record<string, unknown>) {
   const returningMock = vi.fn().mockResolvedValue([updatedEntry]);
   const whereMock = vi.fn().mockReturnValue({ returning: returningMock });
@@ -125,7 +132,7 @@ function makeDbForPatch(updatedEntry: Record<string, unknown>) {
   const selectWhereMock = vi.fn().mockResolvedValue([updatedEntry]);
   const selectFromMock = vi.fn().mockReturnValue({ where: selectWhereMock });
 
-  const txClient = {
+  return {
     update: vi.fn().mockReturnValue({ set: setMock }),
     delete: vi.fn().mockReturnValue({
       where: vi.fn().mockResolvedValue(undefined),
@@ -134,15 +141,7 @@ function makeDbForPatch(updatedEntry: Record<string, unknown>) {
       values: vi.fn().mockResolvedValue([]),
     }),
     select: vi.fn().mockReturnValue({ from: selectFromMock }),
-  };
-
-  return {
-    transaction: vi
-      .fn()
-      .mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
-        callback(txClient),
-      ),
-    _txClient: txClient,
+    transaction: vi.fn(),
   };
 }
 
@@ -173,7 +172,7 @@ function makeDbForPhotoPatch(
     return { from: entryFromMock };
   });
 
-  const txClient = {
+  return {
     update: vi.fn().mockReturnValue({ set: setMock }),
     delete: vi.fn().mockReturnValue({
       where: vi.fn().mockResolvedValue(undefined),
@@ -182,15 +181,7 @@ function makeDbForPhotoPatch(
       values: vi.fn().mockResolvedValue([]),
     }),
     select: selectMock,
-  };
-
-  return {
-    transaction: vi
-      .fn()
-      .mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
-        callback(txClient),
-      ),
-    _txClient: txClient,
+    transaction: vi.fn(),
   };
 }
 
@@ -349,7 +340,8 @@ describe("PATCH /api/entries/:id", () => {
       "user-1",
       undefined,
     );
-    expect(mockDb.transaction).toHaveBeenCalled();
+    expect(mockDb.update).toHaveBeenCalled();
+    expect(mockDb.transaction).not.toHaveBeenCalled();
   });
 
   it("validates place ownership scoped to the entry owner when a placeId is supplied", async () => {
@@ -383,7 +375,39 @@ describe("PATCH /api/entries/:id", () => {
     const result = await invokeHandler({});
 
     expect(result).toMatchObject(updatedEntry);
-    expect(mockDb._txClient.update).toHaveBeenCalledTimes(1);
+    expect(mockDb.update).toHaveBeenCalledTimes(1);
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it("replaces tags via delete + insert without opening a transaction (issue #200)", async () => {
+    // The neon-http driver throws on database.transaction(); the tag replace
+    // must run sequentially on the base client instead.
+    const updatedEntry = { id: "e-1", userId: "user-1", title: "Trip" };
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({ title: "Trip", tags: ["hiking"] });
+    const mockDb = makeDbForPatch(updatedEntry);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+    mockUpsertTags.mockResolvedValueOnce(["tag-1"]);
+
+    const result = await invokeHandler({});
+
+    expect(result).toMatchObject(updatedEntry);
+    // replaceEntryTags deletes the old entryTags rows, then inserts the new ones.
+    expect(mockDb.delete).toHaveBeenCalled();
+    expect(mockDb.insert).toHaveBeenCalled();
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    // The non-destructive scalar update runs before the destructive tag replace,
+    // so a failure in the replace never discards an already-applied scalar edit
+    // silently — and matches the documented ordering.
+    expect(mockDb.update.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDb.delete.mock.invocationCallOrder[0],
+    );
+    // upsertTags runs before the destructive entryTags delete, so a tag-upsert
+    // failure leaves the entry's existing tags intact instead of deleting them
+    // and then failing (there is no transaction to roll back).
+    expect(mockUpsertTags.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDb.delete.mock.invocationCallOrder[0],
+    );
   });
 
   it("throws 404 and runs no transaction when a photoMediaId is not owned", async () => {
@@ -510,7 +534,7 @@ describe("PATCH /api/entries/:id", () => {
     expect(mockDeleteMediaIfUnreferenced).not.toHaveBeenCalled();
   });
 
-  it("cleans up removed media only after the transaction commits", async () => {
+  it("cleans up removed media only after the photo replace commits", async () => {
     const updatedEntry = { id: "e-1", userId: "user-1", title: "Keep" };
     mockRequireRouterParam.mockReturnValue("e-1");
     mockReadBody.mockResolvedValue({ title: "Keep", photoMediaIds: [] });
@@ -519,22 +543,30 @@ describe("PATCH /api/entries/:id", () => {
 
     await invokeHandler({});
 
-    const transactionOrder = mockDb.transaction.mock.invocationCallOrder[0];
+    // The photos-only patch replaces photos via a delete, then cleans up the
+    // released media afterwards. The delete must run before the cleanup call.
+    const replaceOrder = mockDb.delete.mock.invocationCallOrder[0];
     const cleanupOrder =
       mockDeleteMediaIfUnreferenced.mock.invocationCallOrder[0];
-    expect(transactionOrder).toBeLessThan(cleanupOrder);
+    expect(replaceOrder).toBeLessThan(cleanupOrder);
+    expect(mockDb.transaction).not.toHaveBeenCalled();
   });
 
-  it("does not clean up media when the transaction fails", async () => {
+  it("does not clean up media when a write fails", async () => {
     const updatedEntry = { id: "e-1", userId: "user-1", title: "Keep" };
     mockRequireRouterParam.mockReturnValue("e-1");
     mockReadBody.mockResolvedValue({ title: "Keep", photoMediaIds: [] });
     const mockDb = makeDbForPhotoPatch(updatedEntry, [{ mediaId: "media-1" }]);
-    mockDb.transaction.mockRejectedValue(new Error("deadlock"));
+    // The photo-replace delete fails mid-sequence; the post-commit media cleanup
+    // must not run.
+    mockDb.delete.mockReturnValue({
+      where: vi.fn().mockRejectedValue(new Error("write failed")),
+    });
     mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
 
-    await expect(invokeHandler({})).rejects.toThrow("deadlock");
+    await expect(invokeHandler({})).rejects.toThrow("write failed");
     expect(mockDeleteMediaIfUnreferenced).not.toHaveBeenCalled();
+    expect(mockDb.transaction).not.toHaveBeenCalled();
   });
 
   it("still resolves and logs a summary when one removed media cleanup fails", async () => {
