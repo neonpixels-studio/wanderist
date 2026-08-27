@@ -7,9 +7,16 @@ vi.mock("../../../server/utils/auth", () => ({
   requireUser: vi.fn(),
 }));
 
-vi.mock("../../../server/utils/on-this-day-helpers", () => ({
-  fetchOnThisDayEntries: vi.fn(),
-}));
+vi.mock("../../../server/utils/on-this-day-helpers", async (importOriginal) => {
+  const original =
+    await importOriginal<
+      typeof import("../../../server/utils/on-this-day-helpers")
+    >();
+  return {
+    ...original,
+    fetchOnThisDayEntries: vi.fn(),
+  };
+});
 
 import { requireUser } from "../../../server/utils/auth";
 import { fetchOnThisDayEntries } from "../../../server/utils/on-this-day-helpers";
@@ -41,25 +48,68 @@ describe("GET /api/entries/on-this-day", () => {
     expect(result).toEqual({ entries: sampleEntries });
     expect(mockFetchOnThisDayEntries).toHaveBeenCalledWith(
       "user-1",
-      expect.any(Date),
+      expect.objectContaining({
+        month: expect.any(Number),
+        day: expect.any(Number),
+        year: expect.any(Number),
+      }),
     );
   });
 
-  it("passes today's date to fetchOnThisDayEntries", async () => {
+  it("keys off the viewer's local date from the query param", async () => {
+    mockRequireUser.mockReturnValue("user-1");
+    mockFetchOnThisDayEntries.mockResolvedValue([]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-16T12:00:00.000Z"));
+
+    try {
+      const defaultHandler = "default" in handler ? handler.default : handler;
+      await (defaultHandler as (event: unknown) => unknown)({
+        query: { date: "2026-03-15" },
+      });
+
+      expect(mockFetchOnThisDayEntries).toHaveBeenCalledWith("user-1", {
+        month: 3,
+        day: 15,
+        year: 2026,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to the server clock's UTC date when no query param is given", async () => {
+    mockRequireUser.mockReturnValue("user-1");
+    mockFetchOnThisDayEntries.mockResolvedValue([]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-28T12:00:00.000Z"));
+
+    try {
+      const defaultHandler = "default" in handler ? handler.default : handler;
+      await (defaultHandler as (event: unknown) => unknown)({});
+
+      expect(mockFetchOnThisDayEntries).toHaveBeenCalledWith("user-1", {
+        month: 6,
+        day: 28,
+        year: 2026,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns 400 when the date param is present but invalid", async () => {
     mockRequireUser.mockReturnValue("user-1");
     mockFetchOnThisDayEntries.mockResolvedValue([]);
 
-    const before = Date.now();
     const defaultHandler = "default" in handler ? handler.default : handler;
-    await (defaultHandler as (event: unknown) => unknown)({});
-    const after = Date.now();
 
-    const [, referenceDate] = mockFetchOnThisDayEntries.mock.calls[0] as [
-      string,
-      Date,
-    ];
-    expect(referenceDate.getTime()).toBeGreaterThanOrEqual(before);
-    expect(referenceDate.getTime()).toBeLessThanOrEqual(after);
+    await expect(
+      (defaultHandler as (event: unknown) => unknown)({
+        query: { date: "not-a-date" },
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(mockFetchOnThisDayEntries).not.toHaveBeenCalled();
   });
 
   it("returns an empty entries array when there are no matches", async () => {
