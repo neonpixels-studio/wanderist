@@ -393,19 +393,27 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(wrapper.find(".thero__acts").exists()).toBe(false);
   });
 
-  it("watches Clerk's load state so the owner's private trip refetches once a token exists", async () => {
+  it("refetches only once the viewer is a signed-in user, not for anonymous visitors", async () => {
+    // Start anonymous with Clerk still loading, so the retry source is false.
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
     mount(TripDetailPage, buildGlobalConfig(pinia));
 
-    // The second watched source is Clerk's isLoaded: the first fetch can run
-    // anonymously (404-ing the owner's private trip), so it must re-run when
-    // Clerk resolves and a token becomes available.
-    const watchedClerkLoaded = lastAsyncDataOptions?.watch?.[1];
-    expect(unref(watchedClerkLoaded)).toBe(true);
+    // The second watched source tracks "can retry authenticated" — Clerk loaded
+    // AND signed in — so an anonymous visitor (who never gains a token) fetches
+    // once, while the owner's request re-runs when their session resolves.
+    const watchedRetry = lastAsyncDataOptions?.watch?.[1];
+    expect(unref(watchedRetry)).toBe(false);
 
-    clerkLoadedRef.value = false;
+    // Clerk finishing its load for an anonymous visitor must not flip it.
+    clerkLoadedRef.value = true;
     await nextTick();
+    expect(unref(watchedRetry)).toBe(false);
 
-    expect(unref(watchedClerkLoaded)).toBe(false);
+    // A resolved, signed-in session is what flips it and triggers the retry.
+    clerkSignedInRef.value = true;
+    await nextTick();
+    expect(unref(watchedRetry)).toBe(true);
   });
 
   it("offers a sign-in link in the not-found state for a signed-out visitor", () => {

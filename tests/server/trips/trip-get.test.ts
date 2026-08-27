@@ -41,14 +41,6 @@ vi.mock("../../../server/db/index", () => ({
   getDb: () => ({ select: mockSelect }),
 }));
 
-// Wrap the real eq so loadReadableTrip and the photo-count filter still build
-// genuine conditions, while letting a test assert whether the non-owner
-// visibility gate (eq(entries.visibility, "public")) was applied.
-vi.mock("drizzle-orm", async (importOriginal) => {
-  const original = await importOriginal<typeof import("drizzle-orm")>();
-  return { ...original, eq: vi.fn(original.eq) };
-});
-
 const mockSetResponseHeader = vi.fn();
 
 Object.assign(globalThis, {
@@ -58,18 +50,15 @@ Object.assign(globalThis, {
   setResponseHeader: mockSetResponseHeader,
 });
 
-import { eq } from "drizzle-orm";
-import { entries } from "../../../server/db/schema";
-
-const mockEq = vi.mocked(eq);
+import { eq, and } from "drizzle-orm";
+import { entries, VISIBILITY } from "../../../server/db/schema";
 
 const { default: handler } = await import("@trips-id.get");
 
-function visibilityGateApplied(): boolean {
-  return mockEq.mock.calls.some(
-    (call) => call[0] === entries.visibility && call[1] === "public",
-  );
-}
+// Captures the condition object actually passed to the photo-count query's
+// .where(), so a test asserts the built filter reached the query — not merely
+// that eq() was called somewhere.
+let capturedPhotoFilter: unknown;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -135,7 +124,10 @@ function setupSelectChain(tripRow: Record<string, unknown> | undefined) {
       return { from };
     }
 
-    const where = vi.fn().mockResolvedValue([{ total: 5 }]);
+    const where = vi.fn((filter: unknown) => {
+      capturedPhotoFilter = filter;
+      return Promise.resolve([{ total: 5 }]);
+    });
     const innerJoin = vi.fn(() => ({ where }));
     const from = vi.fn(() => ({ innerJoin }));
     return { from };
@@ -153,6 +145,7 @@ function buildEvent(userId: string | null) {
 describe("GET /api/trips/[id]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    capturedPhotoFilter = undefined;
     mockGetRouterParam.mockReturnValue("trip-1");
   });
 
@@ -251,7 +244,14 @@ describe("GET /api/trips/[id]", () => {
 
     await (handler as (event: object) => unknown)(buildEvent(OTHER_ID));
 
-    expect(visibilityGateApplied()).toBe(true);
+    // The condition that reached the query must AND the trip scope with a
+    // public-entry gate — dropping the gate leaks private-entry photo counts.
+    expect(capturedPhotoFilter).toEqual(
+      and(
+        eq(entries.tripId, "trip-1"),
+        eq(entries.visibility, VISIBILITY.PUBLIC),
+      ),
+    );
   });
 
   it("counts all photos, including private entries, for the owner", async () => {
@@ -260,7 +260,14 @@ describe("GET /api/trips/[id]", () => {
 
     await (handler as (event: object) => unknown)(buildEvent(OWNER_ID));
 
-    expect(visibilityGateApplied()).toBe(false);
+    // The owner's filter is the bare trip scope, with no visibility term.
+    expect(capturedPhotoFilter).toEqual(eq(entries.tripId, "trip-1"));
+    expect(capturedPhotoFilter).not.toEqual(
+      and(
+        eq(entries.tripId, "trip-1"),
+        eq(entries.visibility, VISIBILITY.PUBLIC),
+      ),
+    );
   });
 
   it("marks the response private/uncacheable and varies on Authorization", async () => {

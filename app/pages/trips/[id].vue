@@ -364,19 +364,28 @@ const isOwner = computed(
     clerkUser.value.id === tripDetail.value.trip.userId,
 );
 
+// A refetch only changes the answer once the viewer is a signed-in user who can
+// carry a token; an anonymous visitor never gains one, so watching this instead
+// of isClerkLoaded gives them a single fetch while still re-issuing the owner's
+// request once their session resolves.
+const canRetryAuthenticated = computed(
+  () => isClerkLoaded.value && !!isSignedIn.value,
+);
+
 // `server: false` keeps the fetch client-only, mirroring guides/[id].vue and
 // u/[id].vue: the request carries the Clerk session token, which only exists on
 // the client (Clerk runs with skipServerMiddleware). Running it during SSR would
 // hang, since Clerk's getToken never resolves on the server.
 //
-// Watch isClerkLoaded as well as the id: the first pass can run before Clerk is
-// ready, sending an anonymous request that 404s the owner's own private trip.
-// Re-running once Clerk resolves re-issues the request with a token so the owner
-// gets their private trip; a public trip already resolved on the anonymous pass.
+// Watch canRetryAuthenticated as well as the id: the first pass can run before
+// Clerk is ready, sending an anonymous request that 404s the owner's own private
+// trip. Re-running once the session resolves re-issues the request with a token
+// so the owner gets their private trip; a public trip already resolved on the
+// anonymous pass.
 const { status: fetchStatus } = useAsyncData(
   () => `trip-detail-${tripId.value}`,
   () => tripsStore.fetchTripById(tripId.value),
-  { server: false, watch: [tripId, isClerkLoaded] },
+  { server: false, watch: [tripId, canRetryAuthenticated] },
 );
 
 // Until the client fetch resolves, the SSR pass and hydration frame have no trip
