@@ -55,7 +55,6 @@ export interface FetchEntriesFilters {
   tripId?: string;
   placeId?: string;
   tab?: "timeline" | "by-trip" | "photos";
-  page?: number;
 }
 
 export interface FetchEntriesResult {
@@ -65,14 +64,22 @@ export interface FetchEntriesResult {
   hasMore: boolean;
 }
 
+// Safety net against an infinite loop if the API ever reports `hasMore: true`
+// forever (e.g. a server bug) — no user has anywhere near this many entries,
+// so hitting this cap always indicates a bug, not a real result set.
+const MAX_ENTRIES_PAGES = 500;
+
 type FilterParam = [key: string, value: string | undefined];
 
-function buildEntriesQuery(filters?: FetchEntriesFilters): string {
+function buildEntriesQuery(
+  filters: FetchEntriesFilters | undefined,
+  page: number,
+): string {
   const paramPairs: FilterParam[] = [
     ["tripId", filters?.tripId],
     ["placeId", filters?.placeId],
     ["tab", filters?.tab],
-    ["page", filters?.page !== undefined ? String(filters.page) : undefined],
+    ["page", String(page)],
   ];
 
   const params = new URLSearchParams(
@@ -81,8 +88,7 @@ function buildEntriesQuery(filters?: FetchEntriesFilters): string {
     ),
   );
 
-  const queryString = params.toString();
-  return queryString ? `/api/entries?${queryString}` : "/api/entries";
+  return `/api/entries?${params.toString()}`;
 }
 
 function replaceLikeState(list: Entry[], updated: Entry): Entry[] {
@@ -109,18 +115,58 @@ export const useEntriesStore = defineStore("entries", () => {
   const isLoading = ref(false);
   const error = ref<string | null>(null);
 
-  async function fetchEntries(
+  // GET /api/entries is paginated server-side to keep each query bounded (see
+  // server/api/entries/index.get.ts, PAGE_SIZE = 20), but the journal feed,
+  // home dashboard, and post-create refresh all need the user's full history —
+  // the Timeline/By-trip/Photos groupings are computed client-side over the
+  // whole list. Rather than invent a partial-list contract for those callers,
+  // this walks every page and concatenates the results, so the store's public
+  // `entries` list keeps behaving like "all of the user's entries" — matching
+  // the places and trips stores' fetchAll*Pages convention.
+  async function fetchAllEntriesPages(
     filters?: FetchEntriesFilters,
-  ): Promise<FetchEntriesResult> {
+  ): Promise<Entry[]> {
+    const allEntries: Entry[] = [];
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore) {
+      if (page > MAX_ENTRIES_PAGES) {
+        // Bailing out here would silently hand every consumer a truncated list
+        // dressed up as the full one — fail loud instead so the UI surfaces the
+        // failure via the existing error handling below.
+        throw new Error(
+          `fetchEntries exceeded ${MAX_ENTRIES_PAGES} pages — the API kept reporting hasMore: true`,
+        );
+      }
+
+      const result = await apiFetch<FetchEntriesResult>(
+        buildEntriesQuery(filters, page),
+      );
+
+      if (
+        !Array.isArray(result?.entries) ||
+        typeof result?.hasMore !== "boolean"
+      ) {
+        throw new Error(
+          "Malformed /api/entries response: expected { entries: Entry[], hasMore: boolean }",
+        );
+      }
+
+      allEntries.push(...result.entries);
+      hasMore = result.hasMore;
+      page += 1;
+    }
+
+    return allEntries;
+  }
+
+  async function fetchEntries(filters?: FetchEntriesFilters): Promise<void> {
     isLoading.value = true;
     error.value = null;
 
     try {
-      const result = await apiFetch<FetchEntriesResult>(
-        buildEntriesQuery(filters),
-      );
-      entries.value = result.entries;
-      return result;
+      entries.value = await fetchAllEntriesPages(filters);
     } catch (caught) {
       setError(error, caught);
       throw caught;
