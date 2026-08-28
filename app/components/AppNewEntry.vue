@@ -288,7 +288,9 @@ const props = withDefaults(
 );
 const emit = defineEmits<{ close: [] }>();
 
-const isEditing = computed(() => props.entry !== null);
+// Truthy-based so it agrees with seedFormForCurrentMode's `if (props.entry)`
+// branch: a null or undefined entry is create mode on both paths.
+const isEditing = computed(() => Boolean(props.entry));
 
 const entriesStore = useEntriesStore();
 const tripsStore = useTripsStore();
@@ -424,7 +426,11 @@ const tripOptions = computed<TripOption[]>(() => {
 // unchanged"). Keep None visible so a trip-less entry still shows its state, but
 // disable it while editing rather than promise a detach the API can't perform.
 function isTripOptionDisabled(tripValue: string): boolean {
-  return isEditing.value && tripValue === NO_TRIP_VALUE;
+  return (
+    isEditing.value &&
+    tripValue === NO_TRIP_VALUE &&
+    Boolean(props.entry?.tripId)
+  );
 }
 
 const placeSuggestions = computed<PlaceSuggestion[]>(() =>
@@ -777,8 +783,6 @@ async function publish(): Promise<void> {
       clearDraft();
     }
     emit("close");
-
-    await refreshEntriesNonFatal();
   } catch (caught) {
     const fallbackMessage = editedEntryId
       ? "Failed to save changes. Please try again."
@@ -788,6 +792,14 @@ async function publish(): Promise<void> {
   } finally {
     isPublishing.value = false;
     replayDeferredReseed();
+  }
+
+  // The list refresh is non-fatal and unrelated to the drawer, so it runs
+  // outside the publishing window — holding isPublishing across a network round
+  // trip would make a drawer reopened mid-refresh render stale content in a dead
+  // "saving…" state. A failed save recorded an error and has nothing new to show.
+  if (!publishError.value) {
+    await refreshEntriesNonFatal();
   }
 }
 
@@ -802,6 +814,10 @@ function replayDeferredReseed(): void {
   if (!props.open) {
     return;
   }
+  // Seeding clears publishError; carry a save failure across so the drawer the
+  // user is now looking at still surfaces it rather than silently discarding it.
+  const carriedError = publishError.value;
   seedFormForCurrentMode();
+  publishError.value = carriedError;
 }
 </script>

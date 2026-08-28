@@ -932,16 +932,29 @@ describe("AppNewEntry — edit mode", () => {
     expect(titleInputValue(wrapper)).toBe("");
   });
 
-  it("shows the None trip option disabled in edit mode since the PATCH cannot detach a trip", () => {
+  it("disables the None trip option when editing an entry that has a trip", () => {
     tripsStoreTrips.value = [
       { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
     ];
-    const picks = mountEdit().find(".pill-pick").findAll(".pick");
+    const picks = mountEdit({ ...SAMPLE_ENTRY, tripId: "trip-1" })
+      .find(".pill-pick")
+      .findAll(".pick");
     const nonePick = picks.find((pick) => pick.text() === "None");
     expect(nonePick).toBeTruthy();
     expect(nonePick?.attributes("disabled")).toBeDefined();
     const tripPick = picks.find((pick) => pick.text() === "Iceland Ring Road");
     expect(tripPick?.attributes("disabled")).toBeUndefined();
+  });
+
+  it("leaves the None trip option enabled when editing a trip-less entry", () => {
+    tripsStoreTrips.value = [
+      { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
+    ];
+    const nonePick = mountEdit({ ...SAMPLE_ENTRY, tripId: null })
+      .find(".pill-pick")
+      .findAll(".pick")
+      .find((pick) => pick.text() === "None");
+    expect(nonePick?.attributes("disabled")).toBeUndefined();
   });
 
   it("leaves the None trip option enabled in create mode", () => {
@@ -1043,5 +1056,10 @@ describe("AppNewEntry — edit mode", () => {
 
     expect(wrapper.find(".drawer__head h3").text()).toBe("Capture a moment");
     expect(titleInputValue(wrapper)).toBe("");
+    // The save failed, so the failure must survive the re-seed rather than being
+    // silently cleared when the form catches up to create mode.
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "Update failed",
+    );
   });
 });
