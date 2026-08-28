@@ -166,11 +166,28 @@
               <AppIcon name="journal" :size="14" />
               open journal
             </NuxtLink>
+            <button
+              class="icon-btn"
+              aria-label="Edit place"
+              :aria-expanded="isEditingPlace"
+              @click="toggleEditForm"
+            >
+              <AppIcon name="edit" :size="18" />
+            </button>
             <button class="icon-btn" aria-label="Save">
               <AppIcon name="heart" :size="18" />
             </button>
           </div>
         </div>
+        <PlaceEditForm
+          v-if="isEditingPlace"
+          :key="selectedPlace.id"
+          :place="selectedPlace"
+          :pending="isUpdatingSelectedPlace"
+          :error="updatePlaceError"
+          @submit="submitEditPlace"
+          @cancel="closeEditForm"
+        />
       </template>
     </div>
 
@@ -226,7 +243,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { usePlacesStore } from "~/stores/places";
-import type { Place } from "~/stores/places";
+import type { Place, UpdatePlaceInput } from "~/stores/places";
 import { useMapbox } from "~/composables/useMapbox";
 import { resolveMapboxStyleLabel } from "~/composables/useMapboxStyles";
 import type { DropPinResult, MapInstance } from "~/composables/useMapbox";
@@ -270,6 +287,19 @@ const newPlaceName = ref("");
 const isCreatingPlace = ref(false);
 const createPlaceError = ref<string | null>(null);
 const mapError = ref<string | null>(null);
+const isEditingPlace = ref(false);
+// The id of the place whose PATCH is in flight (null when idle). Scoping this
+// to an id — rather than a bare boolean — keeps the spinner/disabled state tied
+// to one place, so switching selection mid-save can't strand a different place
+// in a "saving" state, and re-opening the form can't fire a duplicate PATCH.
+const updatingPlaceId = ref<string | null>(null);
+const updatePlaceError = ref<string | null>(null);
+
+const isUpdatingSelectedPlace = computed(
+  () =>
+    updatingPlaceId.value !== null &&
+    updatingPlaceId.value === selectedPlace.value?.id,
+);
 
 const pinnedPlaces = computed(() =>
   placesStore.places.filter(
@@ -297,9 +327,33 @@ function selectPlace(place: Place): void {
   const previousId = selectedPlace.value?.id ?? null;
   selectedPlace.value = place;
 
+  // Only a genuine change of selection discards an in-progress edit; clicking
+  // the already-selected place must not wipe a half-typed form.
+  if (previousId !== place.id) {
+    closeEditForm();
+  }
+
   if (activeMapInstance.value) {
     mapbox.setMarkerActive(place.id, previousId);
   }
+}
+
+// Map markers report the clicked id (their click handler is bound once and
+// can't hold a live reference to an edited place), so resolve the current
+// store object here rather than trusting a captured one.
+function selectPlaceById(placeId: string): void {
+  const place = placesStore.places.find(
+    (candidate) => candidate.id === placeId,
+  );
+
+  if (!place) {
+    // Markers and store state should never diverge (syncMarkers prunes stale
+    // markers), so a click with no matching place is a bug worth surfacing.
+    console.warn(`Marker clicked for unknown place ${placeId}`);
+    return;
+  }
+
+  selectPlace(place);
 }
 
 function closeDetail(): void {
@@ -307,6 +361,55 @@ function closeDetail(): void {
     mapbox.setMarkerActive(null, selectedPlace.value.id);
   }
   selectedPlace.value = null;
+  closeEditForm();
+}
+
+function toggleEditForm(): void {
+  if (isEditingPlace.value) {
+    closeEditForm();
+    return;
+  }
+  updatePlaceError.value = null;
+  isEditingPlace.value = true;
+}
+
+function closeEditForm(): void {
+  // Leave updatingPlaceId alone — the in-flight PATCH's finally owns it, so
+  // closing/reopening the form can't drop the guard and fire a duplicate save.
+  isEditingPlace.value = false;
+  updatePlaceError.value = null;
+}
+
+async function submitEditPlace(input: UpdatePlaceInput): Promise<void> {
+  if (!selectedPlace.value || updatingPlaceId.value !== null) {
+    return;
+  }
+
+  // Capture the target id so a slow PATCH can't resurrect or clobber a
+  // selection the user changed (or closed) while the request was in flight.
+  const editedPlaceId = selectedPlace.value.id;
+  updatingPlaceId.value = editedPlaceId;
+  updatePlaceError.value = null;
+
+  try {
+    const updated = await placesStore.updatePlace(editedPlaceId, input);
+
+    if (selectedPlace.value?.id !== editedPlaceId) {
+      return;
+    }
+
+    selectedPlace.value = updated;
+    isEditingPlace.value = false;
+  } catch (error) {
+    if (selectedPlace.value?.id !== editedPlaceId) {
+      return;
+    }
+
+    updatePlaceError.value =
+      error instanceof Error ? error.message : "Failed to update place";
+  } finally {
+    updatingPlaceId.value = null;
+  }
 }
 
 function setMapStyle(style: string): void {
@@ -382,7 +485,7 @@ async function submitDropPin(): Promise<void> {
         activeMapInstance.value,
         placesStore.places,
         selectedPlace.value?.id ?? null,
-        selectPlace,
+        selectPlaceById,
       );
     }
 
@@ -431,7 +534,7 @@ async function initializeMap(): Promise<void> {
       mapInstance,
       placesStore.places,
       selectedPlace.value?.id ?? null,
-      selectPlace,
+      selectPlaceById,
     );
   });
 }
@@ -449,7 +552,7 @@ watch(
       activeMapInstance.value,
       places,
       selectedPlace.value?.id ?? null,
-      selectPlace,
+      selectPlaceById,
     );
   },
 );

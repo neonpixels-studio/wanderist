@@ -1,0 +1,18 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`PlaceEditForm > renders without crashing and matches snapshot 1`] = `
+"<section data-v-bc61746f="" class="place-edit-form" aria-labelledby="place-edit-form-title">
+  <h3 data-v-bc61746f="" id="place-edit-form-title" class="place-edit-form__title"> Edit place </h3>
+  <form data-v-bc61746f="" class="place-edit-form__body"><input data-v-bc61746f="" placeholder="Place name…" value="Tokyo"><label data-v-bc61746f="" class="place-edit-form__field"><span data-v-bc61746f="" class="place-edit-form__label">Category</span><select data-v-bc61746f="" class="place-edit-form__select">
+        <option data-v-bc61746f="" value="">Uncategorized</option>
+        <option data-v-bc61746f="" value="nature">Nature</option>
+        <option data-v-bc61746f="" value="city">Cities</option>
+        <option data-v-bc61746f="" value="coast">Coast</option>
+        <option data-v-bc61746f="" value="food">Food</option>
+        <option data-v-bc61746f="" value="culture">Culture</option>
+      </select></label>
+    <div data-v-bc61746f="" class="place-edit-form__acts"><button data-v-bc61746f="" type="submit" class="btn btn--primary btn--sm"><svg data-v-bc61746f="" data-icon="" name="check" size="14"></svg> save changes</button><button data-v-bc61746f="" type="button" class="btn btn--outline btn--sm"> cancel </button></div>
+    <!--v-if-->
+  </form>
+</section>"
+`;

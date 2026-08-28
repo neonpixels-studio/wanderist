@@ -21,6 +21,8 @@ const tripsStoreTrips = ref<
   Array<{ id: string; name: string; status: string }>
 >([]);
 const placesStorePlaces = ref<Array<{ id: string; name: string }>>([]);
+const placesStoreIsLoading = ref(false);
+const placesStoreError = ref<string | null>(null);
 
 vi.stubGlobal("useEntriesStore", () => ({
   createEntry: mockCreateEntry,
@@ -36,10 +38,20 @@ vi.stubGlobal("useTripsStore", () => ({
   isLoadingList: ref(false),
 }));
 
+// Getters mirror how Pinia hands back reactive state unwrapped: the drawer
+// reads `placesStore.places`/`isLoading`/`error` as plain values, and tests
+// can flip the backing refs (e.g. places arriving after the drawer opens).
 vi.stubGlobal("usePlacesStore", () => ({
-  places: placesStorePlaces.value,
+  get places() {
+    return placesStorePlaces.value;
+  },
   fetchPlaces: mockFetchPlaces,
-  isLoading: ref(false),
+  get isLoading() {
+    return placesStoreIsLoading.value;
+  },
+  get error() {
+    return placesStoreError.value;
+  },
 }));
 
 vi.stubGlobal("useMediaUpload", () => ({
@@ -77,7 +89,11 @@ describe("AppNewEntry", () => {
     vi.clearAllMocks();
     tripsStoreTrips.value = [];
     placesStorePlaces.value = [];
+    placesStoreIsLoading.value = false;
+    placesStoreError.value = null;
     mockLoadDraft.mockReturnValue(null);
+    // Real fetchPlaces returns a Promise; the drawer chains .catch on it.
+    mockFetchPlaces.mockResolvedValue(undefined);
   });
 
   it("renders nothing when closed", () => {
@@ -305,7 +321,9 @@ describe("AppNewEntry", () => {
     await wrapper.vm.$nextTick();
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.find(".error-hint").text()).toContain("Server error");
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "Server error",
+    );
     expect(wrapper.emitted("close")).toBeFalsy();
   });
 
@@ -315,6 +333,16 @@ describe("AppNewEntry", () => {
     expect(mockSaveDraft).toHaveBeenCalledOnce();
     expect(mockSaveDraft).toHaveBeenCalledWith(
       expect.objectContaining({ uploadedPhotos: expect.any(Array) }),
+    );
+  });
+
+  it("saves the resolved placeId into the draft", async () => {
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    const wrapper = mountOpen();
+    await wrapper.findAll(".chip")[0].trigger("click");
+    await wrapper.find(".btn--ghost").trigger("click");
+    expect(mockSaveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ location: "Old Harbour", placeId: "p-1" }),
     );
   });
 
@@ -355,7 +383,212 @@ describe("AppNewEntry", () => {
     // close should fire even though fetchEntries rejected
     expect(wrapper.emitted("close")).toBeTruthy();
     // and the error should NOT be shown (it is a non-fatal refresh failure)
-    expect(wrapper.find(".error-hint").exists()).toBe(false);
+    expect(wrapper.find('[data-test="publish-error"]').exists()).toBe(false);
+  });
+
+  function stubSuccessfulPublish() {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+  }
+
+  async function publishAndReadPayload(
+    wrapper: ReturnType<typeof mountOpen>,
+  ): Promise<Record<string, unknown>> {
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+    return mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+  }
+
+  it("sends the selected place's id as placeId when a suggestion is clicked", async () => {
+    stubSuccessfulPublish();
+    placesStorePlaces.value = [
+      { id: "p-1", name: "Old Harbour" },
+      { id: "p-2", name: "Hallgrímskirkja" },
+    ];
+
+    const wrapper = mountOpen();
+    const chips = wrapper.findAll(".chip");
+    await chips[0].trigger("click");
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBe("p-1");
+  });
+
+  it("resolves placeId case-insensitively and ignores surrounding whitespace when typed", async () => {
+    stubSuccessfulPublish();
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper.get('[data-test="location-input"]');
+    await locationInput.setValue("  old harbour  ");
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBe("p-1");
+  });
+
+  it("omits placeId and warns when the typed location matches no known place", async () => {
+    stubSuccessfulPublish();
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper.get('[data-test="location-input"]');
+    await locationInput.setValue("Somewhere unlisted");
+
+    // The user is told the free text will not be attached, rather than it
+    // being silently dropped.
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(true);
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBeUndefined();
+  });
+
+  it("clears a previously selected placeId when the location is edited to non-matching text", async () => {
+    stubSuccessfulPublish();
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+
+    const wrapper = mountOpen();
+    await wrapper.findAll(".chip")[0].trigger("click");
+    // User then hand-edits the field to something that is not a saved place.
+    await wrapper.get('[data-test="location-input"]').setValue("Elsewhere");
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBeUndefined();
+  });
+
+  it("refuses to guess a placeId when two saved places share the typed name", async () => {
+    stubSuccessfulPublish();
+    placesStorePlaces.value = [
+      { id: "p-1", name: "Old Town" },
+      { id: "p-2", name: "Old Town" },
+    ];
+
+    const wrapper = mountOpen();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Town");
+
+    // Ambiguous by name: no arbitrary place is attached, and the user is warned.
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(true);
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBeUndefined();
+  });
+
+  it("resolves a typed location once the places list arrives after opening", async () => {
+    stubSuccessfulPublish();
+    // Cold store: no places yet when the drawer opens and the user types.
+    const wrapper = mountOpen();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Harbour");
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(true);
+
+    // Places load afterwards — the resolution must recompute reactively.
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(false);
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBe("p-1");
+  });
+
+  it("does not warn about an unresolved location while places are still loading", async () => {
+    placesStoreIsLoading.value = true;
+    const wrapper = mountOpen();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Harbour");
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(false);
+  });
+
+  it("shows a load-failure hint (not the no-such-place warning) when the places fetch failed", async () => {
+    placesStoreError.value = "network down";
+    const wrapper = mountOpen();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Harbour");
+    // The failure is surfaced as a load problem, not blamed on the user's input.
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="places-load-error"]').exists()).toBe(true);
+  });
+
+  it("waits for the places prefetch before publishing a typed location", async () => {
+    stubSuccessfulPublish();
+    // fetchPlaces stays pending until we resolve it, mimicking a slow load; the
+    // place only becomes known when it settles.
+    let settleFetch: () => void = () => {};
+    mockFetchPlaces.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          settleFetch = () => {
+            placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+            resolve();
+          };
+        }),
+    );
+
+    const wrapper = mountOpen();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Harbour");
+
+    // Publish before the fetch settles — it must not create the entry yet.
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+
+    settleFetch();
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockCreateEntry).toHaveBeenCalledOnce();
+    const callArg = mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+    expect(callArg.placeId).toBe("p-1");
+  });
+
+  it("carries a restored draft's saved placeId into the publish payload", async () => {
+    stubSuccessfulPublish();
+    mockLoadDraft.mockReturnValue({
+      title: "Restored",
+      body: "",
+      location: "Old Harbour",
+      placeId: "p-9",
+      tripId: "",
+      date: "2026-06-01",
+      visibility: "private",
+      tags: [],
+      weather: "",
+      uploadedPhotos: [],
+    });
+
+    const wrapper = mountOpen();
+    await wrapper.vm.$nextTick();
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBe("p-9");
+  });
+
+  it("drops a restored placeId whose place no longer exists and warns", async () => {
+    stubSuccessfulPublish();
+    // The saved place (p-9) is gone; the loaded list has an unrelated place.
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    mockLoadDraft.mockReturnValue({
+      title: "Restored",
+      body: "",
+      location: "Deleted Spot",
+      placeId: "p-9",
+      tripId: "",
+      date: "2026-06-01",
+      visibility: "private",
+      tags: [],
+      weather: "",
+      uploadedPhotos: [],
+    });
+
+    const wrapper = mountOpen();
+    await wrapper.vm.$nextTick();
+
+    // The dead id must not be trusted (the server would reject it); the user
+    // is warned rather than trapped behind a failing publish.
+    expect(wrapper.find('[data-test="location-warning"]').exists()).toBe(true);
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBeUndefined();
   });
 
   it("passes occurredAt derived from the local date string the user chose", async () => {
@@ -406,7 +639,7 @@ describe("AppNewEntry", () => {
     await wrapper.vm.$nextTick();
 
     // Error should be visible
-    expect(wrapper.find(".error-hint").exists()).toBe(true);
+    expect(wrapper.find('[data-test="upload-error"]').exists()).toBe(true);
 
     // Second upload succeeds — error should clear
     const successFile = new File(["ok"], "ok.jpg", { type: "image/jpeg" });
@@ -417,6 +650,6 @@ describe("AppNewEntry", () => {
     await fileInput.trigger("change");
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.find(".error-hint").exists()).toBe(false);
+    expect(wrapper.find('[data-test="upload-error"]').exists()).toBe(false);
   });
 });

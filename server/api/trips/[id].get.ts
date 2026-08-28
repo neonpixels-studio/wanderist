@@ -1,7 +1,15 @@
-import { eq, asc, count } from "drizzle-orm";
+import { eq, and, asc, count } from "drizzle-orm";
 import { getDb } from "../../db/index";
-import { trips, tripStops, entries, entryPhotos } from "../../db/schema";
-import { requireTripId, loadOwnedTrip } from "../../utils/trip-helpers";
+import {
+  trips,
+  tripStops,
+  entries,
+  entryPhotos,
+  VISIBILITY,
+} from "../../db/schema";
+import { requireTripId } from "../../utils/trip-helpers";
+import { loadReadableTrip } from "../../utils/trip-queries";
+import { optionalUser } from "../../utils/auth";
 
 type Database = ReturnType<typeof getDb>;
 type Trip = typeof trips.$inferSelect;
@@ -35,12 +43,23 @@ async function fetchOrderedStops(
 async function fetchPhotoCount(
   database: Database,
   tripId: string,
+  includePrivateEntries: boolean,
 ): Promise<number> {
+  // A non-owner reading a public trip must not learn how many photos sit on the
+  // trip's private entries, so restrict the count to public entries for them.
+  // The owner sees the true total.
+  const entryFilter = includePrivateEntries
+    ? eq(entries.tripId, tripId)
+    : and(
+        eq(entries.tripId, tripId),
+        eq(entries.visibility, VISIBILITY.PUBLIC),
+      );
+
   const rows = await database
     .select({ total: count(entryPhotos.id) })
     .from(entryPhotos)
     .innerJoin(entries, eq(entryPhotos.entryId, entries.id))
-    .where(eq(entries.tripId, tripId));
+    .where(entryFilter);
 
   return rows[0]?.total ?? 0;
 }
@@ -78,13 +97,29 @@ export default defineEventHandler(
   async (event): Promise<TripDetailResponse> => {
     const tripId = requireTripId(event);
 
-    const trip = await loadOwnedTrip(event, tripId);
+    // Auth is optional here: a shared public trip must open for anonymous
+    // visitors. loadReadableTrip still gates strictly — an anonymous (null)
+    // reader is a non-owner and reads only public trips; private trips stay
+    // hidden behind a 404.
+    const userId = optionalUser(event);
 
     const database = getDb();
 
+    // This response varies by caller (the owner reads a private trip; everyone
+    // else gets only public trips or a 404), discriminated by the Authorization
+    // header. Forbid shared caching so a proxy/CDN keyed on URL alone can't
+    // serve one viewer's private trip to another, and vary on Authorization for
+    // any cache that honors it.
+    setResponseHeader(event, "Cache-Control", "private, no-store");
+    setResponseHeader(event, "Vary", "Authorization");
+
+    const trip = await loadReadableTrip(database, tripId, userId);
+
+    const isOwner = trip.userId === userId;
+
     const [stops, photoCount] = await Promise.all([
       fetchOrderedStops(database, tripId),
-      fetchPhotoCount(database, tripId),
+      fetchPhotoCount(database, tripId, isOwner),
     ]);
 
     const facts = computeFacts(trip, stops, photoCount);
