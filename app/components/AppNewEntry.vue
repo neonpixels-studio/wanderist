@@ -302,6 +302,9 @@ const uploadedPhotos = ref<Array<{ id: string; url: string }>>([]);
 const tagInput = ref("");
 const isPublishing = ref(false);
 const publishError = ref<string | null>(null);
+// A re-seed requested while a save was in flight is deferred, then replayed once
+// the save settles (see the open watcher and publish's finally).
+const reseedPending = ref(false);
 
 const primaryActionLabel = computed(() => {
   if (isPublishing.value) {
@@ -559,27 +562,33 @@ watch(
     // A save reads form state after an await (placesReady) and PATCHes it under
     // the snapshotted id. Re-seeding mid-save would swap that state out — e.g. a
     // ⌘K "new entry" nulls props.entry while an edit is in flight — and write the
-    // replacement content over the edited entry. The save closes the drawer on
-    // success, so skipping the re-seed here is safe.
+    // replacement content over the edited entry. Defer the re-seed and replay it
+    // once the save settles, so the (rare) error path doesn't strand the drawer
+    // in a stale mode.
     if (isPublishing.value) {
+      reseedPending.value = true;
       return;
     }
 
-    // Editing pre-fills from the entry and ignores the create-only draft.
-    if (props.entry) {
-      applyEntryForm(props.entry);
-    } else {
-      applyDraftOrFreshForm();
-    }
-
-    tagInput.value = "";
-    publishError.value = null;
-    uploadError.value = null;
-
-    ensureReferenceData();
+    seedFormForCurrentMode();
   },
   { immediate: true },
 );
+
+function seedFormForCurrentMode(): void {
+  // Editing pre-fills from the entry and ignores the create-only draft.
+  if (props.entry) {
+    applyEntryForm(props.entry);
+  } else {
+    applyDraftOrFreshForm();
+  }
+
+  tagInput.value = "";
+  publishError.value = null;
+  uploadError.value = null;
+
+  ensureReferenceData();
+}
 
 // Apply a default tripId once trips arrive if none has been set yet
 watch(
@@ -778,6 +787,21 @@ async function publish(): Promise<void> {
       caught instanceof Error ? caught.message : fallbackMessage;
   } finally {
     isPublishing.value = false;
+    replayDeferredReseed();
   }
+}
+
+// Replay a re-seed that was deferred during the save. On success the drawer has
+// closed (props.open false), so this only fires on the error path, where
+// props.entry/open changed mid-save and the form must catch up to it.
+function replayDeferredReseed(): void {
+  if (!reseedPending.value) {
+    return;
+  }
+  reseedPending.value = false;
+  if (!props.open) {
+    return;
+  }
+  seedFormForCurrentMode();
 }
 </script>

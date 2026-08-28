@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import { ref } from "vue";
 import AppNewEntry from "../AppNewEntry.vue";
 import type { EntryDraft } from "~/composables/useEntryDraft";
@@ -1011,5 +1011,37 @@ describe("AppNewEntry — edit mode", () => {
     expect(id).toBe("entry-1");
     expect(payload.title).toBe("Harbor at 4am");
     expect(payload.photoMediaIds).toEqual(["media-1"]);
+  });
+
+  it("re-seeds to create mode when a save fails after the entry prop cleared mid-save", async () => {
+    // Same race, but the save rejects. The deferred re-seed must replay so the
+    // drawer catches up to create mode instead of stranding entry A's content
+    // bound to a create-shaped publish (which would duplicate it on retry).
+    mockUpdateEntry.mockRejectedValue(new Error("Update failed"));
+    let settleFirstFetch: () => void = () => {};
+    let fetchCalls = 0;
+    mockFetchPlaces.mockImplementation(() => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        return new Promise<void>((resolve) => {
+          settleFirstFetch = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    const wrapper = mountEdit();
+    await wrapper.get('[data-test="location-input"]').setValue("Somewhere");
+
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.setProps({ entry: null });
+
+    settleFirstFetch();
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".drawer__head h3").text()).toBe("Capture a moment");
+    expect(titleInputValue(wrapper)).toBe("");
   });
 });
