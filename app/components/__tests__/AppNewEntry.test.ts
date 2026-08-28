@@ -931,4 +931,60 @@ describe("AppNewEntry — edit mode", () => {
     expect(wrapper.find(".drawer__foot .btn--ghost").exists()).toBe(true);
     expect(titleInputValue(wrapper)).toBe("");
   });
+
+  it("omits the None trip option in edit mode since the PATCH cannot detach a trip", () => {
+    tripsStoreTrips.value = [
+      { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
+    ];
+    const labels = mountEdit()
+      .find(".pill-pick")
+      .findAll(".pick")
+      .map((pick) => pick.text());
+    expect(labels).toContain("Iceland Ring Road");
+    expect(labels).not.toContain("None");
+  });
+
+  it("keeps an edit-shaped payload when the entry prop clears mid-save", async () => {
+    // A slow places fetch keeps publish awaiting inside its try block, giving
+    // the parent a window to null the entry (e.g. ⌘K opens a new entry) before
+    // the payload is built. The mode was snapshotted, so a cleared body must
+    // still be sent verbatim rather than dropped as it would be in create shape.
+    mockUpdateEntry.mockResolvedValue(SAMPLE_ENTRY);
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+    let settleFirstFetch: () => void = () => {};
+    let fetchCalls = 0;
+    mockFetchPlaces.mockImplementation(() => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        return new Promise<void>((resolve) => {
+          settleFirstFetch = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    const wrapper = mountEdit();
+    await wrapper.get('[data-test="location-input"]').setValue("Somewhere");
+    await wrapper.find("textarea").setValue("");
+
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.setProps({ entry: null });
+
+    settleFirstFetch();
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockUpdateEntry).toHaveBeenCalledOnce();
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+    const [, payload] = mockUpdateEntry.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(payload.body).toBe("");
+  });
 });

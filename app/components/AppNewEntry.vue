@@ -395,6 +395,9 @@ function applyEntryForm(entry: Entry): void {
     id: photo.mediaId,
     url: "",
   }));
+  // Edit opens with an empty location field, so drop any place chosen in a
+  // prior create session — a stale chip choice must not leak into this entry.
+  selectedPlace.value = null;
   // The entry's trip is an explicit choice; guard it from the trips-load watch.
   tripDefaulted.value = true;
 }
@@ -404,6 +407,13 @@ const tripOptions = computed<TripOption[]>(() => {
     value: trip.id,
     label: trip.name,
   }));
+  // Editing can reassign to another trip but cannot detach to None: the PATCH
+  // has no "clear the trip" input (an omitted/empty tripId reads as "leave
+  // unchanged"), so offering None would silently no-op. Omit it while editing
+  // rather than promise an operation the API can't perform.
+  if (isEditing.value) {
+    return options;
+  }
   return [...options, { value: NO_TRIP_VALUE, label: "None" }];
 });
 
@@ -664,7 +674,11 @@ function resolvePlaceId(locationName: string): string | undefined {
   return matches[0].id;
 }
 
-function buildEntryPayload() {
+// isEdit is passed in rather than read from props.entry: publish() snapshots the
+// mode before awaiting, and the parent can null props.entry mid-save. Reading it
+// live here would misclassify an in-flight edit as a create and drop the
+// verbatim-clear fields, silently reverting the user's deletions.
+function buildEntryPayload(isEdit: boolean) {
   const shared = {
     title: form.value.title,
     occurredAt: localDateToIso(form.value.date),
@@ -678,7 +692,7 @@ function buildEntryPayload() {
   // persists the clear ("" / []); the PATCH route treats an omitted key as
   // "leave unchanged", which would silently revert a deletion. The create path
   // keeps them optional so a blank new entry omits them entirely.
-  if (props.entry) {
+  if (isEdit) {
     return {
       ...shared,
       body: form.value.body,
@@ -704,7 +718,7 @@ async function refreshEntriesNonFatal(): Promise<void> {
 }
 
 async function persistEntry(editedEntryId: string | null): Promise<void> {
-  const payload = buildEntryPayload();
+  const payload = buildEntryPayload(Boolean(editedEntryId));
 
   if (editedEntryId) {
     await entriesStore.updateEntry(editedEntryId, payload);

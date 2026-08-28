@@ -47,9 +47,9 @@ describe("AppNewEntryLocationField", () => {
   });
 
   it("renders a chip per suggestion and hides them when empty", () => {
-    expect(mountField({ suggestions: SUGGESTIONS }).findAll(".chip")).toHaveLength(
-      2,
-    );
+    expect(
+      mountField({ suggestions: SUGGESTIONS }).findAll(".chip"),
+    ).toHaveLength(2);
     expect(mountField().find(".chip-suggest").exists()).toBe(false);
   });
 
@@ -61,12 +61,13 @@ describe("AppNewEntryLocationField", () => {
 
   it("shows the unsaved-place warning only when willNotSave is true", () => {
     expect(
-      mountField({ willNotSave: true }).find('[data-test="location-warning"]')
+      mountField({ willNotSave: true })
+        .find('[data-test="location-warning"]')
         .exists(),
     ).toBe(true);
-    expect(
-      mountField().find('[data-test="location-warning"]').exists(),
-    ).toBe(false);
+    expect(mountField().find('[data-test="location-warning"]').exists()).toBe(
+      false,
+    );
   });
 
   it("shows the load-error warning only when places are unavailable and a location is typed", () => {
