@@ -538,7 +538,7 @@ describe("AppNewEntry", () => {
     placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
     const wrapper = mountOpen();
 
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Blue Lagoon");
 
     const affordance = wrapper.find(".location-create");
@@ -550,7 +550,7 @@ describe("AppNewEntry", () => {
     placesStoreLoading.value = true;
     const wrapper = mountOpen();
 
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Blue Lagoon");
 
     expect(wrapper.find(".location-create").exists()).toBe(false);
@@ -561,7 +561,7 @@ describe("AppNewEntry", () => {
     const wrapper = mountOpen();
     await flushPromises();
 
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Blue Lagoon");
 
     expect(wrapper.find(".location-create").exists()).toBe(false);
@@ -571,7 +571,7 @@ describe("AppNewEntry", () => {
     placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
     const wrapper = mountOpen();
 
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("  old harbour  ");
 
     expect(wrapper.find(".location-create").exists()).toBe(false);
@@ -583,7 +583,7 @@ describe("AppNewEntry", () => {
     placesStorePlaces.value = [{ id: "p-1", name: savedName }];
     const wrapper = mountOpen();
 
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     // Typed with a decomposed e + combining acute (U+0301) and a double space;
     // only NFC + whitespace collapse folds this onto the saved name.
     await locationInput.setValue("cafe\u0301  central");
@@ -607,7 +607,7 @@ describe("AppNewEntry", () => {
 
     const wrapper = mountOpen();
 
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Blue Lagoon");
 
     await wrapper.find(".location-create__btn").trigger("click");
@@ -655,7 +655,7 @@ describe("AppNewEntry", () => {
     placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
 
     const wrapper = mountOpen();
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Old Harbour");
 
     await wrapper.find(".btn--primary").trigger("click");
@@ -724,7 +724,7 @@ describe("AppNewEntry", () => {
     );
 
     const wrapper = mountOpen();
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Blue Lagoon");
 
     const button = wrapper.find(".location-create__btn");
@@ -751,7 +751,7 @@ describe("AppNewEntry", () => {
     );
 
     const wrapper = mountOpen();
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Blue Lagoon");
     await wrapper.find(".location-create__btn").trigger("click");
 
@@ -781,7 +781,7 @@ describe("AppNewEntry", () => {
     });
 
     const wrapper = mountOpen();
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     // Sloppy whitespace: the persisted body must be canonicalized.
     await locationInput.setValue("  Blue   Lagoon  ");
 
@@ -801,7 +801,7 @@ describe("AppNewEntry", () => {
     mockCreatePlace.mockRejectedValue(new Error("Place limit reached"));
 
     const wrapper = mountOpen();
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Blue Lagoon");
 
     await wrapper.find(".btn--primary").trigger("click");
@@ -818,7 +818,7 @@ describe("AppNewEntry", () => {
     mockCreatePlace.mockRejectedValue(new Error("Place limit reached"));
 
     const wrapper = mountOpen();
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Blue Lagoon");
 
     await wrapper.find(".location-create__btn").trigger("click");
@@ -869,7 +869,7 @@ describe("AppNewEntry", () => {
 
     // The fresh form holds the restored "Blue Lagoon" but shows no stale error
     // (the failed create belonged to the pre-reopen request).
-    const freshLocationInput = wrapper.findAll("input.field__input")[1];
+    const freshLocationInput = wrapper.get('[data-test="location-input"]');
     expect((freshLocationInput.element as HTMLInputElement).value).toBe(
       "Blue Lagoon",
     );
@@ -895,7 +895,7 @@ describe("AppNewEntry", () => {
 
     const wrapper = mountOpen();
     await flushPromises();
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Blue Lagoon");
     // Affordance stays hidden because the list is untrustworthy.
     expect(wrapper.find(".location-create").exists()).toBe(false);
@@ -927,7 +927,7 @@ describe("AppNewEntry", () => {
 
     const wrapper = mountOpen();
     await flushPromises();
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Blue Lagoon");
 
     await wrapper.find(".btn--primary").trigger("click");
@@ -961,7 +961,7 @@ describe("AppNewEntry", () => {
     }));
 
     const wrapper = mountOpen();
-    const locationInput = wrapper.findAll("input.field__input")[1];
+    const locationInput = wrapper.get('[data-test="location-input"]');
     await locationInput.setValue("Blue Lagoon");
 
     await wrapper.find(".btn--primary").trigger("click");

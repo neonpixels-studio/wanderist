@@ -736,7 +736,6 @@ function buildEntryPayload() {
     body: form.value.body || undefined,
     occurredAt: localDateToIso(form.value.date),
     tripId: form.value.tripId || undefined,
-    placeId: resolvedPlaceId.value || undefined,
     tags: form.value.tags.length ? form.value.tags : undefined,
     photoMediaIds: uploadedPhotos.value.map((photo) => photo.id),
     visibility: form.value.visibility,
