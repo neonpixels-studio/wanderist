@@ -117,6 +117,12 @@
               :key="trip.value"
               class="pick"
               :class="{ 'is-active': form.tripId === trip.value }"
+              :disabled="isTripOptionDisabled(trip.value)"
+              :title="
+                isTripOptionDisabled(trip.value)
+                  ? 'A trip can’t be removed while editing'
+                  : undefined
+              "
               @click="selectTrip(trip.value)"
             >
               {{ trip.label }}
@@ -407,15 +413,16 @@ const tripOptions = computed<TripOption[]>(() => {
     value: trip.id,
     label: trip.name,
   }));
-  // Editing can reassign to another trip but cannot detach to None: the PATCH
-  // has no "clear the trip" input (an omitted/empty tripId reads as "leave
-  // unchanged"), so offering None would silently no-op. Omit it while editing
-  // rather than promise an operation the API can't perform.
-  if (isEditing.value) {
-    return options;
-  }
   return [...options, { value: NO_TRIP_VALUE, label: "None" }];
 });
+
+// Editing can reassign to another trip but cannot detach to None: the PATCH has
+// no "clear the trip" input (an omitted/empty tripId reads as "leave
+// unchanged"). Keep None visible so a trip-less entry still shows its state, but
+// disable it while editing rather than promise a detach the API can't perform.
+function isTripOptionDisabled(tripValue: string): boolean {
+  return isEditing.value && tripValue === NO_TRIP_VALUE;
+}
 
 const placeSuggestions = computed<PlaceSuggestion[]>(() =>
   placesStore.places
@@ -546,6 +553,15 @@ watch(
   [() => props.open, () => props.entry?.id ?? null],
   ([isOpen]) => {
     if (!isOpen) {
+      return;
+    }
+
+    // A save reads form state after an await (placesReady) and PATCHes it under
+    // the snapshotted id. Re-seeding mid-save would swap that state out — e.g. a
+    // ⌘K "new entry" nulls props.entry while an edit is in flight — and write the
+    // replacement content over the edited entry. The save closes the drawer on
+    // success, so skipping the re-seed here is safe.
+    if (isPublishing.value) {
       return;
     }
 

@@ -932,28 +932,51 @@ describe("AppNewEntry — edit mode", () => {
     expect(titleInputValue(wrapper)).toBe("");
   });
 
-  it("omits the None trip option in edit mode since the PATCH cannot detach a trip", () => {
+  it("shows the None trip option disabled in edit mode since the PATCH cannot detach a trip", () => {
     tripsStoreTrips.value = [
       { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
     ];
-    const labels = mountEdit()
-      .find(".pill-pick")
-      .findAll(".pick")
-      .map((pick) => pick.text());
-    expect(labels).toContain("Iceland Ring Road");
-    expect(labels).not.toContain("None");
+    const picks = mountEdit().find(".pill-pick").findAll(".pick");
+    const nonePick = picks.find((pick) => pick.text() === "None");
+    expect(nonePick).toBeTruthy();
+    expect(nonePick?.attributes("disabled")).toBeDefined();
+    const tripPick = picks.find((pick) => pick.text() === "Iceland Ring Road");
+    expect(tripPick?.attributes("disabled")).toBeUndefined();
   });
 
-  it("keeps an edit-shaped payload when the entry prop clears mid-save", async () => {
+  it("leaves the None trip option enabled in create mode", () => {
+    tripsStoreTrips.value = [
+      { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
+    ];
+    const nonePick = mountOpen()
+      .find(".pill-pick")
+      .findAll(".pick")
+      .find((pick) => pick.text() === "None");
+    expect(nonePick?.attributes("disabled")).toBeUndefined();
+  });
+
+  it("PATCHes the edited entry's own content when the entry prop clears mid-save", async () => {
     // A slow places fetch keeps publish awaiting inside its try block, giving
     // the parent a window to null the entry (e.g. ⌘K opens a new entry) before
-    // the payload is built. The mode was snapshotted, so a cleared body must
-    // still be sent verbatim rather than dropped as it would be in create shape.
+    // the payload is built. A create-draft is waiting in localStorage, so a
+    // re-seed here would overwrite the edited entry with the draft's content
+    // under the snapshotted id. Both the mode and the form must stay put.
     mockUpdateEntry.mockResolvedValue(SAMPLE_ENTRY);
     mockFetchEntries.mockResolvedValue({
       entries: [],
       tab: "timeline",
       page: 1,
+    });
+    mockLoadDraft.mockReturnValue({
+      title: "Unrelated draft",
+      body: "draft body",
+      location: "",
+      tripId: "",
+      date: "2026-01-01",
+      visibility: "private",
+      tags: ["draft-tag"],
+      weather: "",
+      uploadedPhotos: [{ id: "draft-media", url: "" }],
     });
     let settleFirstFetch: () => void = () => {};
     let fetchCalls = 0;
@@ -969,7 +992,6 @@ describe("AppNewEntry — edit mode", () => {
 
     const wrapper = mountEdit();
     await wrapper.get('[data-test="location-input"]').setValue("Somewhere");
-    await wrapper.find("textarea").setValue("");
 
     await wrapper.find(".drawer__foot .btn--primary").trigger("click");
     await wrapper.vm.$nextTick();
@@ -981,10 +1003,13 @@ describe("AppNewEntry — edit mode", () => {
 
     expect(mockUpdateEntry).toHaveBeenCalledOnce();
     expect(mockCreateEntry).not.toHaveBeenCalled();
-    const [, payload] = mockUpdateEntry.mock.calls[0] as [
+    const [id, payload] = mockUpdateEntry.mock.calls[0] as [
       string,
       Record<string, unknown>,
     ];
-    expect(payload.body).toBe("");
+    // The edited entry's own content must reach the PATCH, never the draft's.
+    expect(id).toBe("entry-1");
+    expect(payload.title).toBe("Harbor at 4am");
+    expect(payload.photoMediaIds).toEqual(["media-1"]);
   });
 });
