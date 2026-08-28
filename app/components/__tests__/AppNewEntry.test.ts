@@ -667,6 +667,52 @@ describe("AppNewEntry", () => {
     expect(mockCreatePlace).not.toHaveBeenCalled();
   });
 
+  it("reuses the first saved place (not a new duplicate) when two share the typed name", async () => {
+    stubSuccessfulPublish();
+    placesStorePlaces.value = [
+      { id: "p-1", name: "Old Town" },
+      { id: "p-2", name: "Old Town" },
+    ];
+
+    const wrapper = mountOpen();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Town");
+
+    const callArg = await publishAndReadPayload(wrapper);
+    // Ambiguous by name: deliberately reuse the first saved match rather than
+    // minting a duplicate place.
+    expect(callArg.placeId).toBe("p-1");
+    expect(mockCreatePlace).not.toHaveBeenCalled();
+  });
+
+  it("creates only one entry when publish is double-clicked", async () => {
+    placesStorePlaces.value = [];
+    let resolveEntry: (entry: { id: string }) => void = () => {};
+    mockCreateEntry.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveEntry = () => resolve({ id: "new-entry-1" });
+        }),
+    );
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+
+    const wrapper = mountOpen();
+    const publishButton = wrapper.find(".btn--primary");
+    // Fire both clicks before awaiting either, so :disabled hasn't flushed and
+    // only the synchronous isPublishing guard can stop the second entry.
+    const firstClick = publishButton.trigger("click");
+    const secondClick = publishButton.trigger("click");
+    await Promise.all([firstClick, secondClick]);
+
+    resolveEntry({ id: "new-entry-1" });
+    await flushPromises();
+
+    expect(mockCreateEntry).toHaveBeenCalledTimes(1);
+  });
+
   it("creates only one place when the create button is double-clicked", async () => {
     placesStorePlaces.value = [];
     let resolveCreate: (place: { id: string; name: string }) => void = () => {};
