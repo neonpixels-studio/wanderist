@@ -153,6 +153,42 @@ describe("PATCH /api/places/:id", () => {
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
+  it("persists NULL when the category is cleared to an empty string", async () => {
+    const updatedPlace = { id: "place-1", userId: "user-1", category: null };
+    mockRequireRouterParam.mockReturnValue("place-1");
+    mockReadBody.mockResolvedValue({ category: "" });
+    mockAssertOwnership.mockResolvedValue(undefined);
+
+    const returningMock = vi.fn().mockResolvedValue([updatedPlace]);
+    const whereMock = vi.fn().mockReturnValue({ returning: returningMock });
+    const setMock = vi.fn().mockReturnValue({ where: whereMock });
+    const mockDb = { update: vi.fn().mockReturnValue({ set: setMock }) };
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    await (defaultHandler as (event: unknown) => unknown)({});
+
+    expect(setMock).toHaveBeenCalledWith({ category: null });
+  });
+
+  it("persists NULL when a cleared field is whitespace-only", async () => {
+    const updatedPlace = { id: "place-1", userId: "user-1", category: null };
+    mockRequireRouterParam.mockReturnValue("place-1");
+    mockReadBody.mockResolvedValue({ category: "   " });
+    mockAssertOwnership.mockResolvedValue(undefined);
+
+    const returningMock = vi.fn().mockResolvedValue([updatedPlace]);
+    const whereMock = vi.fn().mockReturnValue({ returning: returningMock });
+    const setMock = vi.fn().mockReturnValue({ where: whereMock });
+    const mockDb = { update: vi.fn().mockReturnValue({ set: setMock }) };
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+    await (defaultHandler as (event: unknown) => unknown)({});
+
+    expect(setMock).toHaveBeenCalledWith({ category: null });
+  });
+
   it("throws 400 when name is an empty string", async () => {
     mockRequireRouterParam.mockReturnValue("place-1");
     mockReadBody.mockResolvedValue({ name: "   " });

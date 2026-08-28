@@ -127,23 +127,35 @@ async function repairLikeCount<T extends Record<string, unknown>>(
   return row as T;
 }
 
+export interface LikeResult<T> {
+  content: T;
+  // Whether this call inserted a new like row. False when the user had already
+  // liked the content and the ON CONFLICT DO NOTHING was a no-op. Lets callers
+  // notify the author exactly once instead of on every repeated like.
+  created: boolean;
+}
+
 /**
  * Records a like idempotently (ON CONFLICT DO NOTHING on the composite PK) and
- * returns the parent row with its repaired count. Safe to call repeatedly for
- * the same (content, user) pair — the count stays at exactly one.
+ * returns the parent row with its repaired count plus whether this call created
+ * a new like. Safe to call repeatedly for the same (content, user) pair — the
+ * count stays at exactly one and `created` is false after the first like.
  */
 export async function likeContent<T extends Record<string, unknown>>(
   database: Database,
   config: LikeableConfig,
   contentId: string,
   userId: string,
-): Promise<T> {
-  await database
+): Promise<LikeResult<T>> {
+  const inserted = await database
     .insert(config.likeTable)
     .values({ [config.contentKey]: contentId, userId })
-    .onConflictDoNothing();
+    .onConflictDoNothing()
+    .returning({ userId: config.likeUserColumn });
 
-  return repairLikeCount<T>(database, config, contentId);
+  const content = await repairLikeCount<T>(database, config, contentId);
+
+  return { content, created: inserted.length > 0 };
 }
 
 /**

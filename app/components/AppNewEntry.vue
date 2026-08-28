@@ -71,7 +71,9 @@
             <AppIcon name="instagram" :size="13" style="vertical-align: -2px" />
             Instagram.
           </p>
-          <p v-if="uploadError" class="error-hint">{{ uploadError }}</p>
+          <p v-if="uploadError" class="error-hint" data-test="upload-error">
+            {{ uploadError }}
+          </p>
         </div>
 
         <!-- Title -->
@@ -98,22 +100,13 @@
         </div>
 
         <!-- Location -->
-        <div class="field">
-          <label class="field__label">Location</label>
-          <div class="field__wrap">
-            <input v-model="form.location" class="field__input" />
-            <span class="field__icon"><AppIcon name="pin" :size="16" /></span>
-          </div>
-          <div v-if="locationSuggestions.length" class="chip-suggest">
-            <span
-              v-for="suggestion in locationSuggestions"
-              :key="suggestion"
-              class="chip"
-              @click="form.location = suggestion"
-              >{{ suggestion }}</span
-            >
-          </div>
-        </div>
+        <AppNewEntryLocationField
+          v-model="form.location"
+          :suggestions="placeSuggestions"
+          :will-not-save="locationWillNotSave"
+          :places-unavailable="placesUnavailable"
+          @select="selectPlace"
+        />
 
         <!-- Trip -->
         <div class="field">
@@ -211,7 +204,9 @@
           </div>
         </div>
 
-        <p v-if="publishError" class="error-hint">{{ publishError }}</p>
+        <p v-if="publishError" class="error-hint" data-test="publish-error">
+          {{ publishError }}
+        </p>
       </div>
 
       <footer class="drawer__foot">
@@ -248,6 +243,7 @@
 import { ref, computed, watch } from "vue";
 import type { Trip } from "~/stores/trips";
 import type { Entry } from "~/stores/entries";
+import AppNewEntryLocationField from "~/components/AppNewEntryLocationField.vue";
 
 const MAX_LOCATION_SUGGESTIONS = 5;
 
@@ -262,6 +258,11 @@ const NO_TRIP_VALUE = "";
 interface TripOption {
   value: string;
   label: string;
+}
+
+interface PlaceSuggestion {
+  id: string;
+  name: string;
 }
 
 interface FormState {
@@ -351,8 +352,20 @@ function buildInitialForm(trips: Trip[]): FormState {
 
 const form = ref<FormState>(buildInitialForm(tripsStore.tripList));
 
+// The place the user explicitly picked from the suggestions, if any. Held
+// separately from the free-text location so a chip choice survives even when
+// two places share a name (resolving by name alone couldn't disambiguate).
+const selectedPlace = ref<PlaceSuggestion | null>(null);
+
+// Resolves once the places prefetch for this open has settled. `publish` awaits
+// it before reading `resolvedPlaceId` so a location typed during the cold-store
+// load window is not dropped for want of a loaded list. Stays already-resolved
+// when the store was warm, so a warm publish never waits.
+const placesReady = ref<Promise<unknown>>(Promise.resolve());
+
 function applyFreshForm(): void {
   form.value = buildInitialForm(tripsStore.tripList);
+  selectedPlace.value = null;
   uploadedPhotos.value = [];
   if (form.value.tripId !== NO_TRIP_VALUE) {
     tripDefaulted.value = true;
@@ -394,11 +407,70 @@ const tripOptions = computed<TripOption[]>(() => {
   return [...options, { value: NO_TRIP_VALUE, label: "None" }];
 });
 
-const locationSuggestions = computed<string[]>(() =>
+const placeSuggestions = computed<PlaceSuggestion[]>(() =>
   placesStore.places
-    .map((place) => place.name)
+    .map((place) => ({ id: place.id, name: place.name }))
     .slice(0, MAX_LOCATION_SUGGESTIONS),
 );
+
+// An explicit chip choice is honoured while the text still names it, but only
+// as long as the place still exists: once places load, a chosen id absent from
+// the list (place deleted, or a draft from another user) must not be trusted —
+// the server would reject it — so we fall back to name resolution instead.
+function chosenMatchesLocation(place: PlaceSuggestion): boolean {
+  if (normalizeName(form.value.location) !== normalizeName(place.name)) {
+    return false;
+  }
+  if (!placesStore.places.length) {
+    return true;
+  }
+  return placesStore.places.some((candidate) => candidate.id === place.id);
+}
+
+// The place id this entry will actually be saved with. Derived reactively so
+// it stays correct as `placesStore.places` loads: an explicit chip choice wins
+// while it holds, otherwise the typed location is resolved by name against the
+// loaded places (empty when it matches none).
+const resolvedPlaceId = computed<string>(() => {
+  const chosen = selectedPlace.value;
+  if (chosen && chosenMatchesLocation(chosen)) {
+    return chosen.id;
+  }
+  return resolvePlaceId(form.value.location) ?? "";
+});
+
+// True once the user has typed a non-empty location that resolves to no saved
+// place: it has no placeId to persist, so warn instead of silently dropping
+// it. Suppressed while places are still loading, and while a load failure left
+// us with no places at all — a load problem must not read as a user data
+// problem. A stale error alongside a populated list still warns.
+const locationWillNotSave = computed<boolean>(() => {
+  if (!form.value.location.trim()) {
+    return false;
+  }
+  if (resolvedPlaceId.value) {
+    return false;
+  }
+  if (placesStore.isLoading) {
+    return false;
+  }
+  return !(placesStore.error && !placesStore.places.length);
+});
+
+// The places list failed to load entirely, so a typed location cannot be
+// matched. Distinct from `locationWillNotSave` (a real "no such place") — this
+// is a load failure, surfaced so the drop is not silent rather than blaming
+// the user's input.
+const placesUnavailable = computed<boolean>(
+  () => Boolean(placesStore.error) && !placesStore.places.length,
+);
+
+// Picking a suggestion captures the place directly, so the entry is attached
+// to exactly the place the user chose even when place names collide.
+function selectPlace(place: PlaceSuggestion): void {
+  form.value.location = place.name;
+  selectedPlace.value = place;
+}
 
 function selectTrip(tripId: string): void {
   form.value.tripId = tripId;
@@ -426,6 +498,12 @@ function applyDraftOrFreshForm(): void {
     tags: draft.tags,
     weather: draft.weather,
   };
+  // Restore the saved place choice so it survives the round-trip. A draft
+  // written before placeId existed has none; `resolvedPlaceId` then falls
+  // back to resolving the name once places load.
+  selectedPlace.value = draft.placeId
+    ? { id: draft.placeId, name: draft.location }
+    : null;
   uploadedPhotos.value = draft.uploadedPhotos ?? [];
   // Treat a restored draft's tripId as already-defaulted so it is preserved
   tripDefaulted.value = true;
@@ -436,9 +514,15 @@ function ensureReferenceData(): void {
     tripsStore.fetchTrips();
   }
 
-  if (!placesStore.places.length) {
-    placesStore.fetchPlaces();
+  if (placesStore.places.length) {
+    placesReady.value = Promise.resolve();
+    return;
   }
+
+  // Non-fatal: the store records its own error; suggestions just won't appear.
+  // Caught so the fetch never surfaces an unhandled rejection. Held so publish
+  // can await it before resolving the location's placeId.
+  placesReady.value = placesStore.fetchPlaces().catch(() => {});
 }
 
 // Keyed on the entry's identity (id) as well as open: the drawer is a single
@@ -538,7 +622,11 @@ async function handleFileChange(event: Event): Promise<void> {
 }
 
 function handleSaveDraft(): void {
-  saveDraft({ ...form.value, uploadedPhotos: uploadedPhotos.value });
+  saveDraft({
+    ...form.value,
+    placeId: resolvedPlaceId.value,
+    uploadedPhotos: uploadedPhotos.value,
+  });
 }
 
 function localDateToIso(dateString: string): string | undefined {
@@ -552,11 +640,36 @@ function localDateToIso(dateString: string): string | undefined {
   return new Date(year, month - 1, day).toISOString();
 }
 
+function normalizeName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+// The entries API models a place only by `placeId` (an FK to an existing
+// place), not as free-text — so a location the user typed can only be
+// persisted when it names a place they already have. Resolve the location
+// text to that place's id here; unmatched free text has nowhere to go.
+// A name shared by two places is ambiguous, so refuse to guess and return
+// undefined rather than attaching the entry to an arbitrary one.
+function resolvePlaceId(locationName: string): string | undefined {
+  const normalized = normalizeName(locationName);
+  if (!normalized) {
+    return undefined;
+  }
+  const matches = placesStore.places.filter(
+    (place) => normalizeName(place.name) === normalized,
+  );
+  if (matches.length !== 1) {
+    return undefined;
+  }
+  return matches[0].id;
+}
+
 function buildEntryPayload() {
   const shared = {
     title: form.value.title,
     occurredAt: localDateToIso(form.value.date),
     tripId: form.value.tripId || undefined,
+    placeId: resolvedPlaceId.value || undefined,
     photoMediaIds: uploadedPhotos.value.map((photo) => photo.id),
     visibility: form.value.visibility,
   };
@@ -610,6 +723,12 @@ async function publish(): Promise<void> {
   publishError.value = null;
 
   try {
+    // A location typed during the cold-store load window can only resolve to a
+    // placeId once the list arrives, so wait for it before building the payload.
+    if (form.value.location.trim()) {
+      await placesReady.value;
+    }
+
     await persistEntry(editedEntryId);
 
     // Close first: once the entry is saved, the drawer should close regardless

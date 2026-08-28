@@ -1,0 +1,10 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`AppNewEntryLocationField > renders without crashing and matches snapshot 1`] = `
+"<div class="field"><label class="field__label">Location</label>
+  <div class="field__wrap"><input class="field__input" data-test="location-input" value="Old"><span class="field__icon"><svg data-icon="" name="pin" size="16"></svg></span></div>
+  <div class="chip-suggest"><span class="chip">Old Harbour</span><span class="chip">Lisbon</span></div>
+  <!--v-if-->
+  <!--v-if-->
+</div>"
+`;

@@ -14,6 +14,10 @@ export interface EntryDraft {
   title: string;
   body: string;
   location: string;
+  // Id of the saved place the location resolves to; empty for free text with
+  // no matching place. Optional so drafts written before this field existed
+  // still parse.
+  placeId?: string;
   tripId: string;
   date: string;
   visibility: "private" | "public";

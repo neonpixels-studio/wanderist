@@ -7,6 +7,7 @@ import {
   likeContent,
   loadLikeableOrThrow,
 } from "../../../utils/like-helpers";
+import { notifyAuthorOfLike } from "../../../utils/notification-helpers";
 
 type EntryRow = typeof entries.$inferSelect;
 
@@ -15,14 +16,27 @@ export default defineEventHandler(async (event) => {
   const userId = requireUser(event);
   const database = getDb();
 
-  await loadLikeableOrThrow(database, ENTRY_LIKEABLE, id, userId);
-
-  const updated = await likeContent<EntryRow>(
+  const entry = await loadLikeableOrThrow<EntryRow>(
     database,
     ENTRY_LIKEABLE,
     id,
     userId,
   );
 
-  return { id, likeCount: updated.likeCount, likedByCurrentUser: true };
+  const { content, created } = await likeContent<EntryRow>(
+    database,
+    ENTRY_LIKEABLE,
+    id,
+    userId,
+  );
+
+  if (created) {
+    await notifyAuthorOfLike({
+      authorId: entry.userId,
+      likerId: userId,
+      contentType: "entry",
+    });
+  }
+
+  return { id, likeCount: content.likeCount, likedByCurrentUser: true };
 });

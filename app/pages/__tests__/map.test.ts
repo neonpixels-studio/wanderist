@@ -3,6 +3,7 @@ import { ref, computed } from "vue";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import MapPage from "../map.vue";
+import PlaceEditForm from "~/components/PlaceEditForm.vue";
 import { pageGlobalConfig as globalConfig } from "./test-utils";
 
 const mockMapStats = ref({
@@ -144,6 +145,9 @@ async function mountWithPlaces(places = SAMPLE_PLACES) {
     global: {
       ...globalConfig.global,
       plugins: [pinia],
+      // PlaceEditForm is a Nuxt components/ auto-import that plain Vitest can't
+      // resolve; register the real component so the edit-form wiring renders.
+      components: { PlaceEditForm },
     },
   });
 
@@ -309,6 +313,65 @@ describe("Map page (/map)", () => {
     await dropPinButton.trigger("click");
     // hasToken() returns false so onDropPin returns early
     expect(mockStartDropPin).not.toHaveBeenCalled();
+  });
+
+  it("does not show the edit form until the edit button is clicked", async () => {
+    const wrapper = await mountWithPlaces();
+    await wrapper.findAll(".place-item")[0].trigger("click");
+    expect(wrapper.find(".place-edit-form").exists()).toBe(false);
+
+    await wrapper.find('button[aria-label="Edit place"]').trigger("click");
+    expect(wrapper.find(".place-edit-form").exists()).toBe(true);
+  });
+
+  it("PATCHes the place and refreshes the detail card on save", async () => {
+    const wrapper = await mountWithPlaces();
+    await wrapper.findAll(".place-item")[0].trigger("click");
+    await wrapper.find('button[aria-label="Edit place"]').trigger("click");
+
+    const updated = {
+      ...SAMPLE_PLACES[0],
+      name: "Reykjavík",
+      category: "nature",
+    };
+    mockApiFetch.mockResolvedValueOnce(updated);
+
+    await wrapper.find(".place-edit-form__select").setValue("nature");
+    await wrapper.find(".place-edit-form form").trigger("submit");
+    await flushPromises();
+
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/places/p-1", {
+      method: "PATCH",
+      body: { category: "nature" },
+    });
+    expect(wrapper.find(".place-edit-form").exists()).toBe(false);
+    // The detail card reflects the response returned by the store.
+    expect(wrapper.find(".detail__name").text()).toBe("Reykjavík");
+  });
+
+  it("renders the update error and keeps the form open when the PATCH fails", async () => {
+    const wrapper = await mountWithPlaces();
+    await wrapper.findAll(".place-item")[0].trigger("click");
+    await wrapper.find('button[aria-label="Edit place"]').trigger("click");
+
+    mockApiFetch.mockRejectedValueOnce(new Error("Save failed"));
+
+    await wrapper.find(".place-edit-form__select").setValue("nature");
+    await wrapper.find(".place-edit-form form").trigger("submit");
+    await flushPromises();
+
+    expect(wrapper.find(".place-edit-form__error").text()).toBe("Save failed");
+    expect(wrapper.find(".place-edit-form").exists()).toBe(true);
+  });
+
+  it("closes the edit form when a different place is selected", async () => {
+    const wrapper = await mountWithPlaces();
+    await wrapper.findAll(".place-item")[0].trigger("click");
+    await wrapper.find('button[aria-label="Edit place"]').trigger("click");
+    expect(wrapper.find(".place-edit-form").exists()).toBe(true);
+
+    await wrapper.findAll(".place-item")[1].trigger("click");
+    expect(wrapper.find(".place-edit-form").exists()).toBe(false);
   });
 
   it("shows places error alert when fetchPlaces fails", async () => {

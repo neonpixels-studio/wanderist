@@ -109,6 +109,81 @@ describe("auth middleware", () => {
     });
   });
 
+  it("lets an anonymous GET on a single trip through without verifying a token", async () => {
+    const event = makeEvent({ path: "/api/trips/trip-1", headers: {} });
+
+    await runMiddleware(event);
+
+    expect(event.context.userId).toBeUndefined();
+    expect(mockVerifyClerkToken).not.toHaveBeenCalled();
+  });
+
+  it("identifies the owner on a single-trip GET when a valid token is present", async () => {
+    mockVerifyClerkToken.mockResolvedValue(RESOLVED_USER);
+    const event = makeEvent({
+      path: "/api/trips/trip-1",
+      headers: { authorization: "Bearer good" },
+    });
+
+    await runMiddleware(event);
+
+    expect(event.context.userId).toBe(RESOLVED_USER);
+  });
+
+  it("rejects a present-but-invalid token on a single-trip GET with 401", async () => {
+    mockVerifyClerkToken.mockRejectedValue(new Error("bad token"));
+    const event = makeEvent({
+      path: "/api/trips/trip-1",
+      headers: { authorization: "Bearer bad" },
+    });
+
+    await expect(runMiddleware(event)).rejects.toMatchObject({
+      statusCode: 401,
+    });
+    expect(event.context.userId).toBeUndefined();
+  });
+
+  it("still requires a token on the owner-only trips collection", async () => {
+    const event = makeEvent({ path: "/api/trips", headers: {} });
+
+    await expect(runMiddleware(event)).rejects.toMatchObject({
+      statusCode: 401,
+    });
+  });
+
+  it("still requires a token on a trip sub-resource like /stops", async () => {
+    const event = makeEvent({
+      path: "/api/trips/trip-1/stops",
+      method: "POST",
+      headers: {},
+    });
+
+    await expect(runMiddleware(event)).rejects.toMatchObject({
+      statusCode: 401,
+    });
+  });
+
+  it("still requires a token for a non-GET method on a single trip", async () => {
+    const event = makeEvent({
+      path: "/api/trips/trip-1",
+      method: "PATCH",
+      headers: {},
+    });
+
+    await expect(runMiddleware(event)).rejects.toMatchObject({
+      statusCode: 401,
+    });
+  });
+
+  it("matches the optional-auth trip route even with a trailing slash", async () => {
+    const event = makeEvent({ path: "/api/trips/trip-1/", headers: {} });
+
+    await runMiddleware(event);
+
+    expect(event.context.userId).toBeUndefined();
+    expect(mockVerifyClerkToken).not.toHaveBeenCalled();
+  });
+
   it("matches the optional-auth route even with a query string", async () => {
     const event = makeEvent({
       path: "/api/guides/guide-1?foo=bar",
