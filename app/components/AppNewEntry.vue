@@ -330,9 +330,9 @@ let placesLoadToken = 0;
 // Monotonic token: bumped when a create starts and when the drawer reopens. A
 // resolved place-create whose drawer has since been reset compares tokens to
 // detect it is stale and skip writing its saved name back or resetting the
-// isCreatingPlace flag on a fresh form. (The inline error message is guarded by
-// name equality instead, since a stale error is only wrong once the field has
-// moved off the name it was raised for.)
+// isCreatingPlace flag on a fresh form. The inline error message uses the same
+// check (isCurrentCreate: token AND name), so a create rejected after a reopen
+// that restored its exact name still can't stamp a stale error on the fresh form.
 let activeCreateToken = 0;
 
 // Normalized name of an in-flight place POST, or null. Survives a reopen (which
@@ -436,17 +436,16 @@ const matchedPlace = computed<Place | null>(() =>
   findSavedPlace(form.value.location),
 );
 
-// The user typed a location that matches nothing we know about. Drives the
-// publish path (a typed location must be persisted, never silently dropped) and
-// is independent of list trustworthiness.
+// The user typed a location that matches nothing we know about. Gates the
+// inline-create affordance; it is independent of list trustworthiness.
 const hasUnsavedLocation = computed<boolean>(
   () => trimmedLocation.value.length > 0 && matchedPlace.value === null,
 );
 
 // Offer the inline affordance only when the places list is trustworthy: a
 // not-yet-fetched or failed-to-fetch list can't back the "no saved place
-// matches" claim, so hide the button (publish still persists via
-// hasUnsavedLocation, so nothing is lost).
+// matches" claim, so hide the button (publish still persists the typed location
+// via resolveOrCreatePlaceId, so nothing is lost).
 const canCreatePlace = computed<boolean>(
   () =>
     hasUnsavedLocation.value &&
@@ -692,7 +691,12 @@ async function runCreatePlace(
     }
     return created;
   } finally {
-    pendingCreateName = null;
+    // Only clear the marker this call set: an overlapping create for a different
+    // name may own it now, and nulling it unconditionally would leave that one
+    // unguarded against a duplicate POST.
+    if (pendingCreateName === normalizePlaceName(name)) {
+      pendingCreateName = null;
+    }
     if (requestToken === activeCreateToken) {
       isCreatingPlace.value = false;
     }
