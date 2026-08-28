@@ -62,7 +62,9 @@
             <AppIcon name="instagram" :size="13" style="vertical-align: -2px" />
             Instagram.
           </p>
-          <p v-if="uploadError" class="error-hint">{{ uploadError }}</p>
+          <p v-if="uploadError" class="error-hint" data-test="upload-error">
+            {{ uploadError }}
+          </p>
         </div>
 
         <!-- Title -->
@@ -92,16 +94,20 @@
         <div class="field">
           <label class="field__label">Location</label>
           <div class="field__wrap">
-            <input v-model="form.location" class="field__input" />
+            <input
+              v-model="form.location"
+              class="field__input"
+              data-test="location-input"
+            />
             <span class="field__icon"><AppIcon name="pin" :size="16" /></span>
           </div>
-          <div v-if="locationSuggestions.length" class="chip-suggest">
+          <div v-if="placeSuggestions.length" class="chip-suggest">
             <span
-              v-for="suggestion in locationSuggestions"
-              :key="suggestion"
+              v-for="place in placeSuggestions"
+              :key="place.id"
               class="chip"
-              @click="form.location = suggestion"
-              >{{ suggestion }}</span
+              @click="selectPlace(place)"
+              >{{ place.name }}</span
             >
           </div>
           <div v-if="canCreatePlace" class="location-create">
@@ -225,7 +231,9 @@
           </div>
         </div>
 
-        <p v-if="publishError" class="error-hint">{{ publishError }}</p>
+        <p v-if="publishError" class="error-hint" data-test="publish-error">
+          {{ publishError }}
+        </p>
       </div>
 
       <footer class="drawer__foot">
@@ -275,6 +283,11 @@ const NO_TRIP_VALUE = "";
 interface TripOption {
   value: string;
   label: string;
+}
+
+interface PlaceSuggestion {
+  id: string;
+  name: string;
 }
 
 interface FormState {
@@ -356,8 +369,14 @@ function buildInitialForm(trips: Trip[]): FormState {
 
 const form = ref<FormState>(buildInitialForm(tripsStore.tripList));
 
+// The place the user explicitly picked from the suggestions, if any. Held
+// separately from the free-text location so a chip choice survives even when
+// two places share a name (resolving by name alone couldn't disambiguate).
+const selectedPlace = ref<PlaceSuggestion | null>(null);
+
 function applyFreshForm(): void {
   form.value = buildInitialForm(tripsStore.tripList);
+  selectedPlace.value = null;
   uploadedPhotos.value = [];
   if (form.value.tripId !== NO_TRIP_VALUE) {
     tripDefaulted.value = true;
@@ -372,9 +391,9 @@ const tripOptions = computed<TripOption[]>(() => {
   return [...options, { value: NO_TRIP_VALUE, label: "None" }];
 });
 
-const locationSuggestions = computed<string[]>(() =>
+const placeSuggestions = computed<PlaceSuggestion[]>(() =>
   placesStore.places
-    .map((place) => place.name)
+    .map((place) => ({ id: place.id, name: place.name }))
     .slice(0, MAX_LOCATION_SUGGESTIONS),
 );
 
@@ -435,6 +454,41 @@ const canCreatePlace = computed<boolean>(
     !placesLoadFailed.value,
 );
 
+// An explicit chip choice is honoured while the text still names it, but only
+// as long as the place still exists: once places load, a chosen id absent from
+// the list (place deleted, or a draft from another user) must not be trusted —
+// the server would reject it — so we fall back to name resolution instead.
+function chosenMatchesLocation(place: PlaceSuggestion): boolean {
+  if (
+    normalizePlaceName(form.value.location) !== normalizePlaceName(place.name)
+  ) {
+    return false;
+  }
+  if (!placesStore.places.length) {
+    return true;
+  }
+  return placesStore.places.some((candidate) => candidate.id === place.id);
+}
+
+// The saved place id this entry resolves to synchronously: an explicit chip
+// choice wins while it holds, otherwise the typed location matched by name.
+// Empty when nothing matches yet — publish then creates the typed location
+// inline (see resolveOrCreatePlaceId) so free text is never dropped.
+const resolvedPlaceId = computed<string>(() => {
+  const chosen = selectedPlace.value;
+  if (chosen && chosenMatchesLocation(chosen)) {
+    return chosen.id;
+  }
+  return findSavedPlace(form.value.location)?.id ?? "";
+});
+
+// Picking a suggestion captures the place directly, so the entry is attached
+// to exactly the place the user chose even when place names collide.
+function selectPlace(place: PlaceSuggestion): void {
+  form.value.location = place.name;
+  selectedPlace.value = place;
+}
+
 function selectTrip(tripId: string): void {
   form.value.tripId = tripId;
   // Mark as explicitly chosen so the tripList watch no longer overrides it
@@ -463,6 +517,12 @@ watch(
         tags: draft.tags,
         weather: draft.weather,
       };
+      // Restore the saved place choice so it survives the round-trip. A draft
+      // written before placeId existed has none; `resolvedPlaceId` then falls
+      // back to resolving the name once places load.
+      selectedPlace.value = draft.placeId
+        ? { id: draft.placeId, name: draft.location }
+        : null;
       uploadedPhotos.value = draft.uploadedPhotos ?? [];
       // Treat a restored draft's tripId as already-defaulted so it is preserved
       tripDefaulted.value = true;
@@ -580,7 +640,11 @@ async function handleFileChange(event: Event): Promise<void> {
 }
 
 function handleSaveDraft(): void {
-  saveDraft({ ...form.value, uploadedPhotos: uploadedPhotos.value });
+  saveDraft({
+    ...form.value,
+    placeId: resolvedPlaceId.value,
+    uploadedPhotos: uploadedPhotos.value,
+  });
 }
 
 function localDateToIso(dateString: string): string | undefined {
@@ -668,6 +732,7 @@ function buildEntryPayload() {
     body: form.value.body || undefined,
     occurredAt: localDateToIso(form.value.date),
     tripId: form.value.tripId || undefined,
+    placeId: resolvedPlaceId.value || undefined,
     tags: form.value.tags.length ? form.value.tags : undefined,
     photoMediaIds: uploadedPhotos.value.map((photo) => photo.id),
     visibility: form.value.visibility,
@@ -699,7 +764,9 @@ async function settlePlacesList(): Promise<void> {
 // a mid-flight edit can't drift the name): an already-matched saved place, or one
 // created now so the free text is never dropped. A create failure propagates to
 // publish's catch and blocks the entry.
-async function resolvePlaceId(location: string): Promise<string | undefined> {
+async function resolveOrCreatePlaceId(
+  location: string,
+): Promise<string | undefined> {
   const existing = findSavedPlace(location);
   if (existing) {
     return existing.id;
@@ -743,13 +810,18 @@ async function publish(): Promise<void> {
     const payload = buildEntryPayload();
     const locationSnapshot = form.value.location;
 
-    // Resolve the place id: a typed-but-unsaved location is persisted here so it
-    // attaches to the entry instead of being silently dropped. A failure throws
-    // and is caught below, blocking the entry rather than saving it with the
-    // location lost.
-    const placeId = await resolvePlaceId(locationSnapshot);
+    // Resolve the place id: an explicit chip choice or an exact saved match is
+    // taken synchronously (resolvedPlaceId); otherwise a typed-but-unsaved
+    // location is created inline so it attaches to the entry instead of being
+    // silently dropped. A create failure throws and is caught below, blocking
+    // the entry rather than saving it with the location lost.
+    const placeId =
+      resolvedPlaceId.value || (await resolveOrCreatePlaceId(locationSnapshot));
 
-    await entriesStore.createEntry({ ...payload, placeId });
+    await entriesStore.createEntry({
+      ...payload,
+      placeId: placeId || undefined,
+    });
 
     // Close first: once the entry is created, the drawer should close
     // regardless of whether the list refresh below succeeds.

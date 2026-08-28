@@ -378,10 +378,21 @@ async function handleToggleLike(entry: Entry): Promise<void> {
   }
 }
 
+function viewerLocalDate(): string {
+  // The endpoint keys "on this day" off this local calendar date, so a viewer
+  // far from UTC sees their own day rather than the server's UTC day.
+  const now = new Date();
+  const year = String(now.getFullYear()).padStart(4, "0");
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 async function loadOnThisDay(): Promise<void> {
   try {
     const result = await apiFetch<{ entries: Entry[] }>(
       "/api/entries/on-this-day",
+      { query: { date: viewerLocalDate() } },
     );
     onThisDayEntries.value = Array.isArray(result?.entries)
       ? result.entries

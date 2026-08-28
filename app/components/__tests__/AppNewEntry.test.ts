@@ -319,7 +319,9 @@ describe("AppNewEntry", () => {
     await wrapper.vm.$nextTick();
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.find(".error-hint").text()).toContain("Server error");
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "Server error",
+    );
     expect(wrapper.emitted("close")).toBeFalsy();
   });
 
@@ -329,6 +331,16 @@ describe("AppNewEntry", () => {
     expect(mockSaveDraft).toHaveBeenCalledOnce();
     expect(mockSaveDraft).toHaveBeenCalledWith(
       expect.objectContaining({ uploadedPhotos: expect.any(Array) }),
+    );
+  });
+
+  it("saves the resolved placeId into the draft", async () => {
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    const wrapper = mountOpen();
+    await wrapper.findAll(".chip")[0].trigger("click");
+    await wrapper.find(".btn--ghost").trigger("click");
+    expect(mockSaveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ location: "Old Harbour", placeId: "p-1" }),
     );
   });
 
@@ -369,7 +381,124 @@ describe("AppNewEntry", () => {
     // close should fire even though fetchEntries rejected
     expect(wrapper.emitted("close")).toBeTruthy();
     // and the error should NOT be shown (it is a non-fatal refresh failure)
-    expect(wrapper.find(".error-hint").exists()).toBe(false);
+    expect(wrapper.find('[data-test="publish-error"]').exists()).toBe(false);
+  });
+
+  function stubSuccessfulPublish() {
+    mockCreateEntry.mockResolvedValue({ id: "new-entry-1" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+  }
+
+  async function publishAndReadPayload(
+    wrapper: ReturnType<typeof mountOpen>,
+  ): Promise<Record<string, unknown>> {
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+    return mockCreateEntry.mock.calls[0][0] as Record<string, unknown>;
+  }
+
+  it("sends the selected place's id as placeId when a suggestion is clicked", async () => {
+    stubSuccessfulPublish();
+    placesStorePlaces.value = [
+      { id: "p-1", name: "Old Harbour" },
+      { id: "p-2", name: "Hallgrímskirkja" },
+    ];
+
+    const wrapper = mountOpen();
+    const chips = wrapper.findAll(".chip");
+    await chips[0].trigger("click");
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBe("p-1");
+  });
+
+  it("resolves placeId case-insensitively and ignores surrounding whitespace when typed", async () => {
+    stubSuccessfulPublish();
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+
+    const wrapper = mountOpen();
+    const locationInput = wrapper.get('[data-test="location-input"]');
+    await locationInput.setValue("  old harbour  ");
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBe("p-1");
+  });
+
+  it("does not reuse a previously selected placeId after the location is edited to non-matching text", async () => {
+    stubSuccessfulPublish();
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    mockCreatePlace.mockImplementation(async ({ name }: { name: string }) => ({
+      id: "place-new",
+      name,
+    }));
+
+    const wrapper = mountOpen();
+    await wrapper.findAll(".chip")[0].trigger("click");
+    // User then hand-edits the field to something that is not a saved place.
+    await wrapper.get('[data-test="location-input"]').setValue("Elsewhere");
+
+    const callArg = await publishAndReadPayload(wrapper);
+    // The stale chip id must not ride along; the edited free text is created anew.
+    expect(callArg.placeId).toBe("place-new");
+    expect(mockCreatePlace).toHaveBeenCalledWith({ name: "Elsewhere" });
+  });
+
+  it("carries a restored draft's saved placeId into the publish payload", async () => {
+    stubSuccessfulPublish();
+    mockLoadDraft.mockReturnValue({
+      title: "Restored",
+      body: "",
+      location: "Old Harbour",
+      placeId: "p-9",
+      tripId: "",
+      date: "2026-06-01",
+      visibility: "private",
+      tags: [],
+      weather: "",
+      uploadedPhotos: [],
+    });
+
+    const wrapper = mountOpen();
+    await wrapper.vm.$nextTick();
+
+    const callArg = await publishAndReadPayload(wrapper);
+    expect(callArg.placeId).toBe("p-9");
+  });
+
+  it("does not trust a restored placeId whose place no longer exists and re-creates the typed location", async () => {
+    stubSuccessfulPublish();
+    // The saved place (p-9) is gone; the loaded list has an unrelated place.
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    mockCreatePlace.mockImplementation(async ({ name }: { name: string }) => ({
+      id: "place-new",
+      name,
+    }));
+    mockLoadDraft.mockReturnValue({
+      title: "Restored",
+      body: "",
+      location: "Deleted Spot",
+      placeId: "p-9",
+      tripId: "",
+      date: "2026-06-01",
+      visibility: "private",
+      tags: [],
+      weather: "",
+      uploadedPhotos: [],
+    });
+
+    const wrapper = mountOpen();
+    await wrapper.vm.$nextTick();
+
+    const callArg = await publishAndReadPayload(wrapper);
+    // The dead id is not trusted (the server would reject it); the typed
+    // location is created fresh instead of riding the stale placeId.
+    expect(callArg.placeId).toBe("place-new");
+    expect(mockCreatePlace).toHaveBeenCalledWith({ name: "Deleted Spot" });
   });
 
   it("passes occurredAt derived from the local date string the user chose", async () => {
@@ -832,7 +961,7 @@ describe("AppNewEntry", () => {
     await wrapper.vm.$nextTick();
 
     // Error should be visible
-    expect(wrapper.find(".error-hint").exists()).toBe(true);
+    expect(wrapper.find('[data-test="upload-error"]').exists()).toBe(true);
 
     // Second upload succeeds — error should clear
     const successFile = new File(["ok"], "ok.jpg", { type: "image/jpeg" });
@@ -843,6 +972,6 @@ describe("AppNewEntry", () => {
     await fileInput.trigger("change");
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.find(".error-hint").exists()).toBe(false);
+    expect(wrapper.find('[data-test="upload-error"]').exists()).toBe(false);
   });
 });
