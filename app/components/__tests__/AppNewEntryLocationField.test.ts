@@ -26,8 +26,11 @@ function mountField(props: Record<string, unknown> = {}) {
     props: {
       modelValue: "",
       suggestions: [],
-      willNotSave: false,
-      placesUnavailable: false,
+      canCreatePlace: false,
+      isCreatingPlace: false,
+      createPlaceError: null,
+      placesLoadFailed: false,
+      canonicalLocation: "",
       ...props,
     },
   });
@@ -59,27 +62,53 @@ describe("AppNewEntryLocationField", () => {
     expect(wrapper.emitted("select")?.[0]).toEqual([SUGGESTIONS[0]]);
   });
 
-  it("shows the unsaved-place warning only when willNotSave is true", () => {
+  it("shows the create-place affordance only when canCreatePlace is true", () => {
     expect(
-      mountField({ willNotSave: true })
-        .find('[data-test="location-warning"]')
+      mountField({ canCreatePlace: true, canonicalLocation: "Elsewhere" })
+        .find(".location-create")
         .exists(),
     ).toBe(true);
-    expect(mountField().find('[data-test="location-warning"]').exists()).toBe(
-      false,
-    );
+    expect(mountField().find(".location-create").exists()).toBe(false);
   });
 
-  it("shows the load-error warning only when places are unavailable and a location is typed", () => {
+  it("labels the create button with the canonical location and emits create when clicked", async () => {
+    const wrapper = mountField({
+      canCreatePlace: true,
+      canonicalLocation: "Blue Lagoon",
+    });
+    expect(wrapper.find(".location-create__btn").text()).toContain(
+      "Blue Lagoon",
+    );
+    await wrapper.find(".location-create__btn").trigger("click");
+    expect(wrapper.emitted("create")).toHaveLength(1);
+  });
+
+  it("disables the create button and shows a creating label while a create is in flight", () => {
+    const wrapper = mountField({
+      canCreatePlace: true,
+      isCreatingPlace: true,
+      canonicalLocation: "Blue Lagoon",
+    });
+    const button = wrapper.find(".location-create__btn");
+    expect(button.attributes("disabled")).toBeDefined();
+    expect(button.text()).toContain("creating…");
+  });
+
+  it("shows the create-place error only when one is present", () => {
     expect(
-      mountField({ placesUnavailable: true, modelValue: "Somewhere" })
-        .find('[data-test="places-load-error"]')
+      mountField({ createPlaceError: "Place limit reached" })
+        .find(".location-create__error")
+        .text(),
+    ).toContain("Place limit reached");
+    expect(mountField().find(".location-create__error").exists()).toBe(false);
+  });
+
+  it("shows the load-failure warning only when placesLoadFailed is true", () => {
+    expect(
+      mountField({ placesLoadFailed: true })
+        .find(".places-load__error")
         .exists(),
     ).toBe(true);
-    expect(
-      mountField({ placesUnavailable: true, modelValue: "   " })
-        .find('[data-test="places-load-error"]')
-        .exists(),
-    ).toBe(false);
+    expect(mountField().find(".places-load__error").exists()).toBe(false);
   });
 });

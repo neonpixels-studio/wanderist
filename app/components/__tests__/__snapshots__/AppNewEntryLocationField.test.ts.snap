@@ -6,5 +6,6 @@ exports[`AppNewEntryLocationField > renders without crashing and matches snapsho
   <div class="chip-suggest"><span class="chip">Old Harbour</span><span class="chip">Lisbon</span></div>
   <!--v-if-->
   <!--v-if-->
+  <!--v-if-->
 </div>"
 `;
