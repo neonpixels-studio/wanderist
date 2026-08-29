@@ -3,12 +3,14 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { ref } from "vue";
 import AppNewEntry from "../AppNewEntry.vue";
 import type { EntryDraft } from "~/composables/useEntryDraft";
+import type { Entry } from "~/stores/entries";
 
 const iconStub = { template: "<svg data-icon />" };
 
 // ── Store + composable stubs ──────────────────────────────────────────────────
 
 const mockCreateEntry = vi.fn();
+const mockUpdateEntry = vi.fn();
 const mockFetchEntries = vi.fn();
 const mockFetchTrips = vi.fn();
 const mockFetchPlaces = vi.fn();
@@ -26,6 +28,7 @@ const placesStoreLoading = ref(false);
 
 vi.stubGlobal("useEntriesStore", () => ({
   createEntry: mockCreateEntry,
+  updateEntry: mockUpdateEntry,
   fetchEntries: mockFetchEntries,
   entries: ref([]),
   isLoading: ref(false),
@@ -78,6 +81,47 @@ function mountOpen() {
     props: { open: true },
     ...globalConfig,
   });
+}
+
+const SAMPLE_ENTRY: Entry = {
+  id: "entry-1",
+  userId: "user-1",
+  tripId: null,
+  placeId: null,
+  title: "Harbor at 4am",
+  body: "Cold morning by the water.",
+  occurredAt: "2026-06-12T00:00:00.000Z",
+  visibility: "public",
+  weather: "clear",
+  likeCount: 3,
+  createdAt: "2026-06-12T04:12:00.000Z",
+  updatedAt: "2026-06-12T04:12:00.000Z",
+  photos: [
+    { id: "photo-1", entryId: "entry-1", mediaId: "media-1", sortOrder: 0 },
+  ],
+  tags: [{ id: "tag-1", name: "iceland" }],
+};
+
+function mountEdit(entry: Entry = SAMPLE_ENTRY) {
+  return mount(AppNewEntry, {
+    props: { open: true, entry },
+    ...globalConfig,
+  });
+}
+
+// Mirrors the component's localIsoDate() so the date-fallback assertions stay
+// timezone-stable on any host.
+function localIsoDateString(): string {
+  const now = new Date();
+  const offsetMs = now.getTimezoneOffset() * 60_000;
+  return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10);
+}
+
+function titleInputValue(wrapper: ReturnType<typeof mountEdit>): string {
+  const input = wrapper.find(
+    '.field__input[placeholder="Give this moment a name…"]',
+  );
+  return (input.element as HTMLInputElement).value;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -1018,5 +1062,395 @@ describe("AppNewEntry", () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.find('[data-test="upload-error"]').exists()).toBe(false);
+  });
+});
+
+describe("AppNewEntry — edit mode", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tripsStoreTrips.value = [];
+    placesStorePlaces.value = [];
+    mockLoadDraft.mockReturnValue(null);
+  });
+
+  it("renders the edit header instead of the create header", () => {
+    const wrapper = mountEdit();
+    expect(wrapper.find(".drawer__head h3").text()).toBe("Edit this moment");
+    expect(wrapper.find(".drawer__head .label").text()).toContain("edit entry");
+  });
+
+  it("pre-fills the form fields from the entry", () => {
+    const wrapper = mountEdit();
+    expect(titleInputValue(wrapper)).toBe("Harbor at 4am");
+    expect(wrapper.find(".tags-input").text()).toContain("iceland");
+    const publicButton = wrapper.find(".segmented").findAll("button")[1];
+    expect(publicButton.classes()).toContain("is-active");
+  });
+
+  it("hides the save-draft button in edit mode", () => {
+    const wrapper = mountEdit();
+    expect(wrapper.find(".drawer__foot .btn--ghost").exists()).toBe(false);
+  });
+
+  it("labels the primary action 'save changes' in edit mode", () => {
+    const wrapper = mountEdit();
+    expect(wrapper.find(".drawer__foot .btn--primary").text()).toContain(
+      "save changes",
+    );
+  });
+
+  it("ignores any saved create-draft when editing", () => {
+    mockLoadDraft.mockReturnValue({
+      title: "A different draft",
+      body: "",
+      location: "",
+      tripId: "",
+      date: "2026-01-01",
+      visibility: "private",
+      tags: [],
+      weather: "",
+      uploadedPhotos: [],
+    });
+    const wrapper = mountEdit();
+    expect(titleInputValue(wrapper)).toBe("Harbor at 4am");
+  });
+
+  it("calls updateEntry with the entry id and edited fields and emits close", async () => {
+    mockUpdateEntry.mockResolvedValue({ ...SAMPLE_ENTRY, title: "New title" });
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+
+    const wrapper = mountEdit();
+    const titleInput = wrapper.find(
+      '.field__input[placeholder="Give this moment a name…"]',
+    );
+    await titleInput.setValue("New title");
+
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockUpdateEntry).toHaveBeenCalledOnce();
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+    const [id, payload] = mockUpdateEntry.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(id).toBe("entry-1");
+    expect(payload.title).toBe("New title");
+    expect(wrapper.emitted("close")).toBeTruthy();
+  });
+
+  it("resolves a typed location to an existing saved place id on the update payload", async () => {
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    mockUpdateEntry.mockResolvedValue(SAMPLE_ENTRY);
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+
+    const wrapper = mountEdit();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Harbour");
+
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    const [, payload] = mockUpdateEntry.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    // Editing resolves the place synchronously and never inline-creates one.
+    expect(payload.placeId).toBe("p-1");
+    expect(mockCreatePlace).not.toHaveBeenCalled();
+  });
+
+  it("preserves the entry's existing photos in the update payload", async () => {
+    mockUpdateEntry.mockResolvedValue(SAMPLE_ENTRY);
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+
+    const wrapper = mountEdit();
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    const [, payload] = mockUpdateEntry.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(payload.photoMediaIds).toEqual(["media-1"]);
+  });
+
+  it("does not clear the create-draft when saving an edit", async () => {
+    mockUpdateEntry.mockResolvedValue(SAMPLE_ENTRY);
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+
+    const wrapper = mountEdit();
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockClearDraft).not.toHaveBeenCalled();
+  });
+
+  it("shows an error and keeps the drawer open when updateEntry throws", async () => {
+    mockUpdateEntry.mockRejectedValue(new Error("Update failed"));
+
+    const wrapper = mountEdit();
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".error-hint").text()).toContain("Update failed");
+    expect(wrapper.emitted("close")).toBeFalsy();
+  });
+
+  it("persists cleared body and tags instead of silently reverting them", async () => {
+    mockUpdateEntry.mockResolvedValue(SAMPLE_ENTRY);
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+
+    const wrapper = mountEdit();
+    await wrapper.find("textarea").setValue("");
+    await wrapper.find(".tag-x").trigger("click");
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    const [, payload] = mockUpdateEntry.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(payload.body).toBe("");
+    expect(payload.tags).toEqual([]);
+  });
+
+  it("appends a newly uploaded photo to the entry's existing photos", async () => {
+    mockUpload.mockResolvedValueOnce({
+      id: "new-media",
+      url: "https://example.com/new.jpg",
+    });
+    mockUpdateEntry.mockResolvedValue(SAMPLE_ENTRY);
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+
+    const wrapper = mountEdit();
+    const fileInput = wrapper.find('input[type="file"]');
+    const file = new File(["x"], "new.jpg", { type: "image/jpeg" });
+    Object.defineProperty(fileInput.element, "files", {
+      value: [file],
+      configurable: true,
+    });
+    await fileInput.trigger("change");
+    await wrapper.vm.$nextTick();
+
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    const [, payload] = mockUpdateEntry.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(payload.photoMediaIds).toEqual(["media-1", "new-media"]);
+  });
+
+  it("pre-fills the date input from the entry's occurredAt", () => {
+    const wrapper = mountEdit();
+    const occurred = new Date(SAMPLE_ENTRY.occurredAt as string);
+    const expected = `${occurred.getFullYear()}-${String(
+      occurred.getMonth() + 1,
+    ).padStart(2, "0")}-${String(occurred.getDate()).padStart(2, "0")}`;
+    const dateInput = wrapper.find('input[type="date"]')
+      .element as HTMLInputElement;
+    expect(dateInput.value).toBe(expected);
+  });
+
+  it("re-seeds the form when a different entry is edited while the drawer stays open", async () => {
+    const wrapper = mountEdit();
+    expect(titleInputValue(wrapper)).toBe("Harbor at 4am");
+
+    await wrapper.setProps({
+      entry: { ...SAMPLE_ENTRY, id: "entry-2", title: "Tram 28, again" },
+    });
+
+    expect(titleInputValue(wrapper)).toBe("Tram 28, again");
+  });
+
+  it("falls back to today's date when the entry has no occurredAt", () => {
+    const wrapper = mountEdit({ ...SAMPLE_ENTRY, occurredAt: null });
+    const dateInput = wrapper.find('input[type="date"]')
+      .element as HTMLInputElement;
+    expect(dateInput.value).toBe(localIsoDateString());
+  });
+
+  it("falls back to today's date when occurredAt is unparseable", () => {
+    const wrapper = mountEdit({ ...SAMPLE_ENTRY, occurredAt: "not-a-date" });
+    const dateInput = wrapper.find('input[type="date"]')
+      .element as HTMLInputElement;
+    expect(dateInput.value).toBe(localIsoDateString());
+  });
+
+  it("resets to create mode when the entry prop clears while the drawer stays open", async () => {
+    const wrapper = mountEdit();
+    expect(wrapper.find(".drawer__head h3").text()).toBe("Edit this moment");
+
+    await wrapper.setProps({ entry: null });
+
+    expect(wrapper.find(".drawer__head h3").text()).toBe("Capture a moment");
+    expect(wrapper.find(".drawer__foot .btn--primary").text()).toContain(
+      "publish",
+    );
+    expect(wrapper.find(".drawer__foot .btn--ghost").exists()).toBe(true);
+    expect(titleInputValue(wrapper)).toBe("");
+  });
+
+  it("disables the None trip option when editing an entry that has a trip", () => {
+    tripsStoreTrips.value = [
+      { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
+    ];
+    const picks = mountEdit({ ...SAMPLE_ENTRY, tripId: "trip-1" })
+      .find(".pill-pick")
+      .findAll(".pick");
+    const nonePick = picks.find((pick) => pick.text() === "None");
+    expect(nonePick).toBeTruthy();
+    expect(nonePick?.attributes("disabled")).toBeDefined();
+    const tripPick = picks.find((pick) => pick.text() === "Iceland Ring Road");
+    expect(tripPick?.attributes("disabled")).toBeUndefined();
+  });
+
+  it("leaves the None trip option enabled when editing a trip-less entry", () => {
+    tripsStoreTrips.value = [
+      { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
+    ];
+    const nonePick = mountEdit({ ...SAMPLE_ENTRY, tripId: null })
+      .find(".pill-pick")
+      .findAll(".pick")
+      .find((pick) => pick.text() === "None");
+    expect(nonePick?.attributes("disabled")).toBeUndefined();
+  });
+
+  it("leaves the None trip option enabled in create mode", () => {
+    tripsStoreTrips.value = [
+      { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
+    ];
+    const nonePick = mountOpen()
+      .find(".pill-pick")
+      .findAll(".pick")
+      .find((pick) => pick.text() === "None");
+    expect(nonePick?.attributes("disabled")).toBeUndefined();
+  });
+
+  it("PATCHes the edited entry's own content when the entry prop clears mid-save", async () => {
+    // A slow places fetch keeps publish awaiting inside its try block, giving
+    // the parent a window to null the entry (e.g. ⌘K opens a new entry) before
+    // the payload is built. A create-draft is waiting in localStorage, so a
+    // re-seed here would overwrite the edited entry with the draft's content
+    // under the snapshotted id. Both the mode and the form must stay put.
+    mockUpdateEntry.mockResolvedValue(SAMPLE_ENTRY);
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+    mockLoadDraft.mockReturnValue({
+      title: "Unrelated draft",
+      body: "draft body",
+      location: "",
+      tripId: "",
+      date: "2026-01-01",
+      visibility: "private",
+      tags: ["draft-tag"],
+      weather: "",
+      uploadedPhotos: [{ id: "draft-media", url: "" }],
+    });
+    let settleFirstFetch: () => void = () => {};
+    let fetchCalls = 0;
+    mockFetchPlaces.mockImplementation(() => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        return new Promise<void>((resolve) => {
+          settleFirstFetch = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    const wrapper = mountEdit();
+    await wrapper.get('[data-test="location-input"]').setValue("Somewhere");
+
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.setProps({ entry: null });
+
+    settleFirstFetch();
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockUpdateEntry).toHaveBeenCalledOnce();
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+    const [id, payload] = mockUpdateEntry.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    // The edited entry's own content must reach the PATCH, never the draft's.
+    expect(id).toBe("entry-1");
+    expect(payload.title).toBe("Harbor at 4am");
+    expect(payload.photoMediaIds).toEqual(["media-1"]);
+  });
+
+  it("re-seeds to create mode when a save fails after the entry prop cleared mid-save", async () => {
+    // Same race, but the save rejects. The deferred re-seed must replay so the
+    // drawer catches up to create mode instead of stranding entry A's content
+    // bound to a create-shaped publish (which would duplicate it on retry).
+    mockUpdateEntry.mockRejectedValue(new Error("Update failed"));
+    let settleFirstFetch: () => void = () => {};
+    let fetchCalls = 0;
+    mockFetchPlaces.mockImplementation(() => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) {
+        return new Promise<void>((resolve) => {
+          settleFirstFetch = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    const wrapper = mountEdit();
+    await wrapper.get('[data-test="location-input"]').setValue("Somewhere");
+
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.setProps({ entry: null });
+
+    settleFirstFetch();
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find(".drawer__head h3").text()).toBe("Capture a moment");
+    expect(titleInputValue(wrapper)).toBe("");
+    // The save failed, so the failure must survive the re-seed rather than being
+    // silently cleared when the form catches up to create mode.
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "Update failed",
+    );
   });
 });

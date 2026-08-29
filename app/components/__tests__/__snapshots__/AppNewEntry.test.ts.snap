@@ -6,8 +6,8 @@ exports[`AppNewEntry > renders the drawer when open and matches snapshot 1`] = `
   <aside class="drawer__panel">
     <header class="drawer__head">
       <div>
-        <div class="label">// new entry</div>
-        <h3 class="display" style="font-size: 18px; margin-top: 6px;"> Capture a moment </h3>
+        <div class="label"> // new entry</div>
+        <h3 class="display" style="font-size: 18px; margin-top: 6px;">Capture a moment</h3>
       </div><button class="icon-btn" aria-label="Close"><svg data-icon="" name="x" size="18"></svg></button>
     </header>
     <div class="drawer__body">

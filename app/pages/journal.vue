@@ -78,6 +78,7 @@
               :entry="entry"
               :is-liked="likedEntryIds.has(entry.id)"
               @toggle-like="handleToggleLike"
+              @edit="openEditEntry?.($event)"
             />
           </template>
           <div v-if="dayGroups.length === 0" class="feed-state">
@@ -97,6 +98,7 @@
               :entry="entry"
               :is-liked="likedEntryIds.has(entry.id)"
               @toggle-like="handleToggleLike"
+              @edit="openEditEntry?.($event)"
             />
           </template>
           <div v-if="tripGroups.length === 0" class="feed-state">
@@ -236,7 +238,7 @@ import { computed, inject, onMounted, ref, toRef, watch } from "vue";
 import { useEntriesStore } from "~/stores/entries";
 import { useTripsStore } from "~/stores/trips";
 import type { Trip } from "~/stores/trips";
-import type { Entry } from "~/stores/entries";
+import type { Entry, EditEntryHandler } from "~/stores/entries";
 import { FEED_TABS, useJournalFeed } from "~/composables/useJournalFeed";
 
 definePageMeta({ layout: "app", middleware: "auth" });
@@ -244,6 +246,11 @@ useHead({ title: "Wanderist — Journal" });
 
 const openNewEntry = inject<(() => void) | undefined>(
   "openNewEntry",
+  undefined,
+);
+
+const openEditEntry = inject<EditEntryHandler | undefined>(
+  "openEditEntry",
   undefined,
 );
 

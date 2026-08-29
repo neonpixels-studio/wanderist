@@ -3,18 +3,25 @@
     v-if="open"
     class="drawer new-entry is-open"
     role="dialog"
-    aria-label="New entry"
+    :aria-label="isEditing ? 'Edit entry' : 'New entry'"
   >
     <div class="drawer__scrim" @click="!isPublishing && emit('close')" />
     <aside class="drawer__panel">
       <header class="drawer__head">
         <div>
-          <div class="label">// new entry</div>
+          <div class="label">
+            // {{ isEditing ? "edit entry" : "new entry" }}
+          </div>
           <h3 class="display" style="font-size: 18px; margin-top: 6px">
-            Capture a moment
+            {{ isEditing ? "Edit this moment" : "Capture a moment" }}
           </h3>
         </div>
-        <button class="icon-btn" aria-label="Close" @click="emit('close')">
+        <button
+          class="icon-btn"
+          aria-label="Close"
+          :disabled="isPublishing"
+          @click="emit('close')"
+        >
           <AppIcon name="x" :size="18" />
         </button>
       </header>
@@ -29,10 +36,12 @@
               class="ph dz-thumb"
             >
               <img
+                v-if="photo.url"
                 :src="photo.url"
                 alt=""
                 style="width: 100%; height: 100%; object-fit: cover"
               />
+              <div v-else class="topo" />
             </div>
             <div v-if="uploadedPhotos.length < 2" class="ph dz-thumb">
               <div class="topo" />
@@ -91,49 +100,17 @@
         </div>
 
         <!-- Location -->
-        <div class="field">
-          <label class="field__label">Location</label>
-          <div class="field__wrap">
-            <input
-              v-model="form.location"
-              class="field__input"
-              data-test="location-input"
-            />
-            <span class="field__icon"><AppIcon name="pin" :size="16" /></span>
-          </div>
-          <div v-if="placeSuggestions.length" class="chip-suggest">
-            <span
-              v-for="place in placeSuggestions"
-              :key="place.id"
-              class="chip"
-              @click="selectPlace(place)"
-              >{{ place.name }}</span
-            >
-          </div>
-          <div v-if="canCreatePlace" class="location-create">
-            <span class="location-create__hint"
-              >No saved place matches this location.</span
-            >
-            <button
-              class="btn btn--outline btn--sm location-create__btn"
-              :disabled="isCreatingPlace"
-              @click="handleCreatePlace"
-            >
-              <AppIcon name="plus" :size="12" />
-              {{
-                isCreatingPlace ? "creating…" : `Create “${canonicalLocation}”`
-              }}
-            </button>
-          </div>
-          <p v-if="createPlaceError" class="error-hint location-create__error">
-            {{ createPlaceError }}
-          </p>
-          <p v-if="placesLoadFailed" class="error-hint places-load__error">
-            Couldn't load your saved places, so suggestions and inline creation
-            are unavailable. Your typed location is still saved when you
-            publish.
-          </p>
-        </div>
+        <AppNewEntryLocationField
+          v-model="form.location"
+          :suggestions="placeSuggestions"
+          :can-create-place="canCreatePlace"
+          :is-creating-place="isCreatingPlace"
+          :create-place-error="createPlaceError"
+          :places-load-failed="placesLoadFailed"
+          :canonical-location="canonicalLocation"
+          @select="selectPlace"
+          @create="handleCreatePlace"
+        />
 
         <!-- Trip -->
         <div class="field">
@@ -144,6 +121,12 @@
               :key="trip.value"
               class="pick"
               :class="{ 'is-active': form.tripId === trip.value }"
+              :disabled="isTripOptionDisabled(trip.value)"
+              :title="
+                isTripOptionDisabled(trip.value)
+                  ? 'A trip can’t be removed while editing'
+                  : undefined
+              "
               @click="selectTrip(trip.value)"
             >
               {{ trip.label }}
@@ -238,6 +221,7 @@
 
       <footer class="drawer__foot">
         <button
+          v-if="!isEditing"
           class="btn btn--ghost btn--sm"
           :disabled="isPublishing"
           @click="handleSaveDraft"
@@ -258,7 +242,7 @@
           @click="publish"
         >
           <AppIcon name="check" :size="14" />
-          {{ isPublishing ? "publishing…" : "publish" }}
+          {{ primaryActionLabel }}
         </button>
       </footer>
     </aside>
@@ -268,7 +252,9 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import type { Trip } from "~/stores/trips";
+import type { Entry } from "~/stores/entries";
 import type { Place } from "~/stores/places";
+import AppNewEntryLocationField from "~/components/AppNewEntryLocationField.vue";
 import { localDateToIso } from "~/utils/localDate";
 
 const MAX_LOCATION_SUGGESTIONS = 5;
@@ -302,8 +288,15 @@ interface FormState {
   weather: string;
 }
 
-const props = defineProps<{ open: boolean }>();
+const props = withDefaults(
+  defineProps<{ open: boolean; entry?: Entry | null }>(),
+  { entry: null },
+);
 const emit = defineEmits<{ close: [] }>();
+
+// Truthy-based so it agrees with seedFormForCurrentMode's `if (props.entry)`
+// branch: a null or undefined entry is create mode on both paths.
+const isEditing = computed(() => Boolean(props.entry));
 
 const entriesStore = useEntriesStore();
 const tripsStore = useTripsStore();
@@ -317,6 +310,17 @@ const uploadedPhotos = ref<Array<{ id: string; url: string }>>([]);
 const tagInput = ref("");
 const isPublishing = ref(false);
 const publishError = ref<string | null>(null);
+// A re-seed requested while a save was in flight is deferred, then replayed once
+// the save settles (see the open watcher and publish's finally).
+const reseedPending = ref(false);
+
+const primaryActionLabel = computed(() => {
+  if (isPublishing.value) {
+    return isEditing.value ? "saving…" : "publishing…";
+  }
+  return isEditing.value ? "save changes" : "publish";
+});
+
 const isCreatingPlace = ref(false);
 const createPlaceError = ref<string | null>(null);
 
@@ -340,6 +344,14 @@ let activeCreateToken = 0;
 // resets isCreatingPlace) so the same name can't be created twice concurrently.
 let pendingCreateName: string | null = null;
 
+// Resolves once the places prefetch for this open has settled. `persistEntry`
+// awaits it before resolving a typed location's placeId, so a location entered
+// during the cold-store load window is not dropped for want of a loaded list.
+// Stays already-resolved when the store was warm, so a warm save never waits.
+// Plain non-reactive handle (nothing consumes it reactively), matching the file's
+// other coordination state (placesLoadToken, activeCreateToken, pendingCreateName).
+let placesReady: Promise<unknown> = Promise.resolve();
+
 // One-shot flag: true once the default tripId has been applied, so a later
 // trips-store update does not clobber an explicit "None" selection.
 const tripDefaulted = ref(false);
@@ -348,6 +360,24 @@ function localIsoDate(): string {
   const now = new Date();
   const offsetMs = now.getTimezoneOffset() * 60_000;
   return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10);
+}
+
+// Inverse of localDateToIso: read an entry's stored occurredAt back into the
+// date input's local YYYY-MM-DD, so editing then re-saving round-trips the same
+// calendar date instead of shifting it by the UTC offset.
+function isoToLocalDate(iso: string): string {
+  const date = new Date(iso);
+
+  // A malformed occurredAt would yield "NaN-NaN-NaN", which the date input
+  // silently rejects and blanks; fall back to today so the field stays valid.
+  if (Number.isNaN(date.getTime())) {
+    return localIsoDate();
+  }
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function defaultTripId(trips: Trip[]): string {
@@ -384,6 +414,36 @@ function applyFreshForm(): void {
   }
 }
 
+function buildFormFromEntry(entry: Entry): FormState {
+  return {
+    title: entry.title,
+    body: entry.body ?? "",
+    location: "",
+    tripId: entry.tripId ?? NO_TRIP_VALUE,
+    date: entry.occurredAt ? isoToLocalDate(entry.occurredAt) : localIsoDate(),
+    visibility: entry.visibility,
+    tags: entry.tags.map((tag) => tag.name),
+    weather: entry.weather ?? "",
+  };
+}
+
+// Existing photos carry only a mediaId (no URL on the entry resource), so they
+// seed the uploader with an empty url and render as a placeholder. Keeping them
+// in uploadedPhotos means the save payload preserves them — the PATCH replaces
+// the whole photo set, so dropping them here would silently delete the photos.
+function applyEntryForm(entry: Entry): void {
+  form.value = buildFormFromEntry(entry);
+  uploadedPhotos.value = entry.photos.map((photo) => ({
+    id: photo.mediaId,
+    url: "",
+  }));
+  // Edit opens with an empty location field, so drop any place chosen in a
+  // prior create session — a stale chip choice must not leak into this entry.
+  selectedPlace.value = null;
+  // The entry's trip is an explicit choice; guard it from the trips-load watch.
+  tripDefaulted.value = true;
+}
+
 const tripOptions = computed<TripOption[]>(() => {
   const options = tripsStore.tripList.map((trip) => ({
     value: trip.id,
@@ -391,6 +451,18 @@ const tripOptions = computed<TripOption[]>(() => {
   }));
   return [...options, { value: NO_TRIP_VALUE, label: "None" }];
 });
+
+// Editing can reassign to another trip but cannot detach to None: the PATCH has
+// no "clear the trip" input (an omitted/empty tripId reads as "leave
+// unchanged"). Keep None visible so a trip-less entry still shows its state, but
+// disable it while editing rather than promise a detach the API can't perform.
+function isTripOptionDisabled(tripValue: string): boolean {
+  return (
+    isEditing.value &&
+    tripValue === NO_TRIP_VALUE &&
+    Boolean(props.entry?.tripId)
+  );
+}
 
 const placeSuggestions = computed<PlaceSuggestion[]>(() =>
   placesStore.places
@@ -495,77 +567,120 @@ function selectTrip(tripId: string): void {
   tripDefaulted.value = true;
 }
 
+function applyDraftOrFreshForm(): void {
+  tripDefaulted.value = false;
+
+  const draft = loadDraft();
+
+  if (!draft) {
+    applyFreshForm();
+    return;
+  }
+
+  form.value = {
+    title: draft.title,
+    body: draft.body,
+    location: draft.location,
+    tripId: draft.tripId,
+    date: draft.date,
+    visibility: draft.visibility,
+    tags: draft.tags,
+    weather: draft.weather,
+  };
+  // Restore the saved place choice so it survives the round-trip. A draft
+  // written before placeId existed has none; `resolvedPlaceId` then falls
+  // back to resolving the name once places load.
+  selectedPlace.value = draft.placeId
+    ? { id: draft.placeId, name: draft.location }
+    : null;
+  uploadedPhotos.value = draft.uploadedPhotos ?? [];
+  // Treat a restored draft's tripId as already-defaulted so it is preserved
+  tripDefaulted.value = true;
+}
+
+function ensureReferenceData(): void {
+  if (!tripsStore.tripList.length) {
+    tripsStore.fetchTrips();
+  }
+
+  // Mint the token unconditionally so a reopen that skips the fetch (because the
+  // list is already populated) still invalidates any earlier in-flight load,
+  // stopping its late failure from marking a now-healthy list as failed.
+  placesLoadFailed.value = false;
+  const loadToken = (placesLoadToken += 1);
+  if (placesStore.places.length) {
+    placesReady = Promise.resolve();
+    return;
+  }
+
+  const fetchPromise = placesStore.fetchPlaces();
+  // Track load failure locally so the affordance can hide, scoped by token so
+  // only the latest load writes the flag. Publish still persists via the
+  // resolveOrCreatePlaceId path, so a failed load never drops a typed location.
+  // Kept on its own chain, separate from placesReady, so awaiting the load
+  // (persistEntry) costs a single microtask hop rather than this chain too.
+  fetchPromise
+    .then(() => {
+      if (loadToken === placesLoadToken) {
+        placesLoadFailed.value = false;
+      }
+    })
+    .catch(() => {
+      if (loadToken === placesLoadToken) {
+        placesLoadFailed.value = true;
+      }
+    });
+  // Held so persistEntry can await the in-flight load before resolving a placeId.
+  placesReady = fetchPromise.catch(() => {});
+}
+
+// Keyed on the entry's identity (id) as well as open: the drawer is a single
+// shared instance, so switching between create and edit (or between two
+// entries) while it stays open must re-seed the form. Watching only `open`
+// would leave stale edit data in a now-create drawer and let "publish"
+// duplicate the entry being edited. Keying on `id` rather than the object
+// reference means a background refetch that swaps in an equal entry object does
+// not blow away an in-progress edit.
 watch(
-  () => props.open,
-  (isOpen) => {
+  [() => props.open, () => props.entry?.id ?? null],
+  ([isOpen]) => {
     if (!isOpen) {
       return;
     }
 
-    tripDefaulted.value = false;
-
-    const draft = loadDraft();
-
-    if (draft) {
-      form.value = {
-        title: draft.title,
-        body: draft.body,
-        location: draft.location,
-        tripId: draft.tripId,
-        date: draft.date,
-        visibility: draft.visibility,
-        tags: draft.tags,
-        weather: draft.weather,
-      };
-      // Restore the saved place choice so it survives the round-trip. A draft
-      // written before placeId existed has none; `resolvedPlaceId` then falls
-      // back to resolving the name once places load.
-      selectedPlace.value = draft.placeId
-        ? { id: draft.placeId, name: draft.location }
-        : null;
-      uploadedPhotos.value = draft.uploadedPhotos ?? [];
-      // Treat a restored draft's tripId as already-defaulted so it is preserved
-      tripDefaulted.value = true;
-    } else {
-      applyFreshForm();
+    // A save reads form state after an await (place resolution) and PATCHes it
+    // under the snapshotted id. Re-seeding mid-save would swap that state out — e.g. a
+    // ⌘K "new entry" nulls props.entry while an edit is in flight — and write the
+    // replacement content over the edited entry. Defer the re-seed and replay it
+    // once the save settles, so the (rare) error path doesn't strand the drawer
+    // in a stale mode.
+    if (isPublishing.value) {
+      reseedPending.value = true;
+      return;
     }
 
-    tagInput.value = "";
-    publishError.value = null;
-    uploadError.value = null;
-    createPlaceError.value = null;
-    isCreatingPlace.value = false;
-    activeCreateToken += 1;
-
-    if (!tripsStore.tripList.length) {
-      tripsStore.fetchTrips();
-    }
-
-    // Mint the token unconditionally so a reopen that skips the fetch (because the
-    // list is already populated) still invalidates any earlier in-flight load,
-    // stopping its late failure from marking a now-healthy list as failed.
-    placesLoadFailed.value = false;
-    const loadToken = (placesLoadToken += 1);
-    if (!placesStore.places.length) {
-      // Track load failure locally so the affordance can hide, scoped by token so
-      // only the latest load writes the flag. Publish still persists via the
-      // hasUnsavedLocation path, so a failed load never drops a typed location.
-      placesStore
-        .fetchPlaces()
-        .then(() => {
-          if (loadToken === placesLoadToken) {
-            placesLoadFailed.value = false;
-          }
-        })
-        .catch(() => {
-          if (loadToken === placesLoadToken) {
-            placesLoadFailed.value = true;
-          }
-        });
-    }
+    seedFormForCurrentMode();
   },
   { immediate: true },
 );
+
+function seedFormForCurrentMode(): void {
+  // Editing pre-fills from the entry and ignores the create-only draft.
+  if (props.entry) {
+    applyEntryForm(props.entry);
+  } else {
+    applyDraftOrFreshForm();
+  }
+
+  tagInput.value = "";
+  publishError.value = null;
+  uploadError.value = null;
+  createPlaceError.value = null;
+  isCreatingPlace.value = false;
+  activeCreateToken += 1;
+
+  ensureReferenceData();
+}
 
 // Apply a default tripId once trips arrive if none has been set yet
 watch(
@@ -716,19 +831,37 @@ async function handleCreatePlace(): Promise<void> {
   }
 }
 
-// Snapshot the form synchronously (no placeId yet): publish resolves the place
-// id over the network afterwards, and the title/body/tags/photo inputs are not
-// disabled meanwhile, so reading them post-await could capture edits or a reset
-// form. placeId is spread in once resolved.
-function buildEntryPayload() {
-  return {
+// isEdit is passed in rather than read from props.entry: publish() snapshots the
+// mode before awaiting, and the parent can null props.entry mid-save. Reading it
+// live here would misclassify an in-flight edit as a create and drop the
+// verbatim-clear fields, silently reverting the user's deletions. placeId is
+// spread in by persistEntry once resolved, so it is deliberately absent here.
+function buildEntryPayload(isEdit: boolean) {
+  const shared = {
     title: form.value.title,
-    body: form.value.body || undefined,
     occurredAt: localDateToIso(form.value.date),
     tripId: form.value.tripId || undefined,
-    tags: form.value.tags.length ? form.value.tags : undefined,
     photoMediaIds: uploadedPhotos.value.map((photo) => photo.id),
     visibility: form.value.visibility,
+  };
+
+  // Editing sends body/weather/tags verbatim so clearing a field actually
+  // persists the clear ("" / []); the PATCH route treats an omitted key as
+  // "leave unchanged", which would silently revert a deletion. The create path
+  // keeps them optional so a blank new entry omits them entirely.
+  if (isEdit) {
+    return {
+      ...shared,
+      body: form.value.body,
+      weather: form.value.weather,
+      tags: form.value.tags,
+    };
+  }
+
+  return {
+    ...shared,
+    body: form.value.body || undefined,
+    tags: form.value.tags.length ? form.value.tags : undefined,
     weather: form.value.weather || undefined,
   };
 }
@@ -787,6 +920,63 @@ async function refreshEntriesNonFatal(): Promise<void> {
   }
 }
 
+async function persistEntry(
+  editedEntryId: string | null,
+  locationSnapshot: string,
+): Promise<void> {
+  if (editedEntryId) {
+    // Snapshot the payload and the chip choice before any await so a mid-flight
+    // edit can't corrupt them (mirrors the create path). Editing resolves a place
+    // synchronously and never inline-creates one: the form opens with an empty
+    // location, and the PATCH reads an omitted placeId as "leave unchanged".
+    const editPayload = buildEntryPayload(true);
+    // An explicit chip choice wins (it disambiguates colliding place names, which
+    // a by-name lookup can't); captured pre-await so it reflects the snapshot.
+    const chosenPlaceId = resolvedPlaceId.value;
+    // A location typed during the cold-store load window can only match once the
+    // list arrives, so wait for the in-flight fetch, then resolve the typed name
+    // against the loaded list from the snapshot rather than the live field.
+    if (locationSnapshot.trim()) {
+      await placesReady;
+    }
+    const editPlaceId = chosenPlaceId || findSavedPlace(locationSnapshot)?.id;
+    await entriesStore.updateEntry(editedEntryId, {
+      ...editPayload,
+      placeId: editPlaceId || undefined,
+    });
+    return;
+  }
+
+  // Creating resolves the place id: an explicit chip choice or an exact saved
+  // match is taken synchronously (resolvedPlaceId); otherwise a typed-but-unsaved
+  // location is created inline so it attaches to the entry instead of being
+  // silently dropped. resolveOrCreatePlaceId settles an untrustworthy list itself,
+  // so the create path needs no separate placesReady await. A create failure
+  // throws and is caught by publish, blocking the entry rather than losing the
+  // location.
+  const createPayload = buildEntryPayload(false);
+  const placeId =
+    resolvedPlaceId.value || (await resolveOrCreatePlaceId(locationSnapshot));
+  await entriesStore.createEntry({
+    ...createPayload,
+    placeId: placeId || undefined,
+  });
+}
+
+// The message shown when a save fails: the server's own error when it threw one,
+// otherwise a mode-specific fallback (edit vs create).
+function publishFailureMessage(
+  caught: unknown,
+  editedEntryId: string | null,
+): string {
+  if (caught instanceof Error) {
+    return caught.message;
+  }
+  return editedEntryId
+    ? "Failed to save changes. Please try again."
+    : "Failed to publish. Please try again.";
+}
+
 async function publish(): Promise<void> {
   // Synchronous re-entrancy guard: :disabled lands a tick late, so this is what
   // stops a double-click (or a create-then-publish in the same flush) creating
@@ -794,41 +984,58 @@ async function publish(): Promise<void> {
   if (isPublishing.value || isCreatingPlace.value) {
     return;
   }
+  // Snapshot the mode before any await: a mid-save close resets props.entry to
+  // null, and reading it afterward would misclassify an in-flight edit as a
+  // create and clear an unrelated saved draft.
+  const editedEntryId = props.entry?.id ?? null;
   isPublishing.value = true;
   publishError.value = null;
 
   try {
-    // Snapshot the entry (including the location) before any await so a mid-flight
-    // edit or a reopen-triggered form reset can't corrupt what gets saved.
-    const payload = buildEntryPayload();
+    // Snapshot the location before any await so a mid-flight edit or a
+    // reopen-triggered form reset can't corrupt what gets saved.
     const locationSnapshot = form.value.location;
 
-    // Resolve the place id: an explicit chip choice or an exact saved match is
-    // taken synchronously (resolvedPlaceId); otherwise a typed-but-unsaved
-    // location is created inline so it attaches to the entry instead of being
-    // silently dropped. A create failure throws and is caught below, blocking
-    // the entry rather than saving it with the location lost.
-    const placeId =
-      resolvedPlaceId.value || (await resolveOrCreatePlaceId(locationSnapshot));
+    await persistEntry(editedEntryId, locationSnapshot);
 
-    await entriesStore.createEntry({
-      ...payload,
-      placeId: placeId || undefined,
-    });
-
-    // Close first: once the entry is created, the drawer should close
-    // regardless of whether the list refresh below succeeds.
-    clearDraft();
+    // Close first: once the entry is saved, the drawer should close regardless
+    // of whether the list refresh below succeeds. The draft is a create-only
+    // concept, so editing leaves any unrelated saved draft untouched.
+    if (!editedEntryId) {
+      clearDraft();
+    }
     emit("close");
-
-    await refreshEntriesNonFatal();
   } catch (caught) {
-    publishError.value =
-      caught instanceof Error
-        ? caught.message
-        : "Failed to publish. Please try again.";
+    publishError.value = publishFailureMessage(caught, editedEntryId);
   } finally {
     isPublishing.value = false;
+    replayDeferredReseed();
   }
+
+  // The list refresh is non-fatal and unrelated to the drawer, so it runs
+  // outside the publishing window — holding isPublishing across a network round
+  // trip would make a drawer reopened mid-refresh render stale content in a dead
+  // "saving…" state. A failed save recorded an error and has nothing new to show.
+  if (!publishError.value) {
+    await refreshEntriesNonFatal();
+  }
+}
+
+// Replay a re-seed that was deferred during the save. On success the drawer has
+// closed (props.open false), so this only fires on the error path, where
+// props.entry/open changed mid-save and the form must catch up to it.
+function replayDeferredReseed(): void {
+  if (!reseedPending.value) {
+    return;
+  }
+  reseedPending.value = false;
+  if (!props.open) {
+    return;
+  }
+  // Seeding clears publishError; carry a save failure across so the drawer the
+  // user is now looking at still surfaces it rather than silently discarding it.
+  const carriedError = publishError.value;
+  seedFormForCurrentMode();
+  publishError.value = carriedError;
 }
 </script>

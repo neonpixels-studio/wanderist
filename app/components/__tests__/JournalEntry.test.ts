@@ -106,6 +106,16 @@ describe("JournalEntry component", () => {
     expect(wrapper.emitted("toggle-like")![0]).toEqual([SAMPLE_ENTRY]);
   });
 
+  it("emits edit with the entry when the edit button is clicked", async () => {
+    const wrapper = mount(JournalEntry, {
+      ...globalConfig,
+      props: { entry: SAMPLE_ENTRY },
+    });
+    await wrapper.find('button[aria-label="Edit entry"]').trigger("click");
+    expect(wrapper.emitted("edit")).toHaveLength(1);
+    expect(wrapper.emitted("edit")![0]).toEqual([SAMPLE_ENTRY]);
+  });
+
   it("renders tags from the entry", () => {
     const wrapper = mount(JournalEntry, {
       ...globalConfig,

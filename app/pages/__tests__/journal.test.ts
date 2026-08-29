@@ -87,9 +87,9 @@ function buildGlobalConfig(pinia: ReturnType<typeof createPinia>) {
         },
         JournalEntry: {
           template:
-            '<article class="post"><h3 class="post__title">{{ entry.title }}</h3><button class="like" :class="{ liked: isLiked }" @click="$emit(\'toggle-like\', entry)"><span class="cnt">{{ entry.likeCount }}</span></button></article>',
+            '<article class="post"><h3 class="post__title">{{ entry.title }}</h3><button class="like" :class="{ liked: isLiked }" @click="$emit(\'toggle-like\', entry)"><span class="cnt">{{ entry.likeCount }}</span></button><button class="post__edit" @click="$emit(\'edit\', entry)" /></article>',
           props: ["entry", "isLiked"],
-          emits: ["toggle-like"],
+          emits: ["toggle-like", "edit"],
         },
       },
     },
@@ -188,6 +188,21 @@ describe("Journal page (/journal)", () => {
     // Second click unlikes it
     await likeBtn.trigger("click");
     expect(entriesStore.unlikeEntry).toHaveBeenCalledWith(SAMPLE_ENTRIES[0].id);
+  });
+
+  it("invokes the injected openEditEntry with the entry when an entry's edit is triggered", async () => {
+    const openEditEntry = vi.fn();
+    const config = buildGlobalConfig(pinia);
+    const wrapper = mount(JournalPage, {
+      global: {
+        ...config.global,
+        provide: { openEditEntry },
+      },
+    });
+
+    await wrapper.findAll(".post__edit")[0].trigger("click");
+
+    expect(openEditEntry).toHaveBeenCalledWith(SAMPLE_ENTRIES[0]);
   });
 
   it("renders the right rail with active trip card", () => {

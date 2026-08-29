@@ -15,11 +15,11 @@ exports[`Journal page (/journal) > renders without crashing and matches snapshot
       <!-- Timeline tab: entries grouped by day -->
       <div data-v-59046aa4="" class="day-div"><span data-v-59046aa4="" class="label">// Jun 12</span></div>
       <article data-v-59046aa4="" class="post">
-        <h3 class="post__title">Harbor at 4am</h3><button class="like"><span class="cnt">24</span></button>
+        <h3 class="post__title">Harbor at 4am</h3><button class="like"><span class="cnt">24</span></button><button class="post__edit"></button>
       </article>
       <div data-v-59046aa4="" class="day-div"><span data-v-59046aa4="" class="label">// Jun 8</span></div>
       <article data-v-59046aa4="" class="post">
-        <h3 class="post__title">Tram 28, again</h3><button class="like"><span class="cnt">41</span></button>
+        <h3 class="post__title">Tram 28, again</h3><button class="like"><span class="cnt">41</span></button><button class="post__edit"></button>
       </article>
       <!--v-if-->
     </div><!-- Right rail -->
