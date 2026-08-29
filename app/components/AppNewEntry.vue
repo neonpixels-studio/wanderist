@@ -347,7 +347,9 @@ let pendingCreateName: string | null = null;
 // awaits it before resolving a typed location's placeId, so a location entered
 // during the cold-store load window is not dropped for want of a loaded list.
 // Stays already-resolved when the store was warm, so a warm save never waits.
-const placesReady = ref<Promise<unknown>>(Promise.resolve());
+// Plain non-reactive handle (nothing consumes it reactively), matching the file's
+// other coordination state (placesLoadToken, activeCreateToken, pendingCreateName).
+let placesReady: Promise<unknown> = Promise.resolve();
 
 // One-shot flag: true once the default tripId has been applied, so a later
 // trips-store update does not clobber an explicit "None" selection.
@@ -606,7 +608,7 @@ function ensureReferenceData(): void {
   placesLoadFailed.value = false;
   const loadToken = (placesLoadToken += 1);
   if (placesStore.places.length) {
-    placesReady.value = Promise.resolve();
+    placesReady = Promise.resolve();
     return;
   }
 
@@ -628,7 +630,7 @@ function ensureReferenceData(): void {
       }
     });
   // Held so persistEntry can await the in-flight load before resolving a placeId.
-  placesReady.value = fetchPromise.catch(() => {});
+  placesReady = fetchPromise.catch(() => {});
 }
 
 // Keyed on the entry's identity (id) as well as open: the drawer is a single
@@ -933,18 +935,19 @@ async function persistEntry(
   locationSnapshot: string,
 ): Promise<void> {
   if (editedEntryId) {
-    // Editing resolves a place synchronously (an explicit chip choice or an exact
-    // saved match) and never inline-creates one: the edit form opens with an empty
-    // location, and the PATCH reads an omitted placeId as "leave unchanged". A
-    // location typed during the cold-store load window can only match once the
-    // list arrives, so wait for the in-flight fetch before resolving it.
-    if (locationSnapshot.trim()) {
-      await placesReady.value;
-    }
+    // Snapshot the payload before any await so a mid-flight edit can't corrupt it
+    // (mirrors the create path). Editing resolves a place synchronously and never
+    // inline-creates one: the form opens with an empty location, and the PATCH
+    // reads an omitted placeId as "leave unchanged". A location typed during the
+    // cold-store load window can only match once the list arrives, so wait for the
+    // in-flight fetch, then resolve against the snapshot rather than the live field.
     const editPayload = buildEntryPayload(true);
+    if (locationSnapshot.trim()) {
+      await placesReady;
+    }
     await entriesStore.updateEntry(editedEntryId, {
       ...editPayload,
-      placeId: resolvedPlaceId.value || undefined,
+      placeId: findSavedPlace(locationSnapshot)?.id || undefined,
     });
     return;
   }

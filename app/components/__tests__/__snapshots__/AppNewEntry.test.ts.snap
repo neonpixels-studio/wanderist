@@ -29,7 +29,7 @@ exports[`AppNewEntry > renders the drawer when open and matches snapshot 1`] = `
       </div><!-- Entry text -->
       <div class="field"><label class="field__label">Entry</label><textarea class="field__input" rows="5" placeholder="What happened? What did it feel like?"></textarea></div><!-- Location -->
       <div class="field"><label class="field__label">Location</label>
-        <div class="field__wrap"><input class="field__input" data-test="location-input" value=""><span class="field__icon"><svg data-icon="" name="pin" size="16"></svg></span></div>
+        <div class="field__wrap"><input class="field__input" data-test="location-input"><span class="field__icon"><svg data-icon="" name="pin" size="16"></svg></span></div>
         <!--v-if-->
         <!--v-if-->
         <!--v-if-->

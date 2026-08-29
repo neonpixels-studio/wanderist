@@ -3,10 +3,9 @@
     <label class="field__label">Location</label>
     <div class="field__wrap">
       <input
-        :value="modelValue"
+        v-model="location"
         class="field__input"
         data-test="location-input"
-        @input="onInput"
       />
       <span class="field__icon"><AppIcon name="pin" :size="16" /></span>
     </div>
@@ -48,8 +47,12 @@ interface PlaceSuggestion {
   name: string;
 }
 
+// defineModel keeps the native v-model on the input, which suppresses `input`
+// events mid-IME-composition — important for entering place names with a
+// Japanese/Chinese/Korean input method.
+const location = defineModel<string>({ required: true });
+
 defineProps<{
-  modelValue: string;
   suggestions: PlaceSuggestion[];
   canCreatePlace: boolean;
   isCreatingPlace: boolean;
@@ -59,12 +62,7 @@ defineProps<{
 }>();
 
 const emit = defineEmits<{
-  "update:modelValue": [value: string];
   select: [place: PlaceSuggestion];
   create: [];
 }>();
-
-function onInput(event: Event): void {
-  emit("update:modelValue", (event.target as HTMLInputElement).value);
-}
 </script>
