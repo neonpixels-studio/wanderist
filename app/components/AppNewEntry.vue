@@ -110,21 +110,28 @@
               >{{ place.name }}</span
             >
           </div>
-          <p
-            v-if="locationWillNotSave"
-            class="error-hint"
-            data-test="location-warning"
-          >
-            “{{ form.location }}” isn’t one of your saved places, so it won’t be
-            attached to this entry.
+          <div v-if="canCreatePlace" class="location-create">
+            <span class="location-create__hint"
+              >No saved place matches this location.</span
+            >
+            <button
+              class="btn btn--outline btn--sm location-create__btn"
+              :disabled="isCreatingPlace"
+              @click="handleCreatePlace"
+            >
+              <AppIcon name="plus" :size="12" />
+              {{
+                isCreatingPlace ? "creating…" : `Create “${canonicalLocation}”`
+              }}
+            </button>
+          </div>
+          <p v-if="createPlaceError" class="error-hint location-create__error">
+            {{ createPlaceError }}
           </p>
-          <p
-            v-if="placesUnavailable && form.location.trim()"
-            class="error-hint"
-            data-test="places-load-error"
-          >
-            We couldn’t load your saved places, so “{{ form.location }}” won’t
-            be attached to this entry.
+          <p v-if="placesLoadFailed" class="error-hint places-load__error">
+            Couldn't load your saved places, so suggestions and inline creation
+            are unavailable. Your typed location is still saved when you
+            publish.
           </p>
         </div>
 
@@ -247,7 +254,7 @@
         </button>
         <button
           class="btn btn--primary btn--sm"
-          :disabled="isPublishing"
+          :disabled="isPublishing || isCreatingPlace"
           @click="publish"
         >
           <AppIcon name="check" :size="14" />
@@ -261,6 +268,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import type { Trip } from "~/stores/trips";
+import type { Place } from "~/stores/places";
 import { localDateToIso } from "~/utils/localDate";
 
 const MAX_LOCATION_SUGGESTIONS = 5;
@@ -309,6 +317,28 @@ const uploadedPhotos = ref<Array<{ id: string; url: string }>>([]);
 const tagInput = ref("");
 const isPublishing = ref(false);
 const publishError = ref<string | null>(null);
+const isCreatingPlace = ref(false);
+const createPlaceError = ref<string | null>(null);
+
+// Local (not store-global) signal that this drawer's own places load failed.
+// Using the shared placesStore.error would let an unrelated page's failed fetch
+// hide the affordance here for the rest of the session. Scoped by placesLoadToken
+// so only the latest load may write the flag (an earlier slow failure can't
+// clobber a later success across a reopen).
+const placesLoadFailed = ref(false);
+let placesLoadToken = 0;
+
+// Monotonic token: bumped when a create starts and when the drawer reopens. A
+// resolved place-create whose drawer has since been reset compares tokens to
+// detect it is stale and skip writing its saved name back or resetting the
+// isCreatingPlace flag on a fresh form. The inline error message uses the same
+// check (isCurrentCreate: token AND name), so a create rejected after a reopen
+// that restored its exact name still can't stamp a stale error on the fresh form.
+let activeCreateToken = 0;
+
+// Normalized name of an in-flight place POST, or null. Survives a reopen (which
+// resets isCreatingPlace) so the same name can't be created twice concurrently.
+let pendingCreateName: string | null = null;
 
 // One-shot flag: true once the default tripId has been applied, so a later
 // trips-store update does not clobber an explicit "None" selection.
@@ -345,12 +375,6 @@ const form = ref<FormState>(buildInitialForm(tripsStore.tripList));
 // two places share a name (resolving by name alone couldn't disambiguate).
 const selectedPlace = ref<PlaceSuggestion | null>(null);
 
-// Resolves once the places prefetch for this open has settled. `publish` awaits
-// it before reading `resolvedPlaceId` so a location typed during the cold-store
-// load window is not dropped for want of a loaded list. Stays already-resolved
-// when the store was warm, so a warm publish never waits.
-const placesReady = ref<Promise<unknown>>(Promise.resolve());
-
 function applyFreshForm(): void {
   form.value = buildInitialForm(tripsStore.tripList);
   selectedPlace.value = null;
@@ -374,12 +398,70 @@ const placeSuggestions = computed<PlaceSuggestion[]>(() =>
     .slice(0, MAX_LOCATION_SUGGESTIONS),
 );
 
+// Canonical form actually persisted: collapse internal whitespace and unify
+// Unicode form so the saved place matches the helper's comparison key and isn't
+// stored in a sloppy "Blue  Lagoon" shape.
+function canonicalPlaceName(name: string): string {
+  return name.normalize("NFC").trim().replace(/\s+/g, " ");
+}
+
+// Case-insensitive comparison key used only for matching, never persisted.
+function normalizePlaceName(name: string): string {
+  return canonicalPlaceName(name).toLowerCase();
+}
+
+const trimmedLocation = computed<string>(() => form.value.location.trim());
+
+// The exact name that gets persisted, so the button label and the POST body
+// agree (both use this, never the trim-only form).
+const canonicalLocation = computed<string>(() =>
+  canonicalPlaceName(form.value.location),
+);
+
+// The saved place matching a given name (case-insensitive), or null. Takes the
+// name explicitly so the publish path can resolve against a snapshot rather than
+// the live field, which stays editable during the async publish.
+function findSavedPlace(name: string): Place | null {
+  const target = normalizePlaceName(name);
+  if (!target) {
+    return null;
+  }
+  return (
+    placesStore.places.find(
+      (place) => normalizePlaceName(place.name) === target,
+    ) ?? null
+  );
+}
+
+const matchedPlace = computed<Place | null>(() =>
+  findSavedPlace(form.value.location),
+);
+
+// The user typed a location that matches nothing we know about. Gates the
+// inline-create affordance; it is independent of list trustworthiness.
+const hasUnsavedLocation = computed<boolean>(
+  () => trimmedLocation.value.length > 0 && matchedPlace.value === null,
+);
+
+// Offer the inline affordance only when the places list is trustworthy: a
+// not-yet-fetched or failed-to-fetch list can't back the "no saved place
+// matches" claim, so hide the button (publish still persists the typed location
+// via resolveOrCreatePlaceId, so nothing is lost).
+const canCreatePlace = computed<boolean>(
+  () =>
+    hasUnsavedLocation.value &&
+    !placesStore.isLoading &&
+    !placesLoadFailed.value,
+);
+
 // An explicit chip choice is honoured while the text still names it, but only
 // as long as the place still exists: once places load, a chosen id absent from
 // the list (place deleted, or a draft from another user) must not be trusted —
 // the server would reject it — so we fall back to name resolution instead.
 function chosenMatchesLocation(place: PlaceSuggestion): boolean {
-  if (normalizeName(form.value.location) !== normalizeName(place.name)) {
+  if (
+    normalizePlaceName(form.value.location) !== normalizePlaceName(place.name)
+  ) {
     return false;
   }
   if (!placesStore.places.length) {
@@ -388,43 +470,17 @@ function chosenMatchesLocation(place: PlaceSuggestion): boolean {
   return placesStore.places.some((candidate) => candidate.id === place.id);
 }
 
-// The place id this entry will actually be saved with. Derived reactively so
-// it stays correct as `placesStore.places` loads: an explicit chip choice wins
-// while it holds, otherwise the typed location is resolved by name against the
-// loaded places (empty when it matches none).
+// The saved place id this entry resolves to synchronously: an explicit chip
+// choice wins while it holds, otherwise the typed location matched by name.
+// Empty when nothing matches yet — publish then creates the typed location
+// inline (see resolveOrCreatePlaceId) so free text is never dropped.
 const resolvedPlaceId = computed<string>(() => {
   const chosen = selectedPlace.value;
   if (chosen && chosenMatchesLocation(chosen)) {
     return chosen.id;
   }
-  return resolvePlaceId(form.value.location) ?? "";
+  return findSavedPlace(form.value.location)?.id ?? "";
 });
-
-// True once the user has typed a non-empty location that resolves to no saved
-// place: it has no placeId to persist, so warn instead of silently dropping
-// it. Suppressed while places are still loading, and while a load failure left
-// us with no places at all — a load problem must not read as a user data
-// problem. A stale error alongside a populated list still warns.
-const locationWillNotSave = computed<boolean>(() => {
-  if (!form.value.location.trim()) {
-    return false;
-  }
-  if (resolvedPlaceId.value) {
-    return false;
-  }
-  if (placesStore.isLoading) {
-    return false;
-  }
-  return !(placesStore.error && !placesStore.places.length);
-});
-
-// The places list failed to load entirely, so a typed location cannot be
-// matched. Distinct from `locationWillNotSave` (a real "no such place") — this
-// is a load failure, surfaced so the drop is not silent rather than blaming
-// the user's input.
-const placesUnavailable = computed<boolean>(
-  () => Boolean(placesStore.error) && !placesStore.places.length,
-);
 
 // Picking a suggestion captures the place directly, so the entry is attached
 // to exactly the place the user chose even when place names collide.
@@ -477,18 +533,35 @@ watch(
     tagInput.value = "";
     publishError.value = null;
     uploadError.value = null;
+    createPlaceError.value = null;
+    isCreatingPlace.value = false;
+    activeCreateToken += 1;
 
     if (!tripsStore.tripList.length) {
       tripsStore.fetchTrips();
     }
 
-    if (placesStore.places.length) {
-      placesReady.value = Promise.resolve();
-    } else {
-      // Non-fatal: the store records its own error; suggestions just won't
-      // appear. Caught so the fetch never surfaces an unhandled rejection.
-      // Held so publish can await it before resolving the location's placeId.
-      placesReady.value = placesStore.fetchPlaces().catch(() => {});
+    // Mint the token unconditionally so a reopen that skips the fetch (because the
+    // list is already populated) still invalidates any earlier in-flight load,
+    // stopping its late failure from marking a now-healthy list as failed.
+    placesLoadFailed.value = false;
+    const loadToken = (placesLoadToken += 1);
+    if (!placesStore.places.length) {
+      // Track load failure locally so the affordance can hide, scoped by token so
+      // only the latest load writes the flag. Publish still persists via the
+      // hasUnsavedLocation path, so a failed load never drops a typed location.
+      placesStore
+        .fetchPlaces()
+        .then(() => {
+          if (loadToken === placesLoadToken) {
+            placesLoadFailed.value = false;
+          }
+        })
+        .catch(() => {
+          if (loadToken === placesLoadToken) {
+            placesLoadFailed.value = true;
+          }
+        });
     }
   },
   { immediate: true },
@@ -508,6 +581,12 @@ watch(
     tripDefaulted.value = true;
   },
 );
+
+// A create error belongs to the name it was raised for; once the user edits the
+// location the message is stale, so clear it.
+watch(trimmedLocation, () => {
+  createPlaceError.value = null;
+});
 
 function addTag(): void {
   const value = tagInput.value.trim();
@@ -568,42 +647,136 @@ function handleSaveDraft(): void {
   });
 }
 
-function normalizeName(name: string): string {
-  return name.trim().toLowerCase();
+// Single isolated call site for POST /api/places. Takes the name explicitly so
+// the persisted body and any staleness comparison can't drift from each other.
+function createPlaceFromLocation(name: string): Promise<Place> {
+  return placesStore.createPlace({ name: canonicalPlaceName(name) });
 }
 
-// The entries API models a place only by `placeId` (an FK to an existing
-// place), not as free-text — so a location the user typed can only be
-// persisted when it names a place they already have. Resolve the location
-// text to that place's id here; unmatched free text has nowhere to go.
-// A name shared by two places is ambiguous, so refuse to guess and return
-// undefined rather than attaching the entry to an arbitrary one.
-function resolvePlaceId(locationName: string): string | undefined {
-  const normalized = normalizeName(locationName);
-  if (!normalized) {
-    return undefined;
-  }
-  const matches = placesStore.places.filter(
-    (place) => normalizeName(place.name) === normalized,
-  );
-  if (matches.length !== 1) {
-    return undefined;
-  }
-  return matches[0].id;
+// True when this create still owns the active request (no reopen or newer create
+// since) and the field still holds the name it submitted (no retype meanwhile).
+function isCurrentCreate(token: number, requestedName: string): boolean {
+  const fieldHolds =
+    normalizePlaceName(form.value.location) ===
+    normalizePlaceName(requestedName);
+  return token === activeCreateToken && fieldHolds;
 }
 
+// Create the place for an explicit name under a caller-minted token and, when
+// still current, adopt the canonical saved name. Throws on failure so each caller
+// decides how to surface it. pendingCreateName blocks a second POST for the same
+// name across a reopen (which resets the isCreatingPlace flag); the flag itself is
+// reset only if this call still owns the active token.
+async function runCreatePlace(
+  requestToken: number,
+  name: string,
+): Promise<Place> {
+  isCreatingPlace.value = true;
+  createPlaceError.value = null;
+  pendingCreateName = normalizePlaceName(name);
+  try {
+    const created = await createPlaceFromLocation(name);
+    if (isCurrentCreate(requestToken, name)) {
+      form.value.location = created.name;
+    }
+    return created;
+  } finally {
+    // Only clear the marker this call set: an overlapping create for a different
+    // name may own it now, and nulling it unconditionally would leave that one
+    // unguarded against a duplicate POST.
+    if (pendingCreateName === normalizePlaceName(name)) {
+      pendingCreateName = null;
+    }
+    if (requestToken === activeCreateToken) {
+      isCreatingPlace.value = false;
+    }
+  }
+}
+
+// Button handler: persist the typed location inline. No-op when the field is
+// empty, already matches, a create is in flight (the disabled attribute lands a
+// tick late, so this synchronous guard is what stops a double-click), or the same
+// name is already being POSTed (survives a reopen that cleared the flag).
+// Failures show inline, but only while this request still owns the form.
+async function handleCreatePlace(): Promise<void> {
+  const requestedName = form.value.location;
+  const alreadyPosting =
+    pendingCreateName === normalizePlaceName(requestedName);
+  if (isCreatingPlace.value || alreadyPosting || !canCreatePlace.value) {
+    return;
+  }
+  const requestToken = (activeCreateToken += 1);
+  try {
+    await runCreatePlace(requestToken, requestedName);
+  } catch (caught) {
+    if (isCurrentCreate(requestToken, requestedName)) {
+      createPlaceError.value =
+        caught instanceof Error ? caught.message : "Failed to create place";
+    }
+  }
+}
+
+// Snapshot the form synchronously (no placeId yet): publish resolves the place
+// id over the network afterwards, and the title/body/tags/photo inputs are not
+// disabled meanwhile, so reading them post-await could capture edits or a reset
+// form. placeId is spread in once resolved.
 function buildEntryPayload() {
   return {
     title: form.value.title,
     body: form.value.body || undefined,
     occurredAt: localDateToIso(form.value.date),
     tripId: form.value.tripId || undefined,
-    placeId: resolvedPlaceId.value || undefined,
     tags: form.value.tags.length ? form.value.tags : undefined,
     photoMediaIds: uploadedPhotos.value.map((photo) => photo.id),
     visibility: form.value.visibility,
     weather: form.value.weather || undefined,
   };
+}
+
+// Re-fetch a stale/failed list once so we reuse an existing place instead of
+// minting a duplicate of one we simply hadn't fetched. Writes the failure flag
+// under its own load token so a late settle can't clobber a healthier later load.
+async function settlePlacesList(): Promise<void> {
+  const loadToken = (placesLoadToken += 1);
+  try {
+    await placesStore.fetchPlaces();
+    if (loadToken === placesLoadToken) {
+      placesLoadFailed.value = false;
+    }
+  } catch {
+    // Now known-bad: the caller still creates anyway (the entry and its location
+    // matter more than a possible dup against a list we can't read — the server
+    // enforces no place-name uniqueness).
+    if (loadToken === placesLoadToken) {
+      placesLoadFailed.value = true;
+    }
+  }
+}
+
+// The id to attach for a snapshotted location (taken synchronously in publish so
+// a mid-flight edit can't drift the name): an already-matched saved place, or one
+// created now so the free text is never dropped. A create failure propagates to
+// publish's catch and blocks the entry.
+async function resolveOrCreatePlaceId(
+  location: string,
+): Promise<string | undefined> {
+  const existing = findSavedPlace(location);
+  if (existing) {
+    return existing.id;
+  }
+  if (!canonicalPlaceName(location)) {
+    return undefined;
+  }
+  const listIsUntrustworthy = placesStore.isLoading || placesLoadFailed.value;
+  if (listIsUntrustworthy) {
+    await settlePlacesList();
+  }
+  const settledMatch = findSavedPlace(location);
+  if (settledMatch) {
+    return settledMatch.id;
+  }
+  const created = await runCreatePlace((activeCreateToken += 1), location);
+  return created.id;
 }
 
 async function refreshEntriesNonFatal(): Promise<void> {
@@ -615,17 +788,33 @@ async function refreshEntriesNonFatal(): Promise<void> {
 }
 
 async function publish(): Promise<void> {
+  // Synchronous re-entrancy guard: :disabled lands a tick late, so this is what
+  // stops a double-click (or a create-then-publish in the same flush) creating
+  // duplicate entries or places.
+  if (isPublishing.value || isCreatingPlace.value) {
+    return;
+  }
   isPublishing.value = true;
   publishError.value = null;
 
   try {
-    // A location typed during the cold-store load window can only resolve to a
-    // placeId once the list arrives, so wait for it before building the payload.
-    if (form.value.location.trim()) {
-      await placesReady.value;
-    }
+    // Snapshot the entry (including the location) before any await so a mid-flight
+    // edit or a reopen-triggered form reset can't corrupt what gets saved.
+    const payload = buildEntryPayload();
+    const locationSnapshot = form.value.location;
 
-    await entriesStore.createEntry(buildEntryPayload());
+    // Resolve the place id: an explicit chip choice or an exact saved match is
+    // taken synchronously (resolvedPlaceId); otherwise a typed-but-unsaved
+    // location is created inline so it attaches to the entry instead of being
+    // silently dropped. A create failure throws and is caught below, blocking
+    // the entry rather than saving it with the location lost.
+    const placeId =
+      resolvedPlaceId.value || (await resolveOrCreatePlaceId(locationSnapshot));
+
+    await entriesStore.createEntry({
+      ...payload,
+      placeId: placeId || undefined,
+    });
 
     // Close first: once the entry is created, the drawer should close
     // regardless of whether the list refresh below succeeds.
