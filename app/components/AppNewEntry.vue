@@ -935,19 +935,24 @@ async function persistEntry(
   locationSnapshot: string,
 ): Promise<void> {
   if (editedEntryId) {
-    // Snapshot the payload before any await so a mid-flight edit can't corrupt it
-    // (mirrors the create path). Editing resolves a place synchronously and never
-    // inline-creates one: the form opens with an empty location, and the PATCH
-    // reads an omitted placeId as "leave unchanged". A location typed during the
-    // cold-store load window can only match once the list arrives, so wait for the
-    // in-flight fetch, then resolve against the snapshot rather than the live field.
+    // Snapshot the payload and the chip choice before any await so a mid-flight
+    // edit can't corrupt them (mirrors the create path). Editing resolves a place
+    // synchronously and never inline-creates one: the form opens with an empty
+    // location, and the PATCH reads an omitted placeId as "leave unchanged".
     const editPayload = buildEntryPayload(true);
+    // An explicit chip choice wins (it disambiguates colliding place names, which
+    // a by-name lookup can't); captured pre-await so it reflects the snapshot.
+    const chosenPlaceId = resolvedPlaceId.value;
+    // A location typed during the cold-store load window can only match once the
+    // list arrives, so wait for the in-flight fetch, then resolve the typed name
+    // against the loaded list from the snapshot rather than the live field.
     if (locationSnapshot.trim()) {
       await placesReady;
     }
+    const editPlaceId = chosenPlaceId || findSavedPlace(locationSnapshot)?.id;
     await entriesStore.updateEntry(editedEntryId, {
       ...editPayload,
-      placeId: findSavedPlace(locationSnapshot)?.id || undefined,
+      placeId: editPlaceId || undefined,
     });
     return;
   }

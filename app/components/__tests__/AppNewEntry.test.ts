@@ -1145,6 +1145,31 @@ describe("AppNewEntry — edit mode", () => {
     expect(wrapper.emitted("close")).toBeTruthy();
   });
 
+  it("resolves a typed location to an existing saved place id on the update payload", async () => {
+    placesStorePlaces.value = [{ id: "p-1", name: "Old Harbour" }];
+    mockUpdateEntry.mockResolvedValue(SAMPLE_ENTRY);
+    mockFetchEntries.mockResolvedValue({
+      entries: [],
+      tab: "timeline",
+      page: 1,
+    });
+
+    const wrapper = mountEdit();
+    await wrapper.get('[data-test="location-input"]').setValue("Old Harbour");
+
+    await wrapper.find(".drawer__foot .btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    const [, payload] = mockUpdateEntry.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    // Editing resolves the place synchronously and never inline-creates one.
+    expect(payload.placeId).toBe("p-1");
+    expect(mockCreatePlace).not.toHaveBeenCalled();
+  });
+
   it("preserves the entry's existing photos in the update payload", async () => {
     mockUpdateEntry.mockResolvedValue(SAMPLE_ENTRY);
     mockFetchEntries.mockResolvedValue({
