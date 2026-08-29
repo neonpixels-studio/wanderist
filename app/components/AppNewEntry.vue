@@ -255,6 +255,7 @@ import type { Trip } from "~/stores/trips";
 import type { Entry } from "~/stores/entries";
 import type { Place } from "~/stores/places";
 import AppNewEntryLocationField from "~/components/AppNewEntryLocationField.vue";
+import { localDateToIso } from "~/utils/localDate";
 
 const MAX_LOCATION_SUGGESTIONS = 5;
 
@@ -759,17 +760,6 @@ function handleSaveDraft(): void {
     placeId: resolvedPlaceId.value,
     uploadedPhotos: uploadedPhotos.value,
   });
-}
-
-function localDateToIso(dateString: string): string | undefined {
-  if (!dateString) {
-    return undefined;
-  }
-  // new Date(year, month-1, day) builds local midnight; .toISOString() converts
-  // to UTC, preserving the semantic "this event happened on this calendar date
-  // in the user's timezone."
-  const [year, month, day] = dateString.split("-").map(Number);
-  return new Date(year, month - 1, day).toISOString();
 }
 
 // Single isolated call site for POST /api/places. Takes the name explicitly so
