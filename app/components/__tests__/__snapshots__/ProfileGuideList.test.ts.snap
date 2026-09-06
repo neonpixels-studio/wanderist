@@ -1,0 +1,13 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ProfileGuideList > renders each guide linked to its detail page and matches snapshot 1`] = `
+"<!-- Not dismissible: this is the section's only content when it errors, so
+       dismissing it would leave the section blank with no way to recover. -->
+<div data-v-f5aed45f="" class="card card--pad"><a data-v-f5aed45f="" href="/guides/guide-1" class="guide"><span data-v-f5aed45f="" class="guide__av"><svg data-v-f5aed45f="" data-icon="" name="journal" size="18"></svg></span>
+    <div data-v-f5aed45f="" class="guide__body"><b data-v-f5aed45f="">Tokyo on foot</b><span data-v-f5aed45f="">8 min read</span></div><span data-v-f5aed45f="" class="guide__likes"><svg data-v-f5aed45f="" data-icon="" name="heart" size="12"></svg> 3</span>
+  </a><a data-v-f5aed45f="" href="/guides/guide-2" class="guide"><span data-v-f5aed45f="" class="guide__av"><svg data-v-f5aed45f="" data-icon="" name="journal" size="18"></svg></span>
+    <div data-v-f5aed45f="" class="guide__body"><b data-v-f5aed45f="">Andes by bus</b><span data-v-f5aed45f="">12 min read</span></div><span data-v-f5aed45f="" class="guide__likes"><svg data-v-f5aed45f="" data-icon="" name="heart" size="12"></svg> 0</span>
+  </a>
+  <!--v-if-->
+</div>"
+`;

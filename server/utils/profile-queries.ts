@@ -8,9 +8,21 @@
  * (shared by every profile endpoint so the check cannot drift) and throws a 404.
  */
 
+import type { H3Event } from "h3";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
-import type { getDb } from "../db/index";
-import { follows, subscriptions, users, userPreferences } from "../db/schema";
+import { getDb } from "../db/index";
+import {
+  follows,
+  guides,
+  subscriptions,
+  trips,
+  users,
+  userPreferences,
+  VISIBILITY,
+} from "../db/schema";
+import { requireUser } from "./auth";
+import { requireRouterParam } from "./db-helpers";
+import { discoverableAuthorCondition } from "./discover-queries";
 import {
   publiclyVisibleAuthorCondition,
   subscriptionEntitlesPublicProfile,
@@ -48,6 +60,39 @@ export interface PublicPerson {
   userId: string;
   displayName: string | null;
   handle: string | null;
+}
+
+// Maximum trips/guides returned by a single profile content request. Mirrors
+// FOLLOWERS_PAGE_SIZE: one extra row is fetched internally to detect
+// `hasMore` without a separate COUNT query.
+export const PROFILE_TRIPS_PAGE_SIZE = 20;
+export const PROFILE_GUIDES_PAGE_SIZE = 20;
+
+export interface PublicTripSummary {
+  id: string;
+  name: string;
+  status: string;
+  startDate: Date | null;
+  endDate: Date | null;
+  distanceKm: number | null;
+  stopCount: number;
+}
+
+export interface PublicGuideSummary {
+  id: string;
+  title: string;
+  readTimeMinutes: number;
+  likeCount: number;
+}
+
+export interface TripsPage {
+  trips: PublicTripSummary[];
+  hasMore: boolean;
+}
+
+export interface GuidesPage {
+  guides: PublicGuideSummary[];
+  hasMore: boolean;
 }
 
 /**
@@ -177,6 +222,96 @@ export async function fetchFollowers(
 }
 
 /**
+ * Returns one page of `userId`'s public trips, most recent first, capped at
+ * PROFILE_TRIPS_PAGE_SIZE, plus a `hasMore` flag. Callers must have already
+ * established via `requireViewableProfile` that the viewer may see this
+ * profile at all — this only adds the per-item filter (`visibility public`).
+ *
+ * Unlike guide reads (see `fetchPublicGuides`), a public trip's non-owner read
+ * rule (`loadReadableTrip`) is gated purely on `visibility = public`, with no
+ * additional author-discoverability requirement — so this list needs no extra
+ * join to stay consistent with what `/api/trips/[id]` will actually serve.
+ */
+export async function fetchPublicTrips(
+  database: Database,
+  userId: string,
+): Promise<TripsPage> {
+  // Fetch one extra row so `hasMore` is known without a separate COUNT query.
+  const rows = await database
+    .select({
+      id: trips.id,
+      name: trips.name,
+      status: trips.status,
+      startDate: trips.startDate,
+      endDate: trips.endDate,
+      distanceKm: trips.distanceKm,
+      stopCount: sql<number>`(
+        SELECT COUNT(*) FROM trip_stops WHERE trip_stops.trip_id = ${trips.id}
+      )`,
+    })
+    .from(trips)
+    .where(
+      and(eq(trips.userId, userId), eq(trips.visibility, VISIBILITY.PUBLIC)),
+    )
+    .orderBy(desc(trips.createdAt), desc(trips.id))
+    .limit(PROFILE_TRIPS_PAGE_SIZE + 1);
+
+  const page = rows.slice(0, PROFILE_TRIPS_PAGE_SIZE);
+
+  return {
+    trips: page.map((row) => ({ ...row, stopCount: Number(row.stopCount) })),
+    hasMore: rows.length > PROFILE_TRIPS_PAGE_SIZE,
+  };
+}
+
+/**
+ * Returns one page of `userId`'s public guides, most recent first, capped at
+ * PROFILE_GUIDES_PAGE_SIZE, plus a `hasMore` flag. Callers must have already
+ * established via `requireViewableProfile` that the viewer may see this
+ * profile at all.
+ *
+ * A guide's non-owner read rule (`loadReadableGuide`/`isReadableByNonOwner` in
+ * guide-queries.ts) additionally requires the author to be "discoverable"
+ * (public profile, entitled, AND opted into `showOnExplore`) — explore has
+ * historically been the only place a non-owner obtains a guide id, so that
+ * gate never had to consider the profile page. This list applies the same
+ * `discoverableAuthorCondition` so a guide never appears here only to 404 when
+ * opened — every card shown is guaranteed openable. One consequence: an author
+ * with a public profile but `showOnExplore` off will show trips but not guides
+ * on their public profile; see the follow-up suggestion in the PR body.
+ */
+export async function fetchPublicGuides(
+  database: Database,
+  userId: string,
+): Promise<GuidesPage> {
+  // Fetch one extra row so `hasMore` is known without a separate COUNT query.
+  const rows = await database
+    .select({
+      id: guides.id,
+      title: guides.title,
+      readTimeMinutes: guides.readTimeMinutes,
+      likeCount: guides.likeCount,
+    })
+    .from(guides)
+    .innerJoin(users, eq(guides.userId, users.id))
+    .innerJoin(userPreferences, eq(guides.userId, userPreferences.userId))
+    .where(
+      and(
+        eq(guides.userId, userId),
+        eq(guides.visibility, VISIBILITY.PUBLIC),
+        discoverableAuthorCondition(),
+      ),
+    )
+    .orderBy(desc(guides.createdAt), desc(guides.id))
+    .limit(PROFILE_GUIDES_PAGE_SIZE + 1);
+
+  return {
+    guides: rows.slice(0, PROFILE_GUIDES_PAGE_SIZE),
+    hasMore: rows.length > PROFILE_GUIDES_PAGE_SIZE,
+  };
+}
+
+/**
  * Loads a profile and enforces visibility in one place. Throws 404 when the
  * user does not exist, is soft-deleted, or is private and viewed by anyone but
  * its owner. Returns the row so the caller can use it. Every profile endpoint
@@ -201,4 +336,23 @@ export async function requireViewableProfile(
   }
 
   return profile;
+}
+
+/**
+ * Resolves the database, authenticated viewer, and the `id` route param, then
+ * enforces requireViewableProfile before any `/api/users/[id]/*` sub-resource
+ * list is read. Every such endpoint (followers, trips, guides) needs this
+ * identical preamble; consolidating it here means a new one can't accidentally
+ * skip the visibility check.
+ */
+export async function requireViewableProfileTarget(
+  event: H3Event,
+): Promise<{ database: Database; targetUserId: string }> {
+  const currentUserId = requireUser(event);
+  const targetUserId = requireRouterParam(event, "id");
+  const database = getDb();
+
+  await requireViewableProfile(database, currentUserId, targetUserId);
+
+  return { database, targetUserId };
 }

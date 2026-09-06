@@ -1,0 +1,13 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`ProfileTripList > renders each trip linked to its detail page and matches snapshot 1`] = `
+"<!-- Not dismissible: this is the section's only content when it errors, so
+       dismissing it would leave the section blank with no way to recover. -->
+<div data-v-e61945d1="" class="card card--pad"><a data-v-e61945d1="" href="/trips/trip-1" class="trip"><span data-v-e61945d1="" class="trip__av"><svg data-v-e61945d1="" data-icon="" name="route" size="18"></svg></span>
+    <div data-v-e61945d1="" class="trip__body"><b data-v-e61945d1="">Iceland Ring Road</b><span data-v-e61945d1="">Jun 1, 2024 – Jun 14, 2024</span></div><span data-v-e61945d1="" class="tag tag--past">past</span>
+  </a><a data-v-e61945d1="" href="/trips/trip-2" class="trip"><span data-v-e61945d1="" class="trip__av"><svg data-v-e61945d1="" data-icon="" name="route" size="18"></svg></span>
+    <div data-v-e61945d1="" class="trip__body"><b data-v-e61945d1="">Patagonia</b><span data-v-e61945d1="">dates TBD</span></div><span data-v-e61945d1="" class="tag tag--upcoming">upcoming</span>
+  </a>
+  <!--v-if-->
+</div>"
+`;

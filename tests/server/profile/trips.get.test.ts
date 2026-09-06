@@ -5,54 +5,61 @@ installNitroGlobals();
 
 vi.mock("../../../server/utils/profile-queries", () => ({
   requireViewableProfileTarget: vi.fn(),
-  fetchFollowers: vi.fn(),
+  fetchPublicTrips: vi.fn(),
 }));
 
 import {
   requireViewableProfileTarget,
-  fetchFollowers,
+  fetchPublicTrips,
 } from "../../../server/utils/profile-queries";
 
 const mockRequireViewableProfileTarget = vi.mocked(
   requireViewableProfileTarget,
 );
-const mockFetchFollowers = vi.mocked(fetchFollowers);
+const mockFetchPublicTrips = vi.mocked(fetchPublicTrips);
 
-const handler = await import("../../../server/api/users/[id]/followers.get");
+const handler = await import("../../../server/api/users/[id]/trips.get");
 const callHandler = () => unwrapHandler(handler as Record<string, unknown>)({});
 
-const FOLLOWERS = [{ userId: "user-2", displayName: "Marco", handle: "marco" }];
+const TRIPS = [
+  {
+    id: "trip-1",
+    name: "Iceland Ring Road",
+    status: "past",
+    startDate: null,
+    endDate: null,
+    distanceKm: null,
+    stopCount: 4,
+  },
+];
 
-describe("GET /api/users/[id]/followers", () => {
+describe("GET /api/users/[id]/trips", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("returns the followers page once the profile passes the visibility guard", async () => {
+  it("returns the public trips page once the profile passes the visibility guard", async () => {
     mockRequireViewableProfileTarget.mockResolvedValue({
       database: {} as Awaited<
         ReturnType<typeof requireViewableProfileTarget>
       >["database"],
       targetUserId: "target-1",
     });
-    mockFetchFollowers.mockResolvedValue({
-      followers: FOLLOWERS,
-      hasMore: true,
-    });
+    mockFetchPublicTrips.mockResolvedValue({ trips: TRIPS, hasMore: true });
 
     const result = await callHandler();
 
-    expect(result).toEqual({ followers: FOLLOWERS, hasMore: true });
-    expect(mockFetchFollowers).toHaveBeenCalledWith({}, "target-1");
+    expect(result).toEqual({ trips: TRIPS, hasMore: true });
+    expect(mockFetchPublicTrips).toHaveBeenCalledWith({}, "target-1");
   });
 
-  it("does not list followers when the visibility guard rejects", async () => {
+  it("does not list trips when the visibility guard rejects", async () => {
     mockRequireViewableProfileTarget.mockRejectedValue(
       createError({ statusCode: 404, statusMessage: "Profile not found" }),
     );
 
     await expect(callHandler()).rejects.toMatchObject({ statusCode: 404 });
-    expect(mockFetchFollowers).not.toHaveBeenCalled();
+    expect(mockFetchPublicTrips).not.toHaveBeenCalled();
   });
 
   it("throws 401 when the user is not authenticated", async () => {

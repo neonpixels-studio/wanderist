@@ -4,7 +4,14 @@ import { reactive, ref } from "vue";
 import ProfilePage from "../u/[id].vue";
 import ProfileHeader from "~/components/ProfileHeader.vue";
 import ProfileFollowerList from "~/components/ProfileFollowerList.vue";
-import type { ProfileUser, ProfileFollower } from "~/composables/useProfile";
+import ProfileTripList from "~/components/ProfileTripList.vue";
+import ProfileGuideList from "~/components/ProfileGuideList.vue";
+import type {
+  ProfileUser,
+  ProfileFollower,
+  ProfileTrip,
+  ProfileGuide,
+} from "~/composables/useProfile";
 
 // The profile route is keyed by the target user's id. Reactive so a test can
 // simulate the viewer navigating to another profile mid-interaction.
@@ -40,25 +47,45 @@ vi.stubGlobal(
 const profile = ref<ProfileUser | null>(null);
 const followers = ref<ProfileFollower[]>([]);
 const hasMoreFollowers = ref(false);
+const trips = ref<ProfileTrip[]>([]);
+const hasMoreTrips = ref(false);
+const guides = ref<ProfileGuide[]>([]);
+const hasMoreGuides = ref(false);
 const isLoading = ref(false);
 const followersLoading = ref(false);
+const tripsLoading = ref(false);
+const guidesLoading = ref(false);
 const notFound = ref(false);
 const profileError = ref<string | null>(null);
 const followersError = ref<string | null>(null);
+const tripsError = ref<string | null>(null);
+const guidesError = ref<string | null>(null);
 const mockFetchProfile = vi.fn();
 const mockFetchFollowers = vi.fn();
+const mockFetchTrips = vi.fn();
+const mockFetchGuides = vi.fn();
 
 vi.stubGlobal("useProfile", () => ({
   profile,
   followers,
   hasMoreFollowers,
+  trips,
+  hasMoreTrips,
+  guides,
+  hasMoreGuides,
   isLoading,
   followersLoading,
+  tripsLoading,
+  guidesLoading,
   notFound,
   error: profileError,
   followersError,
+  tripsError,
+  guidesError,
   fetchProfile: mockFetchProfile,
   fetchFollowers: mockFetchFollowers,
+  fetchTrips: mockFetchTrips,
+  fetchGuides: mockFetchGuides,
 }));
 
 const followingIds = ref<Set<string>>(new Set());
@@ -93,7 +120,12 @@ const globalConfig = {
   global: {
     // Register the real profile child components so the page renders deeply;
     // they have their own focused unit tests.
-    components: { ProfileHeader, ProfileFollowerList },
+    components: {
+      ProfileHeader,
+      ProfileFollowerList,
+      ProfileTripList,
+      ProfileGuideList,
+    },
     stubs: {
       AppIcon: iconStub,
       AppTopbar: topbarStub,
@@ -123,11 +155,19 @@ describe("profile page", () => {
     profile.value = null;
     followers.value = [];
     hasMoreFollowers.value = false;
+    trips.value = [];
+    hasMoreTrips.value = false;
+    guides.value = [];
+    hasMoreGuides.value = false;
     isLoading.value = false;
     followersLoading.value = false;
+    tripsLoading.value = false;
+    guidesLoading.value = false;
     notFound.value = false;
     profileError.value = null;
     followersError.value = null;
+    tripsError.value = null;
+    guidesError.value = null;
     followingIds.value = new Set();
     pendingUserIds.value = new Set();
   });
@@ -146,12 +186,14 @@ describe("profile page", () => {
     expect(lastAsyncDataCall?.options.server).toBe(false);
   });
 
-  it("fetches the profile, followers, and follow state on mount", () => {
+  it("fetches the profile, followers, trips, guides, and follow state on mount", () => {
     profile.value = { ...SAMPLE_PROFILE };
     mount(ProfilePage, globalConfig);
 
     expect(mockFetchProfile).toHaveBeenCalledWith("user-1");
     expect(mockFetchFollowers).toHaveBeenCalledWith("user-1");
+    expect(mockFetchTrips).toHaveBeenCalledWith("user-1");
+    expect(mockFetchGuides).toHaveBeenCalledWith("user-1");
     expect(mockFetchFollowing).toHaveBeenCalled();
   });
 
@@ -201,6 +243,50 @@ describe("profile page", () => {
     );
     expect(wrapper.find("a.person").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("No public followers yet");
+  });
+
+  it("forwards the trips loading state so the list shows no false empty state", () => {
+    profile.value = { ...SAMPLE_PROFILE };
+    tripsLoading.value = true;
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    expect(wrapper.findComponent(ProfileTripList).props("loading")).toBe(true);
+    expect(wrapper.text()).toContain("Loading trips…");
+    expect(wrapper.find("a.trip").exists()).toBe(false);
+  });
+
+  it("forwards a trips error so the list is replaced by the error", () => {
+    profile.value = { ...SAMPLE_PROFILE };
+    tripsError.value = "Could not load trips";
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    expect(wrapper.findComponent(ProfileTripList).props("errorMessage")).toBe(
+      "Could not load trips",
+    );
+    expect(wrapper.find("a.trip").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("No public trips yet");
+  });
+
+  it("forwards the guides loading state so the list shows no false empty state", () => {
+    profile.value = { ...SAMPLE_PROFILE };
+    guidesLoading.value = true;
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    expect(wrapper.findComponent(ProfileGuideList).props("loading")).toBe(true);
+    expect(wrapper.text()).toContain("Loading guides…");
+    expect(wrapper.find("a.guide").exists()).toBe(false);
+  });
+
+  it("forwards a guides error so the list is replaced by the error", () => {
+    profile.value = { ...SAMPLE_PROFILE };
+    guidesError.value = "Could not load guides";
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    expect(wrapper.findComponent(ProfileGuideList).props("errorMessage")).toBe(
+      "Could not load guides",
+    );
+    expect(wrapper.find("a.guide").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("No public guides yet");
   });
 
   it("hides the follow button on your own profile", () => {
