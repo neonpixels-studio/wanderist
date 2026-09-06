@@ -347,8 +347,6 @@ describe("fetchPublicTrips", () => {
         status: "past",
         startDate: new Date("2024-06-01"),
         endDate: new Date("2024-06-14"),
-        distanceKm: 1300,
-        stopCount: "5",
       },
     ];
     const built = buildSelectChain(rows);
@@ -358,10 +356,7 @@ describe("fetchPublicTrips", () => {
       "user-1",
     );
 
-    expect(result).toEqual({
-      trips: [{ ...rows[0], stopCount: 5 }],
-      hasMore: false,
-    });
+    expect(result).toEqual({ trips: rows, hasMore: false });
   });
 
   it("signals hasMore and trims to the page size when an extra row comes back", async () => {
@@ -373,8 +368,6 @@ describe("fetchPublicTrips", () => {
         status: "past",
         startDate: null,
         endDate: null,
-        distanceKm: null,
-        stopCount: "0",
       }),
     );
     const built = buildSelectChain(rows);
@@ -440,6 +433,7 @@ describe("fetchPublicGuides", () => {
     const result = await fetchPublicGuides(
       built.chain as unknown as Database,
       "user-1",
+      "viewer-1",
     );
 
     expect(result).toEqual({ guides: rows, hasMore: false });
@@ -460,16 +454,21 @@ describe("fetchPublicGuides", () => {
     const result = await fetchPublicGuides(
       built.chain as unknown as Database,
       "user-1",
+      "viewer-1",
     );
 
     expect(result.hasMore).toBe(true);
     expect(result.guides).toHaveLength(PROFILE_GUIDES_PAGE_SIZE);
   });
 
-  it("filters to the target user's public guides from a discoverable author", async () => {
+  it("filters to the target user's public guides from a discoverable author, for a non-owner viewer", async () => {
     const built = buildSelectChain([]);
 
-    await fetchPublicGuides(built.chain as unknown as Database, "user-1");
+    await fetchPublicGuides(
+      built.chain as unknown as Database,
+      "user-1",
+      "viewer-1",
+    );
 
     // Matches the read rule guide-queries.loadReadableGuide enforces on a
     // direct read, so nothing listed here 404s when opened: this user's
@@ -484,10 +483,50 @@ describe("fetchPublicGuides", () => {
     );
   });
 
+  it("omits the discoverability gate when the owner views their own guides", async () => {
+    const built = buildSelectChain([]);
+
+    // Same user as both target and viewer: the owner can always open their own
+    // guide (loadReadableGuide), so the discoverability requirement — which
+    // exists only to keep a non-owner from hitting a 404 — must not apply.
+    await fetchPublicGuides(
+      built.chain as unknown as Database,
+      "user-1",
+      "user-1",
+    );
+
+    expect(built.where).toHaveBeenCalledWith(
+      and(
+        eq(guides.userId, "user-1"),
+        eq(guides.visibility, VISIBILITY.PUBLIC),
+      ),
+    );
+  });
+
+  it("left-joins user_preferences so an owner without a preferences row still sees their own guides", async () => {
+    const built = buildSelectChain([]);
+
+    await fetchPublicGuides(
+      built.chain as unknown as Database,
+      "user-1",
+      "user-1",
+    );
+
+    // An inner join here would drop every guide for an owner who never opened
+    // settings (no user_preferences row) even though the discoverability gate
+    // is skipped for their own view.
+    expect(built.innerJoin).toHaveBeenCalledTimes(1);
+    expect(built.leftJoin).toHaveBeenCalledTimes(1);
+  });
+
   it("orders by most-recent and caps the result set", async () => {
     const built = buildSelectChain([]);
 
-    await fetchPublicGuides(built.chain as unknown as Database, "user-1");
+    await fetchPublicGuides(
+      built.chain as unknown as Database,
+      "user-1",
+      "viewer-1",
+    );
 
     expect(built.orderBy).toHaveBeenCalledWith(
       desc(guides.createdAt),
@@ -503,6 +542,7 @@ describe("fetchPublicGuides", () => {
     const result = await fetchPublicGuides(
       built.chain as unknown as Database,
       "user-1",
+      "viewer-1",
     );
 
     expect(result).toEqual({ guides: [], hasMore: false });
@@ -673,6 +713,7 @@ describe("requireViewableProfileTarget", () => {
     expect(result).toEqual({
       database: built.chain,
       targetUserId: "target-1",
+      viewerId: "viewer-1",
     });
   });
 

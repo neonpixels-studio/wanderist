@@ -289,8 +289,6 @@ describe("useProfile", () => {
           status: "past",
           startDate: null,
           endDate: null,
-          distanceKm: null,
-          stopCount: 0,
         },
       ],
       hasMore: false,
@@ -311,8 +309,6 @@ describe("useProfile", () => {
         status: "past",
         startDate: null,
         endDate: null,
-        distanceKm: null,
-        stopCount: 0,
       },
     ]);
   });
@@ -328,8 +324,6 @@ describe("useProfile", () => {
           status: "past",
           startDate: null,
           endDate: null,
-          distanceKm: null,
-          stopCount: 0,
         },
       ],
       hasMore: true,
@@ -354,8 +348,6 @@ describe("useProfile", () => {
         status: "past",
         startDate: null,
         endDate: null,
-        distanceKm: null,
-        stopCount: 0,
       },
     ];
     mockApiFetch.mockResolvedValueOnce({ trips: tripRows, hasMore: false });
@@ -387,8 +379,6 @@ describe("useProfile", () => {
         status: "past",
         startDate: null,
         endDate: null,
-        distanceKm: null,
-        stopCount: 4,
       },
     ];
     mockApiFetch.mockResolvedValue({ trips: tripRows, hasMore: true });
@@ -412,8 +402,6 @@ describe("useProfile", () => {
           status: "past",
           startDate: null,
           endDate: null,
-          distanceKm: null,
-          stopCount: 0,
         },
       ],
       hasMore: false,

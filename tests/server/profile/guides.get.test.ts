@@ -36,13 +36,20 @@ describe("GET /api/users/[id]/guides", () => {
         ReturnType<typeof requireViewableProfileTarget>
       >["database"],
       targetUserId: "target-1",
+      viewerId: "viewer-1",
     });
     mockFetchPublicGuides.mockResolvedValue({ guides: GUIDES, hasMore: true });
 
     const result = await callHandler();
 
     expect(result).toEqual({ guides: GUIDES, hasMore: true });
-    expect(mockFetchPublicGuides).toHaveBeenCalledWith({}, "target-1");
+    // The viewer id must be forwarded: fetchPublicGuides relies on it to tell
+    // an owner viewing their own guides apart from anyone else.
+    expect(mockFetchPublicGuides).toHaveBeenCalledWith(
+      {},
+      "target-1",
+      "viewer-1",
+    );
   });
 
   it("does not list guides when the visibility guard rejects", async () => {

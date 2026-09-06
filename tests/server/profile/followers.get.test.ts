@@ -34,6 +34,7 @@ describe("GET /api/users/[id]/followers", () => {
         ReturnType<typeof requireViewableProfileTarget>
       >["database"],
       targetUserId: "target-1",
+      viewerId: "viewer-1",
     });
     mockFetchFollowers.mockResolvedValue({
       followers: FOLLOWERS,

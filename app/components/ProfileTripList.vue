@@ -60,26 +60,28 @@ function tripStatusClass(status: string): string {
   return STATUS_CLASSES[status] ?? "tag--past";
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+// Mirrors the display convention trips/index.vue uses for its trip cards
+// (date range + day count) so the same trip reads identically wherever it
+// appears.
 function formatTripDates(trip: ProfileTrip): string {
   if (!trip.startDate) {
     return "dates TBD";
   }
 
-  const startLabel = new Date(trip.startDate).toLocaleDateString(
-    "en-US",
-    UTC_DATE_FORMAT,
-  );
+  const start = new Date(trip.startDate);
+  const startLabel = start.toLocaleDateString("en-US", UTC_DATE_FORMAT);
 
   if (!trip.endDate) {
     return startLabel;
   }
 
-  const endLabel = new Date(trip.endDate).toLocaleDateString(
-    "en-US",
-    UTC_DATE_FORMAT,
-  );
+  const end = new Date(trip.endDate);
+  const endLabel = end.toLocaleDateString("en-US", UTC_DATE_FORMAT);
+  const days = Math.round((end.getTime() - start.getTime()) / MS_PER_DAY);
 
-  return `${startLabel} – ${endLabel}`;
+  return `${startLabel} – ${endLabel} · ${days} days`;
 }
 </script>
 
@@ -122,21 +124,6 @@ function formatTripDates(trip: ProfileTrip): string {
   font-size: 11px;
   color: var(--muted);
   display: block;
-}
-
-.tag--ongoing {
-  border-color: var(--success-ink);
-  color: var(--success-ink);
-  background: var(--success-weak);
-}
-.tag--upcoming {
-  border-color: var(--info-ink);
-  color: var(--info-ink);
-  background: var(--info-weak);
-}
-.tag--past {
-  border-color: var(--line-strong);
-  color: var(--muted);
 }
 
 .empty-note {

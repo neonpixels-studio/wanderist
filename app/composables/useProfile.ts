@@ -14,10 +14,10 @@
  * viewer may not see, so the composable cannot (and should not) distinguish
  * them — both surface as `notFound`.
  *
- * All fetchers are re-entrant (the profile route re-runs them when its `id`
- * param changes) so each call carries a monotonic request id and a late
- * response from a superseded call is discarded — a slow first profile can never
- * overwrite a faster second one.
+ * fetchProfile aside, the followers/trips/guides fetchers share one identical
+ * request lifecycle (bump a request id, clear the list on a profile switch,
+ * discard a superseded response, surface a non-404 failure) — see
+ * `createListFetcher` — so it lives once instead of three times.
  */
 
 const NOT_FOUND_STATUS = 404;
@@ -47,8 +47,6 @@ export interface ProfileTrip {
   status: string;
   startDate: string | null;
   endDate: string | null;
-  distanceKm: number | null;
-  stopCount: number;
 }
 
 export interface ProfileGuide {
@@ -74,42 +72,105 @@ function isNotFound(error: unknown): boolean {
   return status === NOT_FOUND_STATUS;
 }
 
+interface ListFetchState<Item> {
+  items: Ref<Item[]>;
+  hasMore: Ref<boolean>;
+  loading: Ref<boolean>;
+  errorMessage: Ref<string | null>;
+}
+
+function createListFetchState<Item>(): ListFetchState<Item> {
+  return {
+    items: ref<Item[]>([]) as Ref<Item[]>,
+    // Starts true so the first (pre-fetch) render shows the loading state
+    // rather than an empty body; the fetcher flips it false once it settles.
+    loading: ref(true),
+    hasMore: ref(false),
+    errorMessage: ref<string | null>(null),
+  };
+}
+
+/**
+ * Builds a re-entrant fetcher for one profile sub-resource list at
+ * `/api/users/[id]/<resourcePath>`. Re-entrant because the profile route
+ * re-runs these fetchers when its `id` param changes: each call carries a
+ * monotonic request id so a late response from a superseded call is
+ * discarded, and switching to a different profile clears the list immediately
+ * (a same-user refresh, e.g. after a follow toggle, keeps it visible instead
+ * of flashing back to the loading note).
+ *
+ * `extractPage` maps the endpoint's response (whose item key differs per
+ * resource — `followers`/`trips`/`guides`) to a common `{ items, hasMore }`
+ * shape.
+ */
+function createListFetcher<Item, Response>(
+  apiFetch: <T>(url: string) => Promise<T>,
+  state: ListFetchState<Item>,
+  resourcePath: string,
+  extractPage: (response: Response) => { items: Item[]; hasMore: boolean },
+  notFoundLogLabel: string,
+  userFacingErrorMessage: string,
+): (userId: string) => Promise<void> {
+  let requestId = 0;
+  let loadedUserId: string | null = null;
+
+  return async function fetchPage(userId: string): Promise<void> {
+    const thisRequestId = ++requestId;
+    if (userId !== loadedUserId) {
+      state.items.value = [];
+      state.hasMore.value = false;
+      loadedUserId = userId;
+    }
+    state.loading.value = true;
+    state.errorMessage.value = null;
+
+    try {
+      const response = await apiFetch<Response>(
+        `/api/users/${encodeURIComponent(userId)}/${resourcePath}`,
+      );
+      if (thisRequestId !== requestId) {
+        return;
+      }
+      const page = extractPage(response);
+      state.items.value = page.items;
+      state.hasMore.value = page.hasMore;
+    } catch (fetchError) {
+      if (thisRequestId !== requestId) {
+        return;
+      }
+      state.items.value = [];
+      state.hasMore.value = false;
+      // A private/missing profile already surfaces via fetchProfile's
+      // notFound, so a 404 here needs no separate error. Any other failure
+      // must not be shown to the user as an empty list — surface it loudly.
+      if (isNotFound(fetchError)) {
+        return;
+      }
+      console.error(notFoundLogLabel, fetchError);
+      state.errorMessage.value = userFacingErrorMessage;
+    } finally {
+      if (thisRequestId === requestId) {
+        state.loading.value = false;
+      }
+    }
+  };
+}
+
 export function useProfile() {
   const { apiFetch } = useApiClient();
 
   const profile = ref<ProfileUser | null>(null);
-  const followers = ref<ProfileFollower[]>([]);
-  const hasMoreFollowers = ref(false);
-  const trips = ref<ProfileTrip[]>([]);
-  const hasMoreTrips = ref(false);
-  const guides = ref<ProfileGuide[]>([]);
-  const hasMoreGuides = ref(false);
   // Starts true so the first (pre-fetch) render shows the loading state rather
   // than an empty body; fetchProfile flips it false when the request settles.
   const isLoading = ref(true);
-  const followersLoading = ref(true);
-  const tripsLoading = ref(true);
-  const guidesLoading = ref(true);
   const notFound = ref(false);
   const error = ref<string | null>(null);
-  const followersError = ref<string | null>(null);
-  const tripsError = ref<string | null>(null);
-  const guidesError = ref<string | null>(null);
 
-  // Monotonic request ids; a resolved response is applied only if it is still
-  // the latest call, so out-of-order responses from rapid param changes are
-  // discarded.
+  const followersState = createListFetchState<ProfileFollower>();
+  const tripsState = createListFetchState<ProfileTrip>();
+  const guidesState = createListFetchState<ProfileGuide>();
+
   let profileRequestId = 0;
-  let followersRequestId = 0;
-  let tripsRequestId = 0;
-  let guidesRequestId = 0;
-
-  // The user whose followers/trips/guides are currently loaded, so a switch to
-  // a different profile can clear the stale list up front while a same-user
-  // refresh keeps it visible.
-  let loadedFollowersUserId: string | null = null;
-  let loadedTripsUserId: string | null = null;
-  let loadedGuidesUserId: string | null = null;
 
   async function fetchProfile(userId: string): Promise<void> {
     const requestId = ++profileRequestId;
@@ -143,158 +204,59 @@ export function useProfile() {
     }
   }
 
-  async function fetchFollowers(userId: string): Promise<void> {
-    const requestId = ++followersRequestId;
-    // Switching to a different profile: drop the previous traveler's followers
-    // immediately so the list can't render under the new name while the new
-    // fetch is in flight. A same-user refresh (e.g. after a follow toggle)
-    // keeps the list visible to avoid flashing back to the loading note.
-    if (userId !== loadedFollowersUserId) {
-      followers.value = [];
-      hasMoreFollowers.value = false;
-      loadedFollowersUserId = userId;
-    }
-    followersLoading.value = true;
-    followersError.value = null;
+  const fetchFollowers = createListFetcher<
+    ProfileFollower,
+    { followers: ProfileFollower[]; hasMore: boolean }
+  >(
+    apiFetch,
+    followersState,
+    "followers",
+    (response) => ({ items: response.followers, hasMore: response.hasMore }),
+    "useProfile: fetchFollowers failed",
+    "Could not load followers",
+  );
 
-    try {
-      const response = await apiFetch<{
-        followers: ProfileFollower[];
-        hasMore: boolean;
-      }>(`/api/users/${encodeURIComponent(userId)}/followers`);
-      if (requestId !== followersRequestId) {
-        return;
-      }
-      followers.value = response.followers;
-      hasMoreFollowers.value = response.hasMore;
-    } catch (fetchError) {
-      if (requestId !== followersRequestId) {
-        return;
-      }
-      followers.value = [];
-      hasMoreFollowers.value = false;
-      // A private/missing profile already surfaces via fetchProfile's notFound,
-      // so a 404 here needs no separate error. Any other failure must not be
-      // shown to the user as "no followers" — surface it loudly instead.
-      if (isNotFound(fetchError)) {
-        return;
-      }
-      console.error("useProfile: fetchFollowers failed", fetchError);
-      followersError.value = "Could not load followers";
-    } finally {
-      if (requestId === followersRequestId) {
-        followersLoading.value = false;
-      }
-    }
-  }
+  const fetchTrips = createListFetcher<
+    ProfileTrip,
+    { trips: ProfileTrip[]; hasMore: boolean }
+  >(
+    apiFetch,
+    tripsState,
+    "trips",
+    (response) => ({ items: response.trips, hasMore: response.hasMore }),
+    "useProfile: fetchTrips failed",
+    "Could not load trips",
+  );
 
-  async function fetchTrips(userId: string): Promise<void> {
-    const requestId = ++tripsRequestId;
-    // Switching to a different profile: drop the previous traveler's trips
-    // immediately so the list can't render under the new name while the new
-    // fetch is in flight. A same-user refresh keeps the list visible to avoid
-    // flashing back to the loading note.
-    if (userId !== loadedTripsUserId) {
-      trips.value = [];
-      hasMoreTrips.value = false;
-      loadedTripsUserId = userId;
-    }
-    tripsLoading.value = true;
-    tripsError.value = null;
-
-    try {
-      const response = await apiFetch<{
-        trips: ProfileTrip[];
-        hasMore: boolean;
-      }>(`/api/users/${encodeURIComponent(userId)}/trips`);
-      if (requestId !== tripsRequestId) {
-        return;
-      }
-      trips.value = response.trips;
-      hasMoreTrips.value = response.hasMore;
-    } catch (fetchError) {
-      if (requestId !== tripsRequestId) {
-        return;
-      }
-      trips.value = [];
-      hasMoreTrips.value = false;
-      // A private/missing profile already surfaces via fetchProfile's notFound,
-      // so a 404 here needs no separate error. Any other failure must not be
-      // shown to the user as "no trips" — surface it loudly instead.
-      if (isNotFound(fetchError)) {
-        return;
-      }
-      console.error("useProfile: fetchTrips failed", fetchError);
-      tripsError.value = "Could not load trips";
-    } finally {
-      if (requestId === tripsRequestId) {
-        tripsLoading.value = false;
-      }
-    }
-  }
-
-  async function fetchGuides(userId: string): Promise<void> {
-    const requestId = ++guidesRequestId;
-    // Switching to a different profile: drop the previous traveler's guides
-    // immediately so the list can't render under the new name while the new
-    // fetch is in flight. A same-user refresh keeps the list visible to avoid
-    // flashing back to the loading note.
-    if (userId !== loadedGuidesUserId) {
-      guides.value = [];
-      hasMoreGuides.value = false;
-      loadedGuidesUserId = userId;
-    }
-    guidesLoading.value = true;
-    guidesError.value = null;
-
-    try {
-      const response = await apiFetch<{
-        guides: ProfileGuide[];
-        hasMore: boolean;
-      }>(`/api/users/${encodeURIComponent(userId)}/guides`);
-      if (requestId !== guidesRequestId) {
-        return;
-      }
-      guides.value = response.guides;
-      hasMoreGuides.value = response.hasMore;
-    } catch (fetchError) {
-      if (requestId !== guidesRequestId) {
-        return;
-      }
-      guides.value = [];
-      hasMoreGuides.value = false;
-      // A private/missing profile already surfaces via fetchProfile's notFound,
-      // so a 404 here needs no separate error. Any other failure must not be
-      // shown to the user as "no guides" — surface it loudly instead.
-      if (isNotFound(fetchError)) {
-        return;
-      }
-      console.error("useProfile: fetchGuides failed", fetchError);
-      guidesError.value = "Could not load guides";
-    } finally {
-      if (requestId === guidesRequestId) {
-        guidesLoading.value = false;
-      }
-    }
-  }
+  const fetchGuides = createListFetcher<
+    ProfileGuide,
+    { guides: ProfileGuide[]; hasMore: boolean }
+  >(
+    apiFetch,
+    guidesState,
+    "guides",
+    (response) => ({ items: response.guides, hasMore: response.hasMore }),
+    "useProfile: fetchGuides failed",
+    "Could not load guides",
+  );
 
   return {
     profile,
-    followers,
-    hasMoreFollowers,
-    trips,
-    hasMoreTrips,
-    guides,
-    hasMoreGuides,
+    followers: followersState.items,
+    hasMoreFollowers: followersState.hasMore,
+    trips: tripsState.items,
+    hasMoreTrips: tripsState.hasMore,
+    guides: guidesState.items,
+    hasMoreGuides: guidesState.hasMore,
     isLoading,
-    followersLoading,
-    tripsLoading,
-    guidesLoading,
+    followersLoading: followersState.loading,
+    tripsLoading: tripsState.loading,
+    guidesLoading: guidesState.loading,
     notFound,
     error,
-    followersError,
-    tripsError,
-    guidesError,
+    followersError: followersState.errorMessage,
+    tripsError: tripsState.errorMessage,
+    guidesError: guidesState.errorMessage,
     fetchProfile,
     fetchFollowers,
     fetchTrips,

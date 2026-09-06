@@ -23,8 +23,6 @@ const TRIPS: ProfileTrip[] = [
     status: "past",
     startDate: "2024-06-01T00:00:00.000Z",
     endDate: "2024-06-14T00:00:00.000Z",
-    distanceKm: 1300,
-    stopCount: 5,
   },
   {
     id: "trip-2",
@@ -32,8 +30,6 @@ const TRIPS: ProfileTrip[] = [
     status: "upcoming",
     startDate: null,
     endDate: null,
-    distanceKm: null,
-    stopCount: 0,
   },
 ];
 
@@ -60,6 +56,47 @@ describe("ProfileTripList", () => {
       .findAll(".trip__body span")
       .map((node) => node.text());
     expect(dates[1]).toBe("dates TBD");
+  });
+
+  it("includes the day count alongside the date range when both dates are set", () => {
+    const wrapper = mount(ProfileTripList, {
+      ...globalConfig,
+      props: { trips: TRIPS },
+    });
+
+    const dates = wrapper
+      .findAll(".trip__body span")
+      .map((node) => node.text());
+    expect(dates[0]).toBe("Jun 1, 2024 – Jun 14, 2024 · 13 days");
+  });
+
+  it("maps each known status to its tag class", () => {
+    const wrapper = mount(ProfileTripList, {
+      ...globalConfig,
+      props: {
+        trips: [
+          { ...TRIPS[0], id: "t-ongoing", status: "ongoing" },
+          { ...TRIPS[0], id: "t-upcoming", status: "upcoming" },
+          { ...TRIPS[0], id: "t-past", status: "past" },
+        ],
+      },
+    });
+
+    const tagClasses = wrapper
+      .findAll(".tag")
+      .map((node) => node.classes().find((name) => name.startsWith("tag--")));
+    expect(tagClasses).toEqual(["tag--ongoing", "tag--upcoming", "tag--past"]);
+  });
+
+  it("falls back to the past tag class for an unrecognized status", () => {
+    const wrapper = mount(ProfileTripList, {
+      ...globalConfig,
+      props: {
+        trips: [{ ...TRIPS[0], status: "archived" }],
+      },
+    });
+
+    expect(wrapper.find(".tag").classes()).toContain("tag--past");
   });
 
   it("shows an empty note when there are no public trips", () => {

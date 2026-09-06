@@ -28,8 +28,6 @@ const TRIPS = [
     status: "past",
     startDate: null,
     endDate: null,
-    distanceKm: null,
-    stopCount: 4,
   },
 ];
 
@@ -44,6 +42,7 @@ describe("GET /api/users/[id]/trips", () => {
         ReturnType<typeof requireViewableProfileTarget>
       >["database"],
       targetUserId: "target-1",
+      viewerId: "viewer-1",
     });
     mockFetchPublicTrips.mockResolvedValue({ trips: TRIPS, hasMore: true });
 

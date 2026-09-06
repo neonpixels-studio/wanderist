@@ -74,8 +74,6 @@ export interface PublicTripSummary {
   status: string;
   startDate: Date | null;
   endDate: Date | null;
-  distanceKm: number | null;
-  stopCount: number;
 }
 
 export interface PublicGuideSummary {
@@ -244,10 +242,6 @@ export async function fetchPublicTrips(
       status: trips.status,
       startDate: trips.startDate,
       endDate: trips.endDate,
-      distanceKm: trips.distanceKm,
-      stopCount: sql<number>`(
-        SELECT COUNT(*) FROM trip_stops WHERE trip_stops.trip_id = ${trips.id}
-      )`,
     })
     .from(trips)
     .where(
@@ -256,10 +250,8 @@ export async function fetchPublicTrips(
     .orderBy(desc(trips.createdAt), desc(trips.id))
     .limit(PROFILE_TRIPS_PAGE_SIZE + 1);
 
-  const page = rows.slice(0, PROFILE_TRIPS_PAGE_SIZE);
-
   return {
-    trips: page.map((row) => ({ ...row, stopCount: Number(row.stopCount) })),
+    trips: rows.slice(0, PROFILE_TRIPS_PAGE_SIZE),
     hasMore: rows.length > PROFILE_TRIPS_PAGE_SIZE,
   };
 }
@@ -276,14 +268,26 @@ export async function fetchPublicTrips(
  * historically been the only place a non-owner obtains a guide id, so that
  * gate never had to consider the profile page. This list applies the same
  * `discoverableAuthorCondition` so a guide never appears here only to 404 when
- * opened — every card shown is guaranteed openable. One consequence: an author
- * with a public profile but `showOnExplore` off will show trips but not guides
- * on their public profile; see the follow-up suggestion in the PR body.
+ * opened by someone else — every card a non-owner sees is guaranteed openable.
+ *
+ * That gate is skipped when `viewerId === userId`: the owner can always open
+ * their own guide at any visibility (`loadReadableGuide` returns it
+ * unconditionally), so applying `discoverableAuthorCondition` to a self-view
+ * would only hide the owner's own public guides from their own profile (e.g.
+ * a free-tier author, or one with `showOnExplore` off) for no reason — the
+ * "never 404 on open" rationale doesn't apply to a view the owner controls.
+ * `userPreferences` is left-joined (not inner) so an owner who never opened
+ * settings still sees their own guides in the self-view case, where that join
+ * is otherwise unused.
  */
 export async function fetchPublicGuides(
   database: Database,
   userId: string,
+  viewerId: string,
 ): Promise<GuidesPage> {
+  const authorMustBeDiscoverable =
+    viewerId === userId ? undefined : discoverableAuthorCondition();
+
   // Fetch one extra row so `hasMore` is known without a separate COUNT query.
   const rows = await database
     .select({
@@ -294,12 +298,12 @@ export async function fetchPublicGuides(
     })
     .from(guides)
     .innerJoin(users, eq(guides.userId, users.id))
-    .innerJoin(userPreferences, eq(guides.userId, userPreferences.userId))
+    .leftJoin(userPreferences, eq(guides.userId, userPreferences.userId))
     .where(
       and(
         eq(guides.userId, userId),
         eq(guides.visibility, VISIBILITY.PUBLIC),
-        discoverableAuthorCondition(),
+        authorMustBeDiscoverable,
       ),
     )
     .orderBy(desc(guides.createdAt), desc(guides.id))
@@ -343,16 +347,18 @@ export async function requireViewableProfile(
  * enforces requireViewableProfile before any `/api/users/[id]/*` sub-resource
  * list is read. Every such endpoint (followers, trips, guides) needs this
  * identical preamble; consolidating it here means a new one can't accidentally
- * skip the visibility check.
+ * skip the visibility check. Returns `viewerId` too (not just `targetUserId`)
+ * so a list that treats the owner differently from any other viewer — see
+ * `fetchPublicGuides` — can do so without re-deriving the authenticated user.
  */
 export async function requireViewableProfileTarget(
   event: H3Event,
-): Promise<{ database: Database; targetUserId: string }> {
-  const currentUserId = requireUser(event);
+): Promise<{ database: Database; targetUserId: string; viewerId: string }> {
+  const viewerId = requireUser(event);
   const targetUserId = requireRouterParam(event, "id");
   const database = getDb();
 
-  await requireViewableProfile(database, currentUserId, targetUserId);
+  await requireViewableProfile(database, viewerId, targetUserId);
 
-  return { database, targetUserId };
+  return { database, targetUserId, viewerId };
 }
