@@ -255,7 +255,11 @@ import type { Trip } from "~/stores/trips";
 import type { Entry } from "~/stores/entries";
 import type { Place } from "~/stores/places";
 import AppNewEntryLocationField from "~/components/AppNewEntryLocationField.vue";
-import { localDateToIso, localIsoDate } from "~/utils/localDate";
+import {
+  localDateToIso,
+  localIsoDate,
+  isValidLocalDate,
+} from "~/utils/localDate";
 
 const MAX_LOCATION_SUGGESTIONS = 5;
 
@@ -578,7 +582,10 @@ function applyDraftOrFreshForm(): void {
     tripId: draft.tripId,
     date: draft.date,
     visibility: draft.visibility,
-    tags: draft.tags,
+    // Matches uploadedPhotos below: a draft written before this field existed
+    // (or corrupted so it's missing) would otherwise restore `tags` as
+    // `undefined`, which crashes buildEntryPayload's `.length` read on publish.
+    tags: draft.tags ?? [],
     weather: draft.weather,
   };
   // Restore the saved place choice so it survives the round-trip. A draft
@@ -976,6 +983,14 @@ async function publish(): Promise<void> {
   // stops a double-click (or a create-then-publish in the same flush) creating
   // duplicate entries or places.
   if (isPublishing.value || isCreatingPlace.value) {
+    return;
+  }
+  // buildEntryPayload silently omits occurredAt for an invalid date (e.g. the
+  // user clears the field after a valid restore), and the server treats a
+  // missing occurredAt as "not provided" rather than an error — so without
+  // this guard the entry would publish successfully with no date at all.
+  if (!isValidLocalDate(form.value.date)) {
+    publishError.value = "Please choose a valid date before publishing.";
     return;
   }
   // Snapshot the mode before any await: a mid-save close resets props.entry to

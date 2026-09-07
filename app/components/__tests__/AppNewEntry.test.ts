@@ -369,6 +369,19 @@ describe("AppNewEntry", () => {
     expect(wrapper.emitted("close")).toBeFalsy();
   });
 
+  it("blocks publish and shows an error when the date field is cleared", async () => {
+    const wrapper = mountOpen();
+    await wrapper.find('input[type="date"]').setValue("");
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "valid date",
+    );
+  });
+
   it("calls saveDraft composable when save draft is clicked", async () => {
     const wrapper = mountOpen();
     await wrapper.find(".btn--ghost").trigger("click");
@@ -410,6 +423,29 @@ describe("AppNewEntry", () => {
     );
     expect((titleInput.element as HTMLInputElement).value).toBe(
       "Restored title",
+    );
+  });
+
+  it("falls back to an empty tags array when a restored draft lacks tags", async () => {
+    const { tags: _tags, ...draftWithoutTags } = {
+      title: "Restored title",
+      body: "Some body text",
+      location: "Lisbon",
+      tripId: "trip-saved",
+      date: "2026-06-01",
+      visibility: "public",
+      tags: ["portugal"],
+      weather: "clear",
+      uploadedPhotos: [],
+    } satisfies EntryDraft;
+    mockLoadDraft.mockReturnValue(draftWithoutTags as EntryDraft);
+
+    const wrapper = mountOpen();
+    await wrapper.vm.$nextTick();
+    await wrapper.find(".btn--ghost").trigger("click");
+
+    expect(mockSaveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ tags: [] }),
     );
   });
 

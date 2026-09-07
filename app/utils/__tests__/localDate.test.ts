@@ -79,21 +79,33 @@ describe("localDateToIso", () => {
 });
 
 describe("localIsoDate", () => {
-  beforeEach(() => {
-    // Pin TZ too, not just the clock: a host east of UTC+12 (e.g. Pacific/Kiritimati,
-    // UTC+14) would otherwise see noon UTC as the next local day, breaking this
-    // assertion independent of which instant is under test.
-    process.env.TZ = "UTC";
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-06T12:00:00.000Z"));
-  });
-
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("returns today's date formatted as YYYY-MM-DD", () => {
+  it("returns today's date formatted as YYYY-MM-DD under UTC", () => {
+    process.env.TZ = "UTC";
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-06T12:00:00.000Z"));
     expect(localIsoDate()).toBe("2026-09-06");
+  });
+
+  // A UTC-only assertion can't tell a correct offset conversion from one that
+  // ignores getTimezoneOffset() entirely (or applies it with the wrong sign) —
+  // both collapse to the same result when the offset is zero. These pin an
+  // instant where the local calendar date genuinely differs from the UTC one.
+  it("returns the local calendar date west of UTC, not the UTC one", () => {
+    process.env.TZ = "Pacific/Honolulu"; // UTC-10
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-06T05:00:00.000Z")); // local: Sep 5, 19:00
+    expect(localIsoDate()).toBe("2026-09-05");
+  });
+
+  it("returns the local calendar date east of UTC, not the UTC one", () => {
+    process.env.TZ = "Asia/Tokyo"; // UTC+9
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-06T20:00:00.000Z")); // local: Sep 7, 05:00
+    expect(localIsoDate()).toBe("2026-09-07");
   });
 });
 
