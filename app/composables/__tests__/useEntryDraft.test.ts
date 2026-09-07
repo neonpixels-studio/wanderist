@@ -43,6 +43,10 @@ describe("useEntryDraft", () => {
   beforeEach(() => {
     localStorage.clear();
     vi.restoreAllMocks();
+    // restoreAllMocks does not undo vi.stubGlobal, so a test that forgets to
+    // re-stub would otherwise silently inherit whatever the previous test
+    // left behind. Clear it explicitly, then always re-install the default.
+    vi.unstubAllGlobals();
     installClerkUserStub(null);
   });
 

@@ -64,28 +64,30 @@ export function useEntryDraft() {
   // The legacy unscoped key predates per-user scoping and could belong to any
   // account that used this browser. We can't safely attribute it to whichever
   // user happens to load next, so rather than migrating it into that user's
-  // draft, we drop it once here — reasonable cleanup that stops it from ever
-  // leaking into an account it wasn't written for. Safe to call even when the
-  // key was never set.
+  // draft, we drop it — reasonable cleanup that stops it from ever leaking
+  // into an account it wasn't written for. Safe to call even when the key was
+  // never set. Only called once we have a resolved, signed-in key so it never
+  // fires (and destroys a legacy draft pointlessly) while the session is
+  // still loading or signed out and there is no user to hand the cleanup to.
   function cleanupLegacyDraft(): void {
     localStorage.removeItem(LEGACY_DRAFT_STORAGE_KEY);
   }
 
   function saveDraft(draft: EntryDraft): void {
-    cleanupLegacyDraft();
     const key = draftStorageKey();
     if (!key) {
       return;
     }
+    cleanupLegacyDraft();
     localStorage.setItem(key, JSON.stringify(draft));
   }
 
   function loadDraft(): EntryDraft | null {
-    cleanupLegacyDraft();
     const key = draftStorageKey();
     if (!key) {
       return null;
     }
+    cleanupLegacyDraft();
     const raw = localStorage.getItem(key);
     if (!raw) {
       return null;
