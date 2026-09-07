@@ -3,8 +3,15 @@
     <div class="empty-note">Loading guide…</div>
   </div>
 
+  <div v-else-if="loadError" class="content content--wide">
+    <AppAlert intent="error" :message="loadError" />
+    <button class="btn btn--outline btn--sm gdetail__back" @click="onRetryLoad">
+      try again
+    </button>
+  </div>
+
   <div v-else-if="!guide" class="content content--wide">
-    <div class="empty-note">{{ guideError ?? "Guide not found." }}</div>
+    <div class="empty-note">Guide not found.</div>
     <NuxtLink to="/guides" class="btn btn--outline btn--sm gdetail__back">
       back to guides
     </NuxtLink>
@@ -67,22 +74,30 @@ const guide = computed(() =>
     ? guidesStore.currentGuide
     : null,
 );
-const guideError = computed(() => guidesStore.guideError);
+// A 404 means the guide is missing or private — rendered as "Guide not found"
+// below. Any other failure (5xx, network) is retryable and must not look like
+// a missing guide to a share-link visitor, so it gets its own error state.
+const loadError = computed(() => guidesStore.guideError);
 
 // `server: false` keeps the fetch client-only, mirroring u/[id].vue: the request
 // carries the Clerk session token, which only exists on the client (Clerk runs
 // with skipServerMiddleware). Running it during SSR would hang, since Clerk's
 // getToken never resolves on the server. A failed load rejects (no .catch); the
-// store records guideError / nulls currentGuide, so the template renders its
-// not-found / error state — an anonymous visitor on a private or missing guide
-// sees "Guide not found" rather than being redirected to /login. This does mean
-// a shared link is not server-rendered (no unfurl preview); that is an accepted
-// trade for staying on the codebase's client-only-auth pattern.
-const { status: fetchStatus } = useAsyncData(
+// store records guideNotFound/guideError and nulls currentGuide, so the
+// template renders its not-found or retryable-error state accordingly — an
+// anonymous visitor on a private or missing guide sees "Guide not found"
+// rather than being redirected to /login. This does mean a shared link is not
+// server-rendered (no unfurl preview); that is an accepted trade for staying
+// on the codebase's client-only-auth pattern.
+const { status: fetchStatus, refresh: refreshGuide } = useAsyncData(
   () => `guide-detail-${guideId.value}`,
   () => guidesStore.fetchGuideById(guideId.value),
   { server: false, watch: [guideId] },
 );
+
+async function onRetryLoad(): Promise<void> {
+  await refreshGuide();
+}
 
 // Until the client fetch resolves, the SSR pass and hydration frame have no
 // guide yet. Treat that window as loading so a valid public guide never flashes

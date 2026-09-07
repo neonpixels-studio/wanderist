@@ -252,6 +252,34 @@ describe("useGuidesStore", () => {
       expect(store.isLoadingGuide).toBe(false);
     });
 
+    it("sets guideNotFound (not guideError) on a 404, so the page renders not-found rather than a retry prompt", async () => {
+      const notFoundError = Object.assign(new Error("Not Found"), {
+        statusCode: 404,
+      });
+      mockApiFetch.mockRejectedValue(notFoundError);
+      const store = useGuidesStore();
+
+      await expect(store.fetchGuideById("g-missing")).rejects.toThrow();
+
+      expect(store.currentGuide).toBeNull();
+      expect(store.guideNotFound).toBe(true);
+      expect(store.guideError).toBeNull();
+    });
+
+    it("sets guideError (not guideNotFound) on a 5xx, so a share-link visitor sees a retryable error instead of not-found", async () => {
+      const serverError = Object.assign(new Error("Internal Server Error"), {
+        statusCode: 500,
+      });
+      mockApiFetch.mockRejectedValue(serverError);
+      const store = useGuidesStore();
+
+      await expect(store.fetchGuideById("g-1")).rejects.toThrow();
+
+      expect(store.currentGuide).toBeNull();
+      expect(store.guideNotFound).toBe(false);
+      expect(store.guideError).toBe("Internal Server Error");
+    });
+
     it("drops a stale response so an older request can't overwrite a newer guide", async () => {
       const slowGuide = { ...guide, id: "g-slow", title: "Slow" };
       const fastGuide = { ...guide, id: "g-fast", title: "Fast" };

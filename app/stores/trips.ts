@@ -1,4 +1,6 @@
 import { defineStore } from "pinia";
+import { extractErrorMessage } from "~/utils/extractErrorMessage";
+import { isNotFoundError } from "~/utils/isNotFoundError";
 
 type TripStatus = "ongoing" | "upcoming" | "past";
 type TripVisibility = "private" | "public";
@@ -122,7 +124,11 @@ export const useTripsStore = defineStore("trips", () => {
   const isLoadingList = ref(false);
   const isLoadingDetail = ref(false);
   const listError = ref<string | null>(null);
+  // detailError carries a message for a retryable failure (5xx, network); a 404
+  // instead sets detailNotFound so the page can show "not found" rather than a
+  // retry prompt for a private/missing trip a share-link visitor hit.
   const detailError = ref<string | null>(null);
+  const detailNotFound = ref(false);
 
   // GET /api/trips is paginated server-side to keep each query bounded (see
   // server/api/trips/index.get.ts), but every UI consumer of the trips page
@@ -186,14 +192,21 @@ export const useTripsStore = defineStore("trips", () => {
   async function fetchTripById(tripId: string): Promise<void> {
     isLoadingDetail.value = true;
     detailError.value = null;
+    detailNotFound.value = false;
 
     try {
       currentTripDetail.value = await apiFetch<TripDetail>(
         `/api/trips/${tripId}`,
       );
     } catch (error) {
-      detailError.value =
-        error instanceof Error ? error.message : "Failed to load trip";
+      // Clear any stale trip so the detail page renders its not-found/error
+      // state rather than the previously-open trip when a fetch fails.
+      currentTripDetail.value = null;
+      if (isNotFoundError(error)) {
+        detailNotFound.value = true;
+      } else {
+        detailError.value = extractErrorMessage(error);
+      }
       throw error;
     } finally {
       isLoadingDetail.value = false;
@@ -360,6 +373,7 @@ export const useTripsStore = defineStore("trips", () => {
     isLoadingDetail,
     listError,
     detailError,
+    detailNotFound,
     fetchTrips,
     fetchTripById,
     createTrip,

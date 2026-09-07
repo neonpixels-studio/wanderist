@@ -16,7 +16,7 @@
  * overwrite a faster second one.
  */
 
-const NOT_FOUND_STATUS = 404;
+import { isNotFoundError } from "~/utils/isNotFoundError";
 
 export interface ProfileUser {
   userId: string;
@@ -35,22 +35,6 @@ export interface ProfileFollower {
   userId: string;
   displayName: string | null;
   handle: string | null;
-}
-
-function isNotFound(error: unknown): boolean {
-  // ofetch's FetchError exposes statusCode, but be defensive about wrappers that
-  // only preserve response.status or a nested data.statusCode — otherwise a
-  // private/missing profile would render as a generic error, not "unavailable".
-  const candidate = error as {
-    statusCode?: number;
-    response?: { status?: number };
-    data?: { statusCode?: number };
-  };
-  const status =
-    candidate?.statusCode ??
-    candidate?.response?.status ??
-    candidate?.data?.statusCode;
-  return status === NOT_FOUND_STATUS;
 }
 
 export function useProfile() {
@@ -97,7 +81,7 @@ export function useProfile() {
         return;
       }
       profile.value = null;
-      if (isNotFound(fetchError)) {
+      if (isNotFoundError(fetchError)) {
         notFound.value = true;
         return;
       }
@@ -143,7 +127,7 @@ export function useProfile() {
       // A private/missing profile already surfaces via fetchProfile's notFound,
       // so a 404 here needs no separate error. Any other failure must not be
       // shown to the user as "no followers" — surface it loudly instead.
-      if (isNotFound(fetchError)) {
+      if (isNotFoundError(fetchError)) {
         return;
       }
       console.error("useProfile: fetchFollowers failed", fetchError);

@@ -4,6 +4,23 @@
   </div>
 
   <div
+    v-else-if="detailLoadError"
+    class="content content--wide"
+    style="padding-top: 0"
+  >
+    <div class="empty-state">
+      <AppAlert intent="error" :message="detailLoadError" />
+      <button
+        class="btn btn--outline btn--sm"
+        style="margin-top: 12px"
+        @click="onRetryLoad"
+      >
+        try again
+      </button>
+    </div>
+  </div>
+
+  <div
     v-else-if="!tripDetail"
     class="content content--wide"
     style="padding-top: 0"
@@ -382,11 +399,20 @@ const canRetryAuthenticated = computed(
 // trip. Re-running once the session resolves re-issues the request with a token
 // so the owner gets their private trip; a public trip already resolved on the
 // anonymous pass.
-const { status: fetchStatus } = useAsyncData(
+const { status: fetchStatus, refresh: refreshTripDetail } = useAsyncData(
   () => `trip-detail-${tripId.value}`,
   () => tripsStore.fetchTripById(tripId.value),
   { server: false, watch: [tripId, canRetryAuthenticated] },
 );
+
+// A 404 means the trip is missing or private — rendered as "Trip not found"
+// below. Any other failure (5xx, network) is retryable and must not look like
+// a missing trip to a share-link visitor, so it gets its own error state.
+const detailLoadError = computed(() => tripsStore.detailError);
+
+async function onRetryLoad(): Promise<void> {
+  await refreshTripDetail();
+}
 
 // Until the client fetch resolves, the SSR pass and hydration frame have no trip
 // yet. Treat that window as loading so a valid trip never flashes "Trip not
