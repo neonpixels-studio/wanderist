@@ -252,6 +252,7 @@ import { useStats } from "~/composables/useStats";
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Map" });
 
+const route = useRoute();
 const placesStore = usePlacesStore();
 const mapbox = useMapbox();
 const {
@@ -354,6 +355,31 @@ function selectPlaceById(placeId: string): void {
   }
 
   selectPlace(place);
+}
+
+// Explore's trending-place cards can't deep-link by id (fetchTrendingPlaces
+// aggregates across users and drops it), so they link here with the place
+// name as a query param instead. Pre-filling the search always narrows the
+// list to that name; a saved place with a matching name is also auto-opened.
+// A trending place the viewer hasn't personally saved has no marker here to
+// focus, so search-narrowing is the best available fallback for that case.
+function focusPlaceFromQuery(): void {
+  const queryValue = route.query.place;
+  const placeName = typeof queryValue === "string" ? queryValue.trim() : "";
+
+  if (!placeName) {
+    return;
+  }
+
+  searchQuery.value = placeName;
+
+  const matchingPlace = placesStore.places.find(
+    (candidate) => candidate.name.toLowerCase() === placeName.toLowerCase(),
+  );
+
+  if (matchingPlace) {
+    selectPlace(matchingPlace);
+  }
 }
 
 function closeDetail(): void {
@@ -559,6 +585,7 @@ watch(
 
 onMounted(async () => {
   await placesStore.fetchPlaces().catch(() => undefined);
+  focusPlaceFromQuery();
   await initializeMap();
   fetchMapStats();
 });

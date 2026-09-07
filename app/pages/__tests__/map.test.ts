@@ -6,6 +6,12 @@ import MapPage from "../map.vue";
 import PlaceEditForm from "~/components/PlaceEditForm.vue";
 import { pageGlobalConfig as globalConfig } from "./test-utils";
 
+// Explore's trending-place cards link here with the place name as a `place`
+// query param (see issue #218). Mutated per-test to simulate arriving from
+// that link; reset in beforeEach so it doesn't leak between tests.
+const routeQuery: { place?: string } = {};
+vi.stubGlobal("useRoute", () => ({ params: {}, query: routeQuery }));
+
 const mockMapStats = ref({
   placesCount: 117,
   countriesCount: 9,
@@ -163,6 +169,7 @@ describe("Map page (/map)", () => {
     vi.clearAllMocks();
     stubPaginatedPlacesResponse([]);
     setActivePinia(createPinia());
+    delete routeQuery.place;
   });
 
   it("renders the map stage and matches snapshot", async () => {
@@ -372,6 +379,48 @@ describe("Map page (/map)", () => {
 
     await wrapper.findAll(".place-item")[1].trigger("click");
     expect(wrapper.find(".place-edit-form").exists()).toBe(false);
+  });
+
+  it("auto-selects and pre-fills search for a place matching the ?place= query param", async () => {
+    routeQuery.place = "Tokyo";
+    const wrapper = await mountWithPlaces();
+
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("Tokyo");
+    expect(wrapper.find(".detail.is-open").exists()).toBe(true);
+    expect(wrapper.find(".detail__name").text()).toBe("Tokyo");
+  });
+
+  it("matches the ?place= query param case-insensitively", async () => {
+    routeQuery.place = "tokyo";
+    const wrapper = await mountWithPlaces();
+
+    expect(wrapper.find(".detail__name").text()).toBe("Tokyo");
+  });
+
+  it("pre-fills search but selects nothing when ?place= matches no saved place", async () => {
+    // Trending places are aggregated across all users (see fetchTrendingPlaces),
+    // so most clicked-through names won't be among the viewer's own places —
+    // there is no marker to focus, only the search list to narrow.
+    routeQuery.place = "Reynisfjara";
+    const wrapper = await mountWithPlaces();
+
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("Reynisfjara");
+    expect(wrapper.find(".detail.is-open").exists()).toBe(false);
+    expect(wrapper.findAll(".place-item")).toHaveLength(0);
+  });
+
+  it("does not select or filter when no ?place= query param is present", async () => {
+    const wrapper = await mountWithPlaces();
+
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("");
+    expect(wrapper.find(".detail.is-open").exists()).toBe(false);
+    expect(wrapper.findAll(".place-item")).toHaveLength(SAMPLE_PLACES.length);
   });
 
   it("shows places error alert when fetchPlaces fails", async () => {

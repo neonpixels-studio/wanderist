@@ -170,7 +170,7 @@
           v-for="place in trendingPlaces"
           :key="`${place.name}-${place.country}-${place.category}`"
           class="pcard"
-          to="/map"
+          :to="placeMapLink(place)"
         >
           <div class="pcard__cover ph">
             <div class="topo" />
@@ -304,6 +304,7 @@ import type {
   FeaturedTrip,
   DiscoverGuide,
   SuggestedPerson,
+  TrendingPlace,
 } from "~/composables/useDiscover";
 import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
 
@@ -472,6 +473,17 @@ function formatSaveCount(count: number): string {
     return `${(count / 1000).toFixed(1)}k`;
   }
   return String(count);
+}
+
+// Trending places are aggregated by name/country/category across all users
+// (see fetchTrendingPlaces), so no place id survives the grouping. The map
+// page can't deep-link to a specific marker without an id, so it links with
+// the place name as a query param instead and resolves it client-side.
+function placeMapLink(place: TrendingPlace): {
+  path: string;
+  query: { place: string };
+} {
+  return { path: "/map", query: { place: place.name } };
 }
 
 // ---------------------------------------------------------------------------

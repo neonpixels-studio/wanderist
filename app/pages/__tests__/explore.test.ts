@@ -336,6 +336,23 @@ describe("Explore page (/explore)", () => {
     expect(names).toContain("Alfama");
   });
 
+  it("links each trending place card to /map with that place's name as a query param", () => {
+    const wrapper = mount(ExplorePage, globalConfig);
+    // Guards against every card linking to a bare /map with no way to focus
+    // the clicked place (see issue #218).
+    const placeLinks = wrapper
+      .findAllComponents(linkStub)
+      .filter((link) => link.classes().includes("pcard"));
+    expect(placeLinks[0].props("to")).toEqual({
+      path: "/map",
+      query: { place: "Reynisfjara" },
+    });
+    expect(placeLinks[1].props("to")).toEqual({
+      path: "/map",
+      query: { place: "Alfama" },
+    });
+  });
+
   it("renders 3 guide cards from API data", () => {
     const wrapper = mount(ExplorePage, globalConfig);
     expect(wrapper.findAll(".guide")).toHaveLength(3);
