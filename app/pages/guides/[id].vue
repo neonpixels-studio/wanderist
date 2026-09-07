@@ -8,9 +8,15 @@
     <button class="btn btn--outline btn--sm gdetail__back" @click="onRetryLoad">
       try again
     </button>
+    <NuxtLink to="/guides" class="btn btn--outline btn--sm gdetail__back">
+      back to guides
+    </NuxtLink>
   </div>
 
-  <div v-else-if="!guide" class="content content--wide">
+  <div
+    v-else-if="guidesStore.guideNotFound || !guide"
+    class="content content--wide"
+  >
     <div class="empty-note">Guide not found.</div>
     <NuxtLink to="/guides" class="btn btn--outline btn--sm gdetail__back">
       back to guides

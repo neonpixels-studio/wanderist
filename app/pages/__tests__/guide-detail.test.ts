@@ -195,6 +195,21 @@ describe("Guide Detail page (/guides/[id])", () => {
     expect(mockRefresh).toHaveBeenCalled();
   });
 
+  it("offers a back-to-guides link in the retryable error state too, so a visitor isn't stranded on a retry that keeps failing", () => {
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = null;
+    guidesStore.guideNotFound = false;
+    guidesStore.guideError = "Something went wrong";
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+
+    expect(
+      wrapper
+        .findAll("a")
+        .some((link) => link.text().includes("back to guides")),
+    ).toBe(true);
+  });
+
   it("shows the not-found state (not the error alert) when no guide is loaded", () => {
     const guidesStore = useGuidesStore();
     guidesStore.currentGuide = null;

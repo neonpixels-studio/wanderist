@@ -151,5 +151,68 @@ describe("useTripsStore", () => {
 
       expect(store.isLoadingDetail).toBe(false);
     });
+
+    it("drops a stale success so an older, slower request can't overwrite a newer trip", async () => {
+      // Regression guard: a fire-and-forget caller elsewhere in the app (e.g.
+      // home.vue prefetching the dashboard's "ongoing trip") can race the trip
+      // detail page's own fetch for a different trip id. Without a request-id
+      // guard, whichever settles last wins even if it's the stale one.
+      const slowTrip: TripDetail = {
+        ...SAMPLE_TRIP_DETAIL,
+        trip: { ...SAMPLE_TRIP_DETAIL.trip, id: "trip-slow", name: "Slow" },
+      };
+      const fastTrip: TripDetail = {
+        ...SAMPLE_TRIP_DETAIL,
+        trip: { ...SAMPLE_TRIP_DETAIL.trip, id: "trip-fast", name: "Fast" },
+      };
+
+      let resolveSlow!: (value: TripDetail) => void;
+      mockApiFetch
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveSlow = resolve;
+            }),
+        )
+        .mockResolvedValueOnce(fastTrip);
+
+      const store = useTripsStore();
+      const slow = store.fetchTripById("trip-slow");
+      await store.fetchTripById("trip-fast");
+
+      resolveSlow(slowTrip);
+      await slow;
+
+      expect(store.currentTripDetail).toEqual(fastTrip);
+    });
+
+    it("does not clobber a newer request's loaded trip when an older, superseded request fails late", async () => {
+      let rejectFirst!: (reason: Error) => void;
+      mockApiFetch
+        .mockImplementationOnce(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectFirst = reject;
+            }),
+        )
+        .mockResolvedValueOnce(SAMPLE_TRIP_DETAIL);
+
+      const store = useTripsStore();
+      const first = store.fetchTripById("trip-1");
+      await store.fetchTripById("trip-1");
+
+      rejectFirst(
+        Object.assign(new Error("Internal Server Error"), {
+          statusCode: 500,
+        }),
+      );
+      await expect(first).rejects.toThrow("Internal Server Error");
+
+      // The late failure from the superseded call must not blank the trip or
+      // surface a stale error over the already-loaded state.
+      expect(store.currentTripDetail).toEqual(SAMPLE_TRIP_DETAIL);
+      expect(store.detailError).toBeNull();
+      expect(store.detailNotFound).toBe(false);
+    });
   });
 });

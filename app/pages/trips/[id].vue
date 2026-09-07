@@ -17,11 +17,18 @@
       >
         try again
       </button>
+      <NuxtLink
+        v-if="isClerkLoaded && !isSignedIn"
+        to="/login"
+        class="empty-state__signin"
+      >
+        Sign in to view your trips
+      </NuxtLink>
     </div>
   </div>
 
   <div
-    v-else-if="!tripDetail"
+    v-else-if="tripsStore.detailNotFound || !tripDetail"
     class="content content--wide"
     style="padding-top: 0"
   >

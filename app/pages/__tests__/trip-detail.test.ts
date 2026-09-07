@@ -291,6 +291,20 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(mockRefresh).toHaveBeenCalled();
   });
 
+  it("offers a sign-in link in the retryable error state too, so a signed-out visitor isn't stranded", () => {
+    // A retry that keeps failing (e.g. an expired session on a private trip)
+    // must not be the visitor's only way forward.
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    tripsStore.detailNotFound = false;
+    tripsStore.detailError = "Something went wrong loading this trip";
+    clerkSignedInRef.value = false;
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".empty-state__signin").exists()).toBe(true);
+  });
+
   it("renders add a stop button", () => {
     const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
     expect(wrapper.find(".add-btn").exists()).toBe(true);

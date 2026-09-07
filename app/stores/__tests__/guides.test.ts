@@ -280,6 +280,16 @@ describe("useGuidesStore", () => {
       expect(store.guideError).toBe("Internal Server Error");
     });
 
+    it("sets guideError (not guideNotFound) on a network failure with no status code", async () => {
+      mockApiFetch.mockRejectedValue(new TypeError("Failed to fetch"));
+      const store = useGuidesStore();
+
+      await expect(store.fetchGuideById("g-1")).rejects.toThrow();
+
+      expect(store.guideNotFound).toBe(false);
+      expect(store.guideError).toBe("Failed to fetch");
+    });
+
     it("drops a stale response so an older request can't overwrite a newer guide", async () => {
       const slowGuide = { ...guide, id: "g-slow", title: "Slow" };
       const fastGuide = { ...guide, id: "g-fast", title: "Fast" };

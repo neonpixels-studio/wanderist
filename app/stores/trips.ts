@@ -189,16 +189,29 @@ export const useTripsStore = defineStore("trips", () => {
     }
   }
 
+  // Monotonic request id; a resolved response is applied only if it is still
+  // the latest call, so a slower superseded call (e.g. home.vue's fire-and-
+  // forget fetch of the dashboard's "ongoing trip" racing the detail page's own
+  // fetch for a different trip) can't clobber fresher state on a late success
+  // or failure. Mirrors fetchGuideById's latestGuideRequestId in stores/guides.ts.
+  let latestDetailRequestId = 0;
+
   async function fetchTripById(tripId: string): Promise<void> {
+    const requestId = ++latestDetailRequestId;
     isLoadingDetail.value = true;
     detailError.value = null;
     detailNotFound.value = false;
 
     try {
-      currentTripDetail.value = await apiFetch<TripDetail>(
-        `/api/trips/${tripId}`,
-      );
+      const detail = await apiFetch<TripDetail>(`/api/trips/${tripId}`);
+      if (requestId !== latestDetailRequestId) {
+        return;
+      }
+      currentTripDetail.value = detail;
     } catch (error) {
+      if (requestId !== latestDetailRequestId) {
+        throw error;
+      }
       // Clear any stale trip so the detail page renders its not-found/error
       // state rather than the previously-open trip when a fetch fails.
       currentTripDetail.value = null;
@@ -209,7 +222,9 @@ export const useTripsStore = defineStore("trips", () => {
       }
       throw error;
     } finally {
-      isLoadingDetail.value = false;
+      if (requestId === latestDetailRequestId) {
+        isLoadingDetail.value = false;
+      }
     }
   }
 
