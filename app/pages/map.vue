@@ -611,6 +611,7 @@ watch(
   () => route.query.place,
   () => {
     closeDetail();
+    searchQuery.value = "";
     focusPlaceFromQuery();
     panToSelectedPlace();
   },

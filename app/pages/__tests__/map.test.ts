@@ -57,8 +57,11 @@ function stubPaginatedPlacesResponse(places: unknown[]) {
 const { defineStore } = await import("pinia");
 vi.stubGlobal("defineStore", defineStore);
 
-// useMapbox is stubbed so tests don't need a real Mapbox token or DOM canvas.
-// hasToken returns false so the fallback (DOM pins) path is active throughout.
+// map.vue imports useMapbox directly from its module (not via Nuxt's
+// auto-import global), so it must be mocked with vi.mock rather than
+// vi.stubGlobal — the same reason useStats is mocked this way above.
+// hasToken defaults to false so the fallback (DOM pins) path is active
+// throughout, except in the tests that opt into the token-present path.
 const mockSyncMarkers = vi.fn().mockResolvedValue(undefined);
 const mockInitMap = vi.fn().mockResolvedValue(null);
 const mockSetStyle = vi.fn();
@@ -68,18 +71,27 @@ const mockSetMarkerActive = vi.fn();
 const mockStartDropPin = vi.fn();
 const mockCancelDropPin = vi.fn();
 const mockDestroyMap = vi.fn();
+const mockFlyTo = vi.fn();
 
-vi.stubGlobal("useMapbox", () => ({
-  hasToken: () => false,
-  initMap: mockInitMap,
-  setStyle: mockSetStyle,
-  zoomIn: mockZoomIn,
-  zoomOut: mockZoomOut,
-  syncMarkers: mockSyncMarkers,
-  setMarkerActive: mockSetMarkerActive,
-  startDropPin: mockStartDropPin,
-  cancelDropPin: mockCancelDropPin,
-  destroyMap: mockDestroyMap,
+// hasToken is mutable so a test can opt into the token-present path (real map
+// init + the 'load' callback) without every other test paying for a fake map
+// instance it doesn't need.
+let mockHasToken = false;
+
+vi.mock("~/composables/useMapbox", () => ({
+  useMapbox: () => ({
+    hasToken: () => mockHasToken,
+    initMap: mockInitMap,
+    setStyle: mockSetStyle,
+    zoomIn: mockZoomIn,
+    zoomOut: mockZoomOut,
+    flyTo: mockFlyTo,
+    syncMarkers: mockSyncMarkers,
+    setMarkerActive: mockSetMarkerActive,
+    startDropPin: mockStartDropPin,
+    cancelDropPin: mockCancelDropPin,
+    destroyMap: mockDestroyMap,
+  }),
 }));
 
 // useMapboxStyles is auto-imported; stub the composable wrapper and the named
@@ -139,6 +151,24 @@ const SAMPLE_PLACES = [
   },
 ];
 
+// A minimal stand-in for a mapbox-gl Map: captures the 'load' handler
+// map.vue registers so a test can invoke it once, the way mapbox-gl would
+// when the style finishes loading.
+function createFakeMapInstance() {
+  let loadHandler: (() => void | Promise<void>) | undefined;
+
+  return {
+    on: vi.fn((event: string, handler: () => void | Promise<void>) => {
+      if (event === "load") {
+        loadHandler = handler;
+      }
+    }),
+    triggerLoad: async () => {
+      await loadHandler?.();
+    },
+  };
+}
+
 async function mountWithPlaces(places = SAMPLE_PLACES) {
   // Make apiFetch return the given places so onMounted's fetchPlaces() call
   // populates the store with the expected data rather than clobbering it with [].
@@ -171,6 +201,8 @@ describe("Map page (/map)", () => {
     stubPaginatedPlacesResponse([]);
     setActivePinia(createPinia());
     delete routeQuery.place;
+    mockHasToken = false;
+    mockInitMap.mockResolvedValue(null);
   });
 
   it("renders the map stage and matches snapshot", async () => {
@@ -447,6 +479,61 @@ describe("Map page (/map)", () => {
     ).toBe("");
     expect(wrapper.find(".detail.is-open").exists()).toBe(false);
     expect(wrapper.findAll(".place-item")).toHaveLength(SAMPLE_PLACES.length);
+  });
+
+  it("clears the search filter when the ?place= query is removed", async () => {
+    routeQuery.place = "Tokyo";
+    const wrapper = await mountWithPlaces();
+    expect(wrapper.findAll(".place-item")).toHaveLength(1);
+
+    delete routeQuery.place;
+    await wrapper.vm.$nextTick();
+    await flushPromises();
+
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("");
+    expect(wrapper.findAll(".place-item")).toHaveLength(SAMPLE_PLACES.length);
+  });
+
+  it("pans the camera to the focused place once the map finishes loading", async () => {
+    mockHasToken = true;
+    const fakeMapInstance = createFakeMapInstance();
+    mockInitMap.mockResolvedValueOnce(fakeMapInstance);
+    routeQuery.place = "Tokyo";
+
+    const wrapper = await mountWithPlaces();
+    await fakeMapInstance.triggerLoad();
+    await flushPromises();
+
+    expect(mockFlyTo).toHaveBeenCalledWith(fakeMapInstance, 139.6503, 35.6762);
+    expect(wrapper.find(".detail__name").text()).toBe("Tokyo");
+  });
+
+  it("does not pan the camera for a focused place with no coordinates", async () => {
+    mockHasToken = true;
+    const fakeMapInstance = createFakeMapInstance();
+    mockInitMap.mockResolvedValueOnce(fakeMapInstance);
+    routeQuery.place = "Lisbon";
+
+    await mountWithPlaces();
+    await fakeMapInstance.triggerLoad();
+    await flushPromises();
+
+    expect(mockFlyTo).not.toHaveBeenCalled();
+  });
+
+  it("does not pan the camera when no place matches the query", async () => {
+    mockHasToken = true;
+    const fakeMapInstance = createFakeMapInstance();
+    mockInitMap.mockResolvedValueOnce(fakeMapInstance);
+    routeQuery.place = "Reynisfjara";
+
+    await mountWithPlaces();
+    await fakeMapInstance.triggerLoad();
+    await flushPromises();
+
+    expect(mockFlyTo).not.toHaveBeenCalled();
   });
 
   it("shows places error alert when fetchPlaces fails", async () => {
