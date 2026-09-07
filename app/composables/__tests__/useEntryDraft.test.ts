@@ -50,6 +50,16 @@ describe("useEntryDraft", () => {
     installClerkUserStub(null);
   });
 
+  // LEGACY_DRAFT_STORAGE_KEY and DRAFT_STORAGE_KEY_PREFIX are declared above
+  // as two separately-literal strings that happen to share a value today (see
+  // the comment on each). This pins the relationship down so an edit to one
+  // without the other shows up as a failing assertion rather than silent drift.
+  it("scopes the per-user key under the same literal as the legacy key", () => {
+    expect(draftStorageKeyFor("user-1")).toBe(
+      `${LEGACY_DRAFT_STORAGE_KEY}:user-1`,
+    );
+  });
+
   describe("saveDraft", () => {
     it("persists the draft to localStorage under the current user's key", () => {
       installClerkUserStub("user-1");
@@ -82,6 +92,17 @@ describe("useEntryDraft", () => {
       const { saveDraft } = useEntryDraft();
       saveDraft(SAMPLE_DRAFT);
       expect(localStorage.length).toBe(0);
+    });
+
+    it("leaves an existing legacy draft alone while logged out", () => {
+      localStorage.setItem(
+        LEGACY_DRAFT_STORAGE_KEY,
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+      installClerkUserStub(null);
+      const { saveDraft } = useEntryDraft();
+      saveDraft(SAMPLE_DRAFT);
+      expect(localStorage.getItem(LEGACY_DRAFT_STORAGE_KEY)).not.toBeNull();
     });
 
     it("uses the new user's key once the session resolves after setup", () => {
@@ -183,6 +204,28 @@ describe("useEntryDraft", () => {
       }).not.toThrow();
       expect(result).toBeNull();
       expect(localStorage.getItem(LEGACY_DRAFT_STORAGE_KEY)).toBeNull();
+    });
+
+    it("leaves the legacy draft alone while logged out", () => {
+      localStorage.setItem(
+        LEGACY_DRAFT_STORAGE_KEY,
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+      installClerkUserStub(null);
+      const { loadDraft } = useEntryDraft();
+      expect(loadDraft()).toBeNull();
+      expect(localStorage.getItem(LEGACY_DRAFT_STORAGE_KEY)).not.toBeNull();
+    });
+
+    it("leaves the legacy draft alone while the session hasn't resolved yet", () => {
+      localStorage.setItem(
+        LEGACY_DRAFT_STORAGE_KEY,
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+      installClerkUserStub(null, false);
+      const { loadDraft } = useEntryDraft();
+      expect(loadDraft()).toBeNull();
+      expect(localStorage.getItem(LEGACY_DRAFT_STORAGE_KEY)).not.toBeNull();
     });
   });
 

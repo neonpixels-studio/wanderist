@@ -5,13 +5,15 @@
  * storage call testable in isolation (find/replace the composable in tests).
  *
  * The storage key is scoped to the signed-in user's id so a saved draft
- * (including placeId) never leaks to a different account on a shared browser:
- * two users signed into the same browser get isolated drafts. The new-entry
- * form only renders behind the app's auth-gated layout, so there is no
- * legitimate anonymous draft — while the Clerk session hasn't resolved yet, or
- * once resolved has no user (signed out), every operation is a no-op rather
- * than falling back to a shared key that the next user to sign in on the same
- * browser could read.
+ * (including placeId) never leaks to a different account on a shared browser.
+ * There's no legitimate anonymous draft (the new-entry form only renders
+ * behind the auth-gated layout), so an unresolved-or-signed-out session makes
+ * every operation a no-op rather than fall back to a key shared across
+ * sessions — see draftStorageKey below.
+ *
+ * Must be called synchronously during a component's setup (it calls
+ * useClerkUser(), which needs the active component instance), same as any
+ * other composable that reads a Clerk composable.
  *
  * Usage:
  *   const { saveDraft, loadDraft, clearDraft } = useEntryDraft()
@@ -45,11 +47,8 @@ export function useEntryDraft() {
   const { user, isLoaded } = useClerkUser();
 
   // Read fresh on every call (via the reactive refs) rather than once at
-  // setup, so a session that resolves/changes after this composable is
-  // created is still reflected in the key used. Null while the session
-  // hasn't resolved yet or has resolved to no signed-in user — callers treat
-  // a null key as "no draft available" so nothing is ever written to or read
-  // from a key shared across sessions.
+  // setup, so a session that resolves/changes after this composable was
+  // created is still reflected in the key used.
   function draftStorageKey(): string | null {
     if (!isLoaded.value) {
       return null;
