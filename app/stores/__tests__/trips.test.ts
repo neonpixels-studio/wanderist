@@ -78,11 +78,11 @@ describe("useTripsStore", () => {
       expect(store.detailError).toBeNull();
     });
 
-    it("sets detailNotFound (not detailError) on a 401, since a stale/expired token isn't fixed by retrying", async () => {
+    it("sets detailError (not detailNotFound) on a 401, since apiFetch mints a fresh token per call so retrying can fix it", async () => {
       // server/middleware/auth.ts 401s a request that sends a token that
-      // fails verification (expired/revoked session) rather than silently
-      // demoting the owner to a non-owner — that's not retryable with the
-      // same token, so it gets the same not-found + sign-in treatment as 404.
+      // fails verification (e.g. expired in flight); unlike a 404 (genuinely
+      // gone/private, not fixable by retrying), a fresh token on the next
+      // call can resolve this, so it belongs in the retryable bucket.
       const unauthorizedError = Object.assign(new Error("Unauthorized"), {
         statusCode: 401,
       });
@@ -92,8 +92,8 @@ describe("useTripsStore", () => {
       await expect(store.fetchTripById("trip-1")).rejects.toThrow();
 
       expect(store.currentTripDetail).toBeNull();
-      expect(store.detailNotFound).toBe(true);
-      expect(store.detailError).toBeNull();
+      expect(store.detailNotFound).toBe(false);
+      expect(store.detailError).toBe("Unauthorized");
     });
 
     it("sets detailError (not detailNotFound) on a 5xx, so a share-link visitor sees a retryable error instead of the trip looking deleted", async () => {
@@ -158,17 +158,16 @@ describe("useTripsStore", () => {
       expect(store.detailError).toBe("Internal Server Error");
     });
 
-    it("clears the already-displayed trip on a 404/401 even when it was loaded for the same id", async () => {
-      // Unlike a retryable failure, a 404/401 means the viewer may no longer
-      // be entitled to see this trip (e.g. an expired session or the owner
-      // revoked sharing), so it must not keep showing stale content.
+    it("clears the already-displayed trip on a 404 even when it was loaded for the same id", async () => {
+      // Unlike a retryable failure, a 404 means the trip is genuinely gone or
+      // the owner revoked sharing, so it must not keep showing stale content.
       mockApiFetch.mockResolvedValueOnce(SAMPLE_TRIP_DETAIL);
       const store = useTripsStore();
       await store.fetchTripById("trip-1");
       expect(store.currentTripDetail).not.toBeNull();
 
       mockApiFetch.mockRejectedValueOnce(
-        Object.assign(new Error("Unauthorized"), { statusCode: 401 }),
+        Object.assign(new Error("Not Found"), { statusCode: 404 }),
       );
       await expect(store.fetchTripById("trip-1")).rejects.toThrow();
 

@@ -13,6 +13,11 @@
     </NuxtLink>
   </div>
 
+  <!-- Reached whenever nothing loaded and the branch above didn't already
+       claim it: the store never sets guideError while classifying a fetch as
+       not-found (see fetchGuideById in stores/guides.ts), so guide null + no
+       loadError always means guideNotFound (or the fetch simply hasn't
+       resolved with a guide yet). -->
   <div v-else-if="!guide" class="content content--wide">
     <div class="empty-note">Guide not found.</div>
     <NuxtLink to="/guides" class="btn btn--outline btn--sm gdetail__back">
@@ -21,6 +26,12 @@
   </div>
 
   <article v-else class="content content--wide gdetail">
+    <AppAlert
+      v-if="loadError"
+      intent="error"
+      :message="`Couldn't refresh this guide: ${loadError}`"
+    />
+
     <NuxtLink to="/guides" class="gdetail__back-link">
       <AppIcon name="arrow-left" :size="14" />
       guides

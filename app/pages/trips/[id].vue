@@ -11,13 +11,12 @@
     <div class="empty-state">
       <AppAlert intent="error" :message="detailLoadError" />
       <button
-        class="btn btn--outline btn--sm"
-        style="margin-top: 12px"
+        class="btn btn--outline btn--sm empty-state__retry"
         @click="onRetryLoad"
       >
         try again
       </button>
-      <NuxtLink to="/trips" class="empty-state__signin">
+      <NuxtLink to="/trips" class="empty-state__back">
         back to your trips
       </NuxtLink>
       <NuxtLink
@@ -30,6 +29,11 @@
     </div>
   </div>
 
+  <!-- Reached whenever nothing loaded and the branch above didn't already
+       claim it: the store never sets detailError while classifying a fetch
+       as not-found (see fetchTripById in stores/trips.ts), so tripDetail
+       null + no detailLoadError always means detailNotFound (or the fetch
+       simply hasn't resolved with a trip yet). -->
   <div
     v-else-if="!tripDetail"
     class="content content--wide"
@@ -119,6 +123,14 @@
           </span>
         </div>
       </div>
+    </div>
+
+    <div
+      v-if="detailLoadError"
+      class="alert alert--error"
+      style="margin: 12px 0"
+    >
+      Couldn't refresh this trip: {{ detailLoadError }}
     </div>
 
     <div v-if="uploadError" class="alert alert--error" style="margin: 12px 0">
@@ -694,14 +706,19 @@ function onInvite(): void {
   color: var(--muted);
   font-size: 14px;
 }
-.empty-state__signin {
+.empty-state__signin,
+.empty-state__back {
   display: inline-block;
   margin-top: 10px;
   color: var(--accent-ink);
   text-decoration: none;
 }
-.empty-state__signin:hover {
+.empty-state__signin:hover,
+.empty-state__back:hover {
   text-decoration: underline;
+}
+.empty-state__retry {
+  margin-top: 12px;
 }
 
 .thero {

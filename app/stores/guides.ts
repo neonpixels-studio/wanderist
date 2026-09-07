@@ -1,7 +1,6 @@
 import { defineStore } from "pinia";
 import { extractErrorMessage } from "~/utils/extractErrorMessage";
 import { isNotFoundError } from "~/utils/isNotFoundError";
-import { isUnauthorizedError } from "~/utils/isUnauthorizedError";
 
 export type GuideVisibility = "private" | "public";
 
@@ -184,19 +183,19 @@ export const useGuidesStore = defineStore("guides", () => {
       if (requestId !== latestGuideRequestId) {
         throw fetchError;
       }
-      // A 404/401 means the guide is genuinely gone, private, or the caller's
-      // session no longer proves ownership (see isUnauthorizedError) — always
-      // clear any stale guide so the not-found state renders rather than
-      // content the viewer may no longer be entitled to see. A retryable
-      // failure (5xx/network) only clears the guide when nothing valid is
-      // already displayed for this id, so a transient background refetch of
-      // the guide already on screen doesn't blank it on a blip.
-      const isAuthOrMissing =
-        isNotFoundError(fetchError) || isUnauthorizedError(fetchError);
-      if (isAuthOrMissing || currentGuide.value?.id !== id) {
+      // A 404 means the guide is genuinely gone or private — always clear any
+      // stale guide so the not-found state renders rather than content the
+      // viewer may no longer be entitled to see. A retryable failure
+      // (5xx/401/network) only clears the guide when nothing valid is already
+      // displayed for this id, so a transient background refetch of the guide
+      // already on screen doesn't blank it on a blip. A 401 belongs in this
+      // retryable bucket, not not-found: apiFetch mints a fresh token per
+      // call, so "try again" can genuinely fix a token that expired in flight.
+      const guideIsGenuinelyMissing = isNotFoundError(fetchError);
+      if (guideIsGenuinelyMissing || currentGuide.value?.id !== id) {
         currentGuide.value = null;
       }
-      if (isAuthOrMissing) {
+      if (guideIsGenuinelyMissing) {
         guideNotFound.value = true;
       } else {
         guideError.value = extractErrorMessage(fetchError);

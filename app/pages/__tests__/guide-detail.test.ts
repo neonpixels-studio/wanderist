@@ -210,6 +210,21 @@ describe("Guide Detail page (/guides/[id])", () => {
     ).toBe(true);
   });
 
+  it("keeps showing the guide and surfaces a non-blocking banner when a background refetch fails", () => {
+    // Regression guard for the preserve-on-same-id-failure store behavior:
+    // the content must still render, with the failure visible, not silent.
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = { ...SAMPLE_GUIDE };
+    guidesStore.guideError = "Something went wrong";
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".gdetail__head h1").text()).toBe("Tokyo on foot");
+    expect(wrapper.find(".alert-stub").attributes("data-message")).toBe(
+      "Couldn't refresh this guide: Something went wrong",
+    );
+  });
+
   it("shows the not-found state (not the error alert) when no guide is loaded", () => {
     const guidesStore = useGuidesStore();
     guidesStore.currentGuide = null;

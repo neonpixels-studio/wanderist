@@ -305,6 +305,36 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(wrapper.find(".empty-state__signin").exists()).toBe(true);
   });
 
+  it("always offers a 'back to your trips' link in the retryable error state, even when signed in", () => {
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    tripsStore.detailNotFound = false;
+    tripsStore.detailError = "Something went wrong loading this trip";
+    clerkSignedInRef.value = true;
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".empty-state__back").exists()).toBe(true);
+    expect(wrapper.find(".empty-state__signin").exists()).toBe(false);
+  });
+
+  it("keeps showing the trip and surfaces a non-blocking banner when a background refetch fails", () => {
+    // Regression guard for the preserve-on-same-id-failure store behavior:
+    // the content must still render, with the failure visible, not silent.
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = { ...SAMPLE_DETAIL };
+    tripsStore.detailError = "Something went wrong loading this trip";
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".thero h1").text()).toContain(
+      "Iceland, the ring road",
+    );
+    expect(wrapper.text()).toContain(
+      "Couldn't refresh this trip: Something went wrong loading this trip",
+    );
+  });
+
   it("renders add a stop button", () => {
     const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
     expect(wrapper.find(".add-btn").exists()).toBe(true);
