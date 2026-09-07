@@ -12,6 +12,7 @@ const mockMapSetStyle = vi.fn();
 const mockMapZoomIn = vi.fn();
 const mockMapZoomOut = vi.fn();
 const mockMapRemove = vi.fn();
+const mockMapFlyTo = vi.fn();
 
 class MockMap {
   on = mockMapOn;
@@ -20,6 +21,7 @@ class MockMap {
   zoomIn = mockMapZoomIn;
   zoomOut = mockMapZoomOut;
   remove = mockMapRemove;
+  flyTo = mockMapFlyTo;
 }
 
 const mockMarkerSetLngLat = vi.fn().mockReturnThis();
@@ -186,6 +188,17 @@ describe("useMapbox", () => {
       const { zoomOut } = useMapbox();
       zoomOut(makeMap());
       expect(mockMapZoomOut).toHaveBeenCalled();
+    });
+  });
+
+  describe("flyTo", () => {
+    it("calls map.flyTo with the given coordinates and a focus zoom level", () => {
+      const { flyTo } = useMapbox();
+      flyTo(makeMap(), 139.6503, 35.6762);
+      expect(mockMapFlyTo).toHaveBeenCalledWith({
+        center: [139.6503, 35.6762],
+        zoom: 9,
+      });
     });
   });
 

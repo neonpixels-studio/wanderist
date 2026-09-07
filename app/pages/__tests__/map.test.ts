@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ref, computed } from "vue";
+import { ref, computed, reactive } from "vue";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import MapPage from "../map.vue";
@@ -7,9 +7,10 @@ import PlaceEditForm from "~/components/PlaceEditForm.vue";
 import { pageGlobalConfig as globalConfig } from "./test-utils";
 
 // Explore's trending-place cards link here with the place name as a `place`
-// query param (see issue #218). Mutated per-test to simulate arriving from
-// that link; reset in beforeEach so it doesn't leak between tests.
-const routeQuery: { place?: string } = {};
+// query param (see issue #218). Reactive (like Nuxt's real useRoute) so the
+// page's watch(() => route.query.place, ...) can be exercised by mutating
+// this after mount; reset in beforeEach so it doesn't leak between tests.
+const routeQuery = reactive<{ place?: string | string[] }>({});
 vi.stubGlobal("useRoute", () => ({ params: {}, query: routeQuery }));
 
 const mockMapStats = ref({
@@ -411,6 +412,31 @@ describe("Map page (/map)", () => {
     ).toBe("Reynisfjara");
     expect(wrapper.find(".detail.is-open").exists()).toBe(false);
     expect(wrapper.findAll(".place-item")).toHaveLength(0);
+  });
+
+  it("ignores a repeated ?place= param (Vue Router yields a string array)", async () => {
+    routeQuery.place = ["Tokyo", "Kyoto"];
+    const wrapper = await mountWithPlaces();
+
+    expect(wrapper.find(".detail.is-open").exists()).toBe(false);
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("");
+  });
+
+  it("re-resolves the focused place when the ?place= query changes while already on the page", async () => {
+    routeQuery.place = "Tokyo";
+    const wrapper = await mountWithPlaces();
+    expect(wrapper.find(".detail__name").text()).toBe("Tokyo");
+
+    routeQuery.place = "Reykjavík";
+    await wrapper.vm.$nextTick();
+    await flushPromises();
+
+    expect(wrapper.find(".detail__name").text()).toBe("Reykjavík");
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("Reykjavík");
   });
 
   it("does not select or filter when no ?place= query param is present", async () => {

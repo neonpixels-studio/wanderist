@@ -343,6 +343,7 @@ describe("Explore page (/explore)", () => {
     const placeLinks = wrapper
       .findAllComponents(linkStub)
       .filter((link) => link.classes().includes("pcard"));
+    expect(placeLinks).toHaveLength(4);
     expect(placeLinks[0].props("to")).toEqual({
       path: "/map",
       query: { place: "Reynisfjara" },

@@ -382,6 +382,23 @@ function focusPlaceFromQuery(): void {
   }
 }
 
+// Flies the camera to the currently selected place, if the map is ready and
+// the place has coordinates. No-ops otherwise (fallback DOM-pin mode, or a
+// selected place with no lat/lng) since there is no camera to move.
+function panToSelectedPlace(): void {
+  const place = selectedPlace.value;
+
+  if (!activeMapInstance.value || !place) {
+    return;
+  }
+
+  if (place.latitude === null || place.longitude === null) {
+    return;
+  }
+
+  mapbox.flyTo(activeMapInstance.value, place.longitude, place.latitude);
+}
+
 function closeDetail(): void {
   if (activeMapInstance.value && selectedPlace.value) {
     mapbox.setMarkerActive(null, selectedPlace.value.id);
@@ -562,6 +579,8 @@ async function initializeMap(): Promise<void> {
       selectedPlace.value?.id ?? null,
       selectPlaceById,
     );
+
+    panToSelectedPlace();
   });
 }
 
@@ -580,6 +599,20 @@ watch(
       selectedPlace.value?.id ?? null,
       selectPlaceById,
     );
+  },
+);
+
+// Vue Router reuses this component across query-only navigation on the same
+// route, so onMounted alone would miss a second /map?place=<name> link
+// clicked while already on this page (e.g. browser back/forward between two
+// such links). Re-resolve whenever the query itself changes; the initial
+// resolution on mount is handled separately below, once places have loaded.
+watch(
+  () => route.query.place,
+  () => {
+    closeDetail();
+    focusPlaceFromQuery();
+    panToSelectedPlace();
   },
 );
 
