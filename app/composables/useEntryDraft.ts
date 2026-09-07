@@ -6,19 +6,24 @@
  *
  * The storage key is scoped to the signed-in user's id so a saved draft
  * (including placeId) never leaks to a different account on a shared browser:
- * two users signed into the same browser get isolated drafts, and a
- * logged-out/not-yet-loaded state gets its own key rather than falling
- * through to whichever draft happens to be on disk.
+ * two users signed into the same browser get isolated drafts. The new-entry
+ * form only renders behind the app's auth-gated layout, so there is no
+ * legitimate anonymous draft — while the Clerk session hasn't resolved yet, or
+ * once resolved has no user (signed out), every operation is a no-op rather
+ * than falling back to a shared key that the next user to sign in on the same
+ * browser could read.
  *
  * Usage:
  *   const { saveDraft, loadDraft, clearDraft } = useEntryDraft()
  */
 
 const DRAFT_STORAGE_KEY_PREFIX = "wanderist:new-entry-draft";
-// Key used before drafts were scoped per user. No draft is written under it
+// Fixed literal (not derived from the prefix above): this is the exact key
+// used before drafts were scoped per user. No draft is written under it
 // anymore, but a browser that used an older build may still have one on disk.
-const LEGACY_DRAFT_STORAGE_KEY = DRAFT_STORAGE_KEY_PREFIX;
-const ANONYMOUS_DRAFT_SEGMENT = "anonymous";
+// Kept independent of DRAFT_STORAGE_KEY_PREFIX so a future rename of the
+// current prefix can't silently stop this cleanup from matching the old key.
+const LEGACY_DRAFT_STORAGE_KEY = "wanderist:new-entry-draft";
 
 export interface EntryDraft {
   title: string;
@@ -37,14 +42,23 @@ export interface EntryDraft {
 }
 
 export function useEntryDraft() {
-  const { user } = useClerkUser();
+  const { user, isLoaded } = useClerkUser();
 
-  // Read the id fresh on every call (via the reactive ref) rather than once
-  // at setup, so a session that resolves/changes after this composable is
-  // created is still reflected in the key used.
-  function draftStorageKey(): string {
+  // Read fresh on every call (via the reactive refs) rather than once at
+  // setup, so a session that resolves/changes after this composable is
+  // created is still reflected in the key used. Null while the session
+  // hasn't resolved yet or has resolved to no signed-in user — callers treat
+  // a null key as "no draft available" so nothing is ever written to or read
+  // from a key shared across sessions.
+  function draftStorageKey(): string | null {
+    if (!isLoaded.value) {
+      return null;
+    }
     const userId = user.value?.id;
-    return `${DRAFT_STORAGE_KEY_PREFIX}:${userId ?? ANONYMOUS_DRAFT_SEGMENT}`;
+    if (!userId) {
+      return null;
+    }
+    return `${DRAFT_STORAGE_KEY_PREFIX}:${userId}`;
   }
 
   // The legacy unscoped key predates per-user scoping and could belong to any
@@ -59,12 +73,20 @@ export function useEntryDraft() {
 
   function saveDraft(draft: EntryDraft): void {
     cleanupLegacyDraft();
-    localStorage.setItem(draftStorageKey(), JSON.stringify(draft));
+    const key = draftStorageKey();
+    if (!key) {
+      return;
+    }
+    localStorage.setItem(key, JSON.stringify(draft));
   }
 
   function loadDraft(): EntryDraft | null {
     cleanupLegacyDraft();
-    const raw = localStorage.getItem(draftStorageKey());
+    const key = draftStorageKey();
+    if (!key) {
+      return null;
+    }
+    const raw = localStorage.getItem(key);
     if (!raw) {
       return null;
     }
@@ -73,13 +95,17 @@ export function useEntryDraft() {
       return JSON.parse(raw) as EntryDraft;
     } catch {
       // Corrupt storage; discard silently so the user gets a clean form
-      localStorage.removeItem(draftStorageKey());
+      localStorage.removeItem(key);
       return null;
     }
   }
 
   function clearDraft(): void {
-    localStorage.removeItem(draftStorageKey());
+    const key = draftStorageKey();
+    if (!key) {
+      return;
+    }
+    localStorage.removeItem(key);
   }
 
   return { saveDraft, loadDraft, clearDraft };

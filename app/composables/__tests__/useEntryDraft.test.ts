@@ -4,9 +4,12 @@ import type { EntryDraft } from "../useEntryDraft";
 
 // useClerkUser is a Nuxt auto-imported global; stub it before importing the
 // composable so the module resolves cleanly (mirrors useApiClient.test.ts).
-function installClerkUserStub(userId: string | null) {
+// isLoaded defaults to true (a resolved session) so tests that only care
+// about the user id don't have to think about the loading flag.
+function installClerkUserStub(userId: string | null, isLoaded: boolean = true) {
   vi.stubGlobal("useClerkUser", () => ({
     user: vue.ref(userId ? { id: userId } : null),
+    isLoaded: vue.ref(isLoaded),
   }));
 }
 
@@ -14,10 +17,14 @@ installClerkUserStub(null);
 
 const { useEntryDraft } = await import("../useEntryDraft");
 
+// The literal, historical key used before drafts were scoped per user.
+// Deliberately not derived from the composable's current prefix constant, so
+// this test can't drift in lockstep with a future rename and hide a mismatch.
 const LEGACY_DRAFT_STORAGE_KEY = "wanderist:new-entry-draft";
+const DRAFT_STORAGE_KEY_PREFIX = "wanderist:new-entry-draft";
 
-function draftStorageKeyFor(userId: string | null): string {
-  return `${LEGACY_DRAFT_STORAGE_KEY}:${userId ?? "anonymous"}`;
+function draftStorageKeyFor(userId: string): string {
+  return `${DRAFT_STORAGE_KEY_PREFIX}:${userId}`;
 }
 
 const SAMPLE_DRAFT: EntryDraft = {
@@ -26,7 +33,7 @@ const SAMPLE_DRAFT: EntryDraft = {
   location: "Reykjavík",
   tripId: "trip-1",
   date: "2026-06-14",
-  visibility: "private" as const,
+  visibility: "private",
   tags: ["iceland"],
   weather: "clear",
   uploadedPhotos: [{ id: "media-1", url: "https://example.com/photo.jpg" }],
@@ -59,11 +66,37 @@ describe("useEntryDraft", () => {
       expect(JSON.parse(stored!).title).toBe("Updated title");
     });
 
-    it("saves under a distinct anonymous key when no user is signed in", () => {
+    it("does not write anywhere when no user is signed in", () => {
       installClerkUserStub(null);
       const { saveDraft } = useEntryDraft();
       saveDraft(SAMPLE_DRAFT);
-      expect(localStorage.getItem(draftStorageKeyFor(null))).not.toBeNull();
+      expect(localStorage.length).toBe(0);
+    });
+
+    it("does not write anywhere while the session hasn't resolved yet", () => {
+      installClerkUserStub(null, false);
+      const { saveDraft } = useEntryDraft();
+      saveDraft(SAMPLE_DRAFT);
+      expect(localStorage.length).toBe(0);
+    });
+
+    it("uses the new user's key once the session resolves after setup", () => {
+      const userRef = vue.ref<{ id: string } | null>(null);
+      const isLoadedRef = vue.ref(false);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      const { saveDraft } = useEntryDraft();
+      saveDraft(SAMPLE_DRAFT);
+      expect(localStorage.length).toBe(0);
+
+      isLoadedRef.value = true;
+      userRef.value = { id: "user-1" };
+      saveDraft(SAMPLE_DRAFT);
+
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).not.toBeNull();
     });
   });
 
@@ -122,6 +155,16 @@ describe("useEntryDraft", () => {
       expect(loadDraft()).toBeNull();
     });
 
+    it("does not read another user's draft while the session hasn't resolved yet", () => {
+      installClerkUserStub("user-1");
+      const { saveDraft } = useEntryDraft();
+      saveDraft(SAMPLE_DRAFT);
+
+      installClerkUserStub(null, false);
+      const { loadDraft } = useEntryDraft();
+      expect(loadDraft()).toBeNull();
+    });
+
     it("does not crash when a legacy unscoped draft key exists, and removes it", () => {
       localStorage.setItem(
         LEGACY_DRAFT_STORAGE_KEY,
@@ -130,19 +173,12 @@ describe("useEntryDraft", () => {
       installClerkUserStub("user-1");
       const { loadDraft } = useEntryDraft();
 
-      expect(() => loadDraft()).not.toThrow();
-      expect(loadDraft()).toBeNull();
+      let result: EntryDraft | null = null;
+      expect(() => {
+        result = loadDraft();
+      }).not.toThrow();
+      expect(result).toBeNull();
       expect(localStorage.getItem(LEGACY_DRAFT_STORAGE_KEY)).toBeNull();
-    });
-
-    it("never surfaces a legacy draft as belonging to the current user", () => {
-      localStorage.setItem(
-        LEGACY_DRAFT_STORAGE_KEY,
-        JSON.stringify(SAMPLE_DRAFT),
-      );
-      installClerkUserStub("user-1");
-      const { loadDraft } = useEntryDraft();
-      expect(loadDraft()).toBeNull();
     });
   });
 
@@ -160,6 +196,12 @@ describe("useEntryDraft", () => {
 
     it("does not throw when no draft exists", () => {
       installClerkUserStub("user-1");
+      const { clearDraft } = useEntryDraft();
+      expect(() => clearDraft()).not.toThrow();
+    });
+
+    it("does not throw when no user is signed in", () => {
+      installClerkUserStub(null);
       const { clearDraft } = useEntryDraft();
       expect(() => clearDraft()).not.toThrow();
     });
