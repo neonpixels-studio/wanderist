@@ -209,23 +209,6 @@ p {
   color: var(--accent-ink);
   background: var(--accent-weak);
 }
-/* Trip/guide status variants — shared so every surface that renders a status
-   tag (trip cards, profile trip list, guide cards) colors it the same way
-   instead of each re-declaring these three rules locally. */
-.tag--ongoing {
-  border-color: var(--success-ink);
-  color: var(--success-ink);
-  background: var(--success-weak);
-}
-.tag--upcoming {
-  border-color: var(--info-ink);
-  color: var(--info-ink);
-  background: var(--info-weak);
-}
-.tag--past {
-  border-color: var(--line-strong);
-  color: var(--muted);
-}
 .tag-row {
   display: flex;
   flex-wrap: wrap;

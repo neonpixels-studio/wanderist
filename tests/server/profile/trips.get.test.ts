@@ -12,6 +12,8 @@ import {
   requireViewableProfileTarget,
   fetchPublicTrips,
 } from "../../../server/utils/profile-queries";
+import type { PublicTripSummary } from "../../../server/utils/profile-queries";
+import { TRIP_STATUS } from "../../../server/db/schema";
 
 const mockRequireViewableProfileTarget = vi.mocked(
   requireViewableProfileTarget,
@@ -21,11 +23,11 @@ const mockFetchPublicTrips = vi.mocked(fetchPublicTrips);
 const handler = await import("../../../server/api/users/[id]/trips.get");
 const callHandler = () => unwrapHandler(handler as Record<string, unknown>)({});
 
-const TRIPS = [
+const TRIPS: PublicTripSummary[] = [
   {
     id: "trip-1",
     name: "Iceland Ring Road",
-    status: "past",
+    status: TRIP_STATUS.PAST,
     startDate: null,
     endDate: null,
   },

@@ -16,6 +16,7 @@ import {
   guides,
   subscriptions,
   trips,
+  TRIP_STATUS,
   users,
   userPreferences,
   VISIBILITY,
@@ -71,7 +72,7 @@ export const PROFILE_GUIDES_PAGE_SIZE = 20;
 export interface PublicTripSummary {
   id: string;
   name: string;
-  status: string;
+  status: (typeof TRIP_STATUS)[keyof typeof TRIP_STATUS];
   startDate: Date | null;
   endDate: Date | null;
 }

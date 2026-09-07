@@ -32,6 +32,8 @@
 
 <script setup lang="ts">
 import type { ProfileTrip } from "~/composables/useProfile";
+import type { TripStatus } from "~/utils/tripDates";
+import { formatTripDateRange } from "~/utils/tripDates";
 
 withDefaults(
   defineProps<{
@@ -43,45 +45,21 @@ withDefaults(
   { loading: false, errorMessage: null, hasMore: false },
 );
 
-const STATUS_CLASSES: Record<string, string> = {
+const STATUS_CLASSES: Record<TripStatus, string> = {
   ongoing: "tag--ongoing",
   upcoming: "tag--upcoming",
   past: "tag--past",
 };
 
-const UTC_DATE_FORMAT = {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  timeZone: "UTC",
-} as const;
-
-function tripStatusClass(status: string): string {
+// The API response isn't statically validated, so a status outside the known
+// enum (a future value the frontend hasn't been updated for yet) falls back
+// to the neutral "past" styling instead of rendering an unstyled tag.
+function tripStatusClass(status: TripStatus): string {
   return STATUS_CLASSES[status] ?? "tag--past";
 }
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-// Mirrors the display convention trips/index.vue uses for its trip cards
-// (date range + day count) so the same trip reads identically wherever it
-// appears.
 function formatTripDates(trip: ProfileTrip): string {
-  if (!trip.startDate) {
-    return "dates TBD";
-  }
-
-  const start = new Date(trip.startDate);
-  const startLabel = start.toLocaleDateString("en-US", UTC_DATE_FORMAT);
-
-  if (!trip.endDate) {
-    return startLabel;
-  }
-
-  const end = new Date(trip.endDate);
-  const endLabel = end.toLocaleDateString("en-US", UTC_DATE_FORMAT);
-  const days = Math.round((end.getTime() - start.getTime()) / MS_PER_DAY);
-
-  return `${startLabel} – ${endLabel} · ${days} days`;
+  return formatTripDateRange(trip.startDate, trip.endDate);
 }
 </script>
 
@@ -124,6 +102,27 @@ function formatTripDates(trip: ProfileTrip): string {
   font-size: 11px;
   color: var(--muted);
   display: block;
+}
+
+/* Scoped (not shared globally): app/pages/trips/index.vue declares the same
+   three rules for its own trip cards. Promoting them to a shared class would
+   also restyle GuideCard.vue's public/private tag (currently unstyled,
+   `.tag--ongoing`/`.tag--past` are applied there with no matching rule) —
+   an out-of-scope visual change for this profile-browsing feature, so left as
+   a follow-up rather than folded in here. */
+.tag--ongoing {
+  border-color: var(--success-ink);
+  color: var(--success-ink);
+  background: var(--success-weak);
+}
+.tag--upcoming {
+  border-color: var(--info-ink);
+  color: var(--info-ink);
+  background: var(--info-weak);
+}
+.tag--past {
+  border-color: var(--line-strong);
+  color: var(--muted);
 }
 
 .empty-note {

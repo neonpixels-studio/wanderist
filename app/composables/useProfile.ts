@@ -20,6 +20,8 @@
  * `createListFetcher` — so it lives once instead of three times.
  */
 
+import type { TripStatus } from "~/utils/tripDates";
+
 const NOT_FOUND_STATUS = 404;
 
 export interface ProfileUser {
@@ -44,7 +46,7 @@ export interface ProfileFollower {
 export interface ProfileTrip {
   id: string;
   name: string;
-  status: string;
+  status: TripStatus;
   startDate: string | null;
   endDate: string | null;
 }
@@ -90,6 +92,18 @@ function createListFetchState<Item>(): ListFetchState<Item> {
   };
 }
 
+interface ListFetcherConfig<Item, Response> {
+  // Path segment after `/api/users/[id]/`, e.g. "followers", "trips", "guides".
+  resourcePath: string;
+  // Maps the endpoint's response (whose item key differs per resource) to a
+  // common `{ items, hasMore }` shape.
+  extractPage: (response: Response) => { items: Item[]; hasMore: boolean };
+  // Logged (not shown to the user) when a non-404 fetch failure occurs.
+  failureLogLabel: string;
+  // Shown to the user in place of the list when a non-404 fetch fails.
+  userFacingErrorMessage: string;
+}
+
 /**
  * Builds a re-entrant fetcher for one profile sub-resource list at
  * `/api/users/[id]/<resourcePath>`. Re-entrant because the profile route
@@ -98,18 +112,11 @@ function createListFetchState<Item>(): ListFetchState<Item> {
  * discarded, and switching to a different profile clears the list immediately
  * (a same-user refresh, e.g. after a follow toggle, keeps it visible instead
  * of flashing back to the loading note).
- *
- * `extractPage` maps the endpoint's response (whose item key differs per
- * resource — `followers`/`trips`/`guides`) to a common `{ items, hasMore }`
- * shape.
  */
 function createListFetcher<Item, Response>(
   apiFetch: <T>(url: string) => Promise<T>,
   state: ListFetchState<Item>,
-  resourcePath: string,
-  extractPage: (response: Response) => { items: Item[]; hasMore: boolean },
-  notFoundLogLabel: string,
-  userFacingErrorMessage: string,
+  config: ListFetcherConfig<Item, Response>,
 ): (userId: string) => Promise<void> {
   let requestId = 0;
   let loadedUserId: string | null = null;
@@ -126,12 +133,12 @@ function createListFetcher<Item, Response>(
 
     try {
       const response = await apiFetch<Response>(
-        `/api/users/${encodeURIComponent(userId)}/${resourcePath}`,
+        `/api/users/${encodeURIComponent(userId)}/${config.resourcePath}`,
       );
       if (thisRequestId !== requestId) {
         return;
       }
-      const page = extractPage(response);
+      const page = config.extractPage(response);
       state.items.value = page.items;
       state.hasMore.value = page.hasMore;
     } catch (fetchError) {
@@ -146,8 +153,8 @@ function createListFetcher<Item, Response>(
       if (isNotFound(fetchError)) {
         return;
       }
-      console.error(notFoundLogLabel, fetchError);
-      state.errorMessage.value = userFacingErrorMessage;
+      console.error(config.failureLogLabel, fetchError);
+      state.errorMessage.value = config.userFacingErrorMessage;
     } finally {
       if (thisRequestId === requestId) {
         state.loading.value = false;
@@ -207,38 +214,41 @@ export function useProfile() {
   const fetchFollowers = createListFetcher<
     ProfileFollower,
     { followers: ProfileFollower[]; hasMore: boolean }
-  >(
-    apiFetch,
-    followersState,
-    "followers",
-    (response) => ({ items: response.followers, hasMore: response.hasMore }),
-    "useProfile: fetchFollowers failed",
-    "Could not load followers",
-  );
+  >(apiFetch, followersState, {
+    resourcePath: "followers",
+    extractPage: (response) => ({
+      items: response.followers,
+      hasMore: response.hasMore,
+    }),
+    failureLogLabel: "useProfile: fetchFollowers failed",
+    userFacingErrorMessage: "Could not load followers",
+  });
 
   const fetchTrips = createListFetcher<
     ProfileTrip,
     { trips: ProfileTrip[]; hasMore: boolean }
-  >(
-    apiFetch,
-    tripsState,
-    "trips",
-    (response) => ({ items: response.trips, hasMore: response.hasMore }),
-    "useProfile: fetchTrips failed",
-    "Could not load trips",
-  );
+  >(apiFetch, tripsState, {
+    resourcePath: "trips",
+    extractPage: (response) => ({
+      items: response.trips,
+      hasMore: response.hasMore,
+    }),
+    failureLogLabel: "useProfile: fetchTrips failed",
+    userFacingErrorMessage: "Could not load trips",
+  });
 
   const fetchGuides = createListFetcher<
     ProfileGuide,
     { guides: ProfileGuide[]; hasMore: boolean }
-  >(
-    apiFetch,
-    guidesState,
-    "guides",
-    (response) => ({ items: response.guides, hasMore: response.hasMore }),
-    "useProfile: fetchGuides failed",
-    "Could not load guides",
-  );
+  >(apiFetch, guidesState, {
+    resourcePath: "guides",
+    extractPage: (response) => ({
+      items: response.guides,
+      hasMore: response.hasMore,
+    }),
+    failureLogLabel: "useProfile: fetchGuides failed",
+    userFacingErrorMessage: "Could not load guides",
+  });
 
   return {
     profile,
