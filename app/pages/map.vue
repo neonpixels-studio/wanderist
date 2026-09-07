@@ -124,6 +124,12 @@
           </div>
           <span class="place-item__n">{{ place.category ?? "" }}</span>
         </div>
+        <p
+          v-if="!filteredPlaces.length && searchQuery.trim()"
+          class="empty-note"
+        >
+          No saved places match &ldquo;{{ searchQuery }}&rdquo;.
+        </p>
       </div>
     </div>
 
@@ -357,15 +363,34 @@ function selectPlaceById(placeId: string): void {
   selectPlace(place);
 }
 
+// Vue Router yields a string for a single query value and string[] for a
+// repeated one (e.g. ?place=a&place=b); only the single-value form is
+// meaningful here, so anything else is treated as absent.
+function readStringQueryParam(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+// Case-insensitive AND Unicode-normalization-insensitive: place names are
+// heavily accented, and the same accented character can arrive normalized
+// differently depending on where a row was written (e.g. "í" as one code
+// point vs. "i" plus a combining accent), which would otherwise silently
+// fail to match despite looking identical to the user.
+function normalizeForMatch(value: string): string {
+  return value.normalize("NFC").toLowerCase();
+}
+
 // Explore's trending-place cards can't deep-link by id (fetchTrendingPlaces
-// aggregates across users and drops it), so they link here with the place
-// name as a query param instead. Pre-filling the search always narrows the
-// list to that name; a saved place with a matching name is also auto-opened.
-// A trending place the viewer hasn't personally saved has no marker here to
-// focus, so search-narrowing is the best available fallback for that case.
+// aggregates across users and drops it), so they link here with the same
+// name/country/category grouping keys as query params instead. Name alone
+// can collide across two visibly different cards (e.g. "Lisbon" the city and
+// "Lisbon" the culture pick), so country/category — when present — narrow
+// the match to the exact card that was clicked. Pre-filling the search
+// always narrows the list to the name; a saved place matching all three is
+// also auto-opened. A trending place the viewer hasn't personally saved has
+// no marker here to focus, so search-narrowing is the best available
+// fallback for that case.
 function focusPlaceFromQuery(): void {
-  const queryValue = route.query.place;
-  const placeName = typeof queryValue === "string" ? queryValue.trim() : "";
+  const placeName = readStringQueryParam(route.query.place);
 
   if (!placeName) {
     return;
@@ -373,9 +398,28 @@ function focusPlaceFromQuery(): void {
 
   searchQuery.value = placeName;
 
-  const matchingPlace = placesStore.places.find(
-    (candidate) => candidate.name.toLowerCase() === placeName.toLowerCase(),
-  );
+  const country = readStringQueryParam(route.query.country);
+  const category = readStringQueryParam(route.query.category);
+
+  const matchingPlace = placesStore.places.find((candidate) => {
+    if (normalizeForMatch(candidate.name) !== normalizeForMatch(placeName)) {
+      return false;
+    }
+    if (
+      country &&
+      normalizeForMatch(candidate.country ?? "") !== normalizeForMatch(country)
+    ) {
+      return false;
+    }
+    if (
+      category &&
+      normalizeForMatch(candidate.category ?? "") !==
+        normalizeForMatch(category)
+    ) {
+      return false;
+    }
+    return true;
+  });
 
   if (matchingPlace) {
     selectPlace(matchingPlace);
@@ -960,6 +1004,11 @@ onBeforeUnmount(() => {
 .place-list {
   overflow-y: auto;
   padding: 8px;
+}
+.empty-note {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 10px 8px;
 }
 .place-item {
   display: flex;

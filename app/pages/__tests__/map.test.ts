@@ -10,7 +10,11 @@ import { pageGlobalConfig as globalConfig } from "./test-utils";
 // query param (see issue #218). Reactive (like Nuxt's real useRoute) so the
 // page's watch(() => route.query.place, ...) can be exercised by mutating
 // this after mount; reset in beforeEach so it doesn't leak between tests.
-const routeQuery = reactive<{ place?: string | string[] }>({});
+const routeQuery = reactive<{
+  place?: string | string[];
+  country?: string;
+  category?: string;
+}>({});
 vi.stubGlobal("useRoute", () => ({ params: {}, query: routeQuery }));
 
 const mockMapStats = ref({
@@ -201,6 +205,8 @@ describe("Map page (/map)", () => {
     stubPaginatedPlacesResponse([]);
     setActivePinia(createPinia());
     delete routeQuery.place;
+    delete routeQuery.country;
+    delete routeQuery.category;
     mockHasToken = false;
     mockInitMap.mockResolvedValue(null);
   });
@@ -308,6 +314,22 @@ describe("Map page (/map)", () => {
 
     expect(wrapper.findAll(".place-item")).toHaveLength(1);
     expect(wrapper.find(".place-item__name").text()).toBe("Tokyo");
+  });
+
+  it("shows an empty-state note when a typed search matches nothing", async () => {
+    const wrapper = await mountWithPlaces();
+
+    const input = wrapper.find(".places__search input");
+    await input.setValue("nowhere");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.findAll(".place-item")).toHaveLength(0);
+    expect(wrapper.find(".place-list .empty-note").exists()).toBe(true);
+  });
+
+  it("does not show the empty-state note when the search box is empty", async () => {
+    const wrapper = await mountWithPlaces();
+    expect(wrapper.find(".place-list .empty-note").exists()).toBe(false);
   });
 
   it("shows all places when the search query is cleared", async () => {
@@ -432,6 +454,50 @@ describe("Map page (/map)", () => {
     expect(wrapper.find(".detail__name").text()).toBe("Tokyo");
   });
 
+  it("matches the ?place= query param independent of Unicode normalization", async () => {
+    // "í" as a single precomposed code point (NFC) vs. "i" + combining acute
+    // accent (NFD) look identical but compare unequal without normalizing.
+    routeQuery.place = "Reykjavík";
+    const wrapper = await mountWithPlaces();
+
+    expect(wrapper.find(".detail__name").text()).toBe("Reykjavík");
+  });
+
+  it("uses ?country= to disambiguate two saved places sharing a name", async () => {
+    const duplicateNamePlaces = [
+      {
+        id: "p-lisbon-pt",
+        userId: "u-1",
+        name: "Lisbon",
+        subtitle: "Portugal",
+        country: "Portugal",
+        category: "city",
+        latitude: 38.7223,
+        longitude: -9.1393,
+        createdAt: new Date("2024-01-01"),
+        updatedAt: new Date("2024-01-01"),
+      },
+      {
+        id: "p-lisbon-oh",
+        userId: "u-1",
+        name: "Lisbon",
+        subtitle: "Ohio, USA",
+        country: "United States",
+        category: "city",
+        latitude: 41.4531,
+        longitude: -82.6021,
+        createdAt: new Date("2024-01-01"),
+        updatedAt: new Date("2024-01-01"),
+      },
+    ];
+    routeQuery.place = "Lisbon";
+    routeQuery.country = "United States";
+    const wrapper = await mountWithPlaces(duplicateNamePlaces);
+
+    expect(wrapper.find(".detail__name").text()).toBe("Lisbon");
+    expect(wrapper.find(".detail__loc").text()).toBe("Ohio, USA");
+  });
+
   it("pre-fills search but selects nothing when ?place= matches no saved place", async () => {
     // Trending places are aggregated across all users (see fetchTrendingPlaces),
     // so most clicked-through names won't be among the viewer's own places —
@@ -444,6 +510,11 @@ describe("Map page (/map)", () => {
     ).toBe("Reynisfjara");
     expect(wrapper.find(".detail.is-open").exists()).toBe(false);
     expect(wrapper.findAll(".place-item")).toHaveLength(0);
+    // The viewer shouldn't be left wondering why their whole places list
+    // just vanished after clicking a trending card.
+    expect(wrapper.find(".place-list .empty-note").text()).toContain(
+      "Reynisfjara",
+    );
   });
 
   it("ignores a repeated ?place= param (Vue Router yields a string array)", async () => {
@@ -534,6 +605,28 @@ describe("Map page (/map)", () => {
     await flushPromises();
 
     expect(mockFlyTo).not.toHaveBeenCalled();
+  });
+
+  it("pans the camera when the ?place= query changes while already on the page", async () => {
+    // This is the scenario the route.query.place watcher exists for: the map
+    // is already live (token present, 'load' already fired) and the viewer
+    // clicks a second trending card without leaving /map.
+    mockHasToken = true;
+    const fakeMapInstance = createFakeMapInstance();
+    mockInitMap.mockResolvedValueOnce(fakeMapInstance);
+    routeQuery.place = "Tokyo";
+
+    const wrapper = await mountWithPlaces();
+    await fakeMapInstance.triggerLoad();
+    await flushPromises();
+    expect(mockFlyTo).toHaveBeenCalledWith(fakeMapInstance, 139.6503, 35.6762);
+    mockFlyTo.mockClear();
+
+    routeQuery.place = "Reykjavík";
+    await wrapper.vm.$nextTick();
+    await flushPromises();
+
+    expect(mockFlyTo).toHaveBeenCalledWith(fakeMapInstance, -21.8954, 64.1355);
   });
 
   it("shows places error alert when fetchPlaces fails", async () => {

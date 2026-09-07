@@ -476,14 +476,27 @@ function formatSaveCount(count: number): string {
 }
 
 // Trending places are aggregated by name/country/category across all users
-// (see fetchTrendingPlaces), so no place id survives the grouping. The map
-// page can't deep-link to a specific marker without an id, so it links with
-// the place name as a query param instead and resolves it client-side.
+// (see fetchTrendingPlaces), so no place id survives the grouping — and the
+// same name can legitimately appear as more than one card (e.g. "Lisbon" the
+// city and "Lisbon" the culture pick). The map page can't deep-link to a
+// specific marker without an id, so it links with the same grouping keys as
+// query params and resolves them together client-side to avoid opening the
+// wrong same-named place.
 function placeMapLink(place: TrendingPlace): {
   path: string;
-  query: { place: string };
+  query: Record<string, string>;
 } {
-  return { path: "/map", query: { place: place.name } };
+  const query: Record<string, string> = { place: place.name };
+
+  if (place.country) {
+    query.country = place.country;
+  }
+
+  if (place.category) {
+    query.category = place.category;
+  }
+
+  return { path: "/map", query };
 }
 
 // ---------------------------------------------------------------------------
