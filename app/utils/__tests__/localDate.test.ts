@@ -80,9 +80,11 @@ describe("localDateToIso", () => {
 
 describe("localIsoDate", () => {
   beforeEach(() => {
+    // Pin TZ too, not just the clock: a host east of UTC+12 (e.g. Pacific/Kiritimati,
+    // UTC+14) would otherwise see noon UTC as the next local day, breaking this
+    // assertion independent of which instant is under test.
+    process.env.TZ = "UTC";
     vi.useFakeTimers();
-    // Noon UTC keeps the local calendar date identical across any reasonable
-    // host timezone offset, so this assertion doesn't depend on the CI runner's TZ.
     vi.setSystemTime(new Date("2026-09-06T12:00:00.000Z"));
   });
 

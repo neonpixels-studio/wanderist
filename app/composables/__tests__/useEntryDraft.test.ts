@@ -69,14 +69,35 @@ describe("useEntryDraft", () => {
       expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
     });
 
+    it("returns null and removes the key when storage parses to an array", () => {
+      // typeof [] === "object" and { ...[] } is {}, so an array must be rejected
+      // explicitly or it would silently pass through as an empty-ish draft.
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify([]));
+      const { loadDraft } = useEntryDraft();
+      const result = loadDraft();
+      expect(result).toBeNull();
+      expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+    });
+
     describe("date normalization", () => {
+      const originalTimeZone = process.env.TZ;
+
       beforeEach(() => {
+        // Pin TZ, not just the clock: a host east of UTC+12 would see noon UTC
+        // as the next local day, breaking these assertions regardless of the
+        // instant under test.
+        process.env.TZ = "UTC";
         vi.useFakeTimers();
         vi.setSystemTime(new Date("2026-09-06T12:00:00.000Z"));
       });
 
       afterEach(() => {
         vi.useRealTimers();
+        if (originalTimeZone === undefined) {
+          delete process.env.TZ;
+          return;
+        }
+        process.env.TZ = originalTimeZone;
       });
 
       it("keeps a valid restored date untouched", () => {

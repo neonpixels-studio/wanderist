@@ -28,6 +28,29 @@ export interface EntryDraft {
   uploadedPhotos: Array<{ id: string; url: string }>;
 }
 
+// A restored draft's `date` can be corrupt: hand-edited localStorage, a value
+// written by an older/incompatible build, or a stale value from before this
+// field's format changed. buildEntryPayload feeds it straight into
+// localDateToIso, which silently returns undefined for anything that isn't a
+// real "YYYY-MM-DD" calendar date — dropping occurredAt from the publish
+// payload with no visible error. Normalize here so a bad value never survives
+// the restore. This only validates `date`; other malformed fields (e.g. a
+// draft missing `tags`) are a separate, broader shape-validation problem this
+// change doesn't attempt to solve.
+function normalizeDraftDate(date: unknown): string {
+  if (isValidLocalDate(date)) {
+    return date;
+  }
+  return localIsoDate();
+}
+
+// Excludes arrays: `typeof [] === "object"` would otherwise pass, and
+// spreading an array (`{ ...[] }`) yields `{}`, silently producing a draft
+// with every field but `date` set to `undefined`.
+function isDraftShapedObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function useEntryDraft() {
   function saveDraft(draft: EntryDraft): void {
     localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
@@ -40,30 +63,20 @@ export function useEntryDraft() {
     }
 
     try {
-      const parsed = JSON.parse(raw) as EntryDraft;
-      if (!parsed || typeof parsed !== "object") {
+      const parsed: unknown = JSON.parse(raw);
+      if (!isDraftShapedObject(parsed)) {
         localStorage.removeItem(DRAFT_STORAGE_KEY);
         return null;
       }
-      return { ...parsed, date: normalizeDraftDate(parsed.date) };
+      return {
+        ...(parsed as EntryDraft),
+        date: normalizeDraftDate(parsed.date),
+      };
     } catch {
       // Corrupt storage; discard silently so the user gets a clean form
       localStorage.removeItem(DRAFT_STORAGE_KEY);
       return null;
     }
-  }
-
-  // A restored draft's date can be corrupt: hand-edited localStorage, a value
-  // written by an older/incompatible build, or a partial write. buildEntryPayload
-  // feeds this straight into localDateToIso, which silently returns undefined
-  // for anything that isn't a real "YYYY-MM-DD" calendar date — dropping
-  // occurredAt from the publish payload with no visible error. Normalize here so
-  // a bad value never survives the restore.
-  function normalizeDraftDate(date: unknown): string {
-    if (isValidLocalDate(date)) {
-      return date;
-    }
-    return localIsoDate();
   }
 
   function clearDraft(): void {
