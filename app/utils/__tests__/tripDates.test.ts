@@ -30,7 +30,7 @@ describe("formatTripDateRange", () => {
         new Date("2024-06-01T00:00:00.000Z"),
         new Date("2024-06-02T00:00:00.000Z"),
       ),
-    ).toBe("Jun 1, 2024 – Jun 2, 2024 · 1 days");
+    ).toBe("Jun 1, 2024 – Jun 2, 2024 · 1 day");
   });
 
   it("renders dates in UTC regardless of the runtime's local timezone", () => {
@@ -41,6 +41,18 @@ describe("formatTripDateRange", () => {
         "2024-06-01T23:30:00.000Z",
         "2024-06-02T23:30:00.000Z",
       ),
-    ).toBe("Jun 1, 2024 – Jun 2, 2024 · 1 days");
+    ).toBe("Jun 1, 2024 – Jun 2, 2024 · 1 day");
+  });
+
+  it("falls back to 'dates TBD' for an unparseable start date instead of rendering Invalid Date", () => {
+    expect(formatTripDateRange("not-a-date", "2024-06-14T00:00:00.000Z")).toBe(
+      "dates TBD",
+    );
+  });
+
+  it("falls back to just the start label for an unparseable end date", () => {
+    expect(formatTripDateRange("2024-06-01T00:00:00.000Z", "not-a-date")).toBe(
+      "Jun 1, 2024",
+    );
   });
 });

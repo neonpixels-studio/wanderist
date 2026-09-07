@@ -1,11 +1,13 @@
 /**
- * Query utilities for public user profiles and follower lists.
+ * Query utilities for public user profiles, follower lists, and the public
+ * trips/guides shown on a profile.
  *
  * All functions accept a pre-built database instance and the relevant user IDs
  * so they can be tested in isolation without mocking module-level singletons.
- * The `fetch*` functions only read and never throw; `requireViewableProfile` is
- * the one exception — it is the single source of the profile visibility rule
- * (shared by every profile endpoint so the check cannot drift) and throws a 404.
+ * The `fetch*` functions only read and never throw; `requireViewableProfile`
+ * and `requireViewableProfileTarget` are the exception — both route through
+ * `assertProfileViewable`, the single source of the profile visibility rule
+ * (shared by every profile endpoint so the check cannot drift), and throw 404.
  */
 
 import type { H3Event } from "h3";
@@ -61,6 +63,11 @@ export interface PublicPerson {
   userId: string;
   displayName: string | null;
   handle: string | null;
+}
+
+export interface ProfileVisibility {
+  userId: string;
+  effectivelyPublic: boolean;
 }
 
 // Maximum trips/guides returned by a single profile content request. Mirrors
@@ -174,6 +181,55 @@ export async function fetchProfileRow(
     followerCount: Number(row.followerCount),
     followingCount: Number(row.followingCount),
     placeCount: Number(row.placeCount),
+  };
+}
+
+/**
+ * Lightweight sibling of `fetchProfileRow`: resolves only whether a profile
+ * exists and is effectively public, without the three correlated `COUNT`
+ * subqueries `fetchProfileRow` computes for the profile-detail response.
+ *
+ * `requireViewableProfileTarget` — the preamble every `/api/users/[id]/*`
+ * sub-resource list endpoint (followers, trips, guides) calls purely as a
+ * visibility gate — never renders those counts. Routing it through the full
+ * `fetchProfileRow` would recompute (and discard) the follower/following/place
+ * counts on every one of those requests; a single profile page load already
+ * issues one such request per sub-resource, so the waste multiplies with
+ * every sub-resource this profile page grows. `fetchProfileRow` remains the
+ * one the profile-detail endpoint (`/api/users/[id]`) uses, since it actually
+ * returns the counts.
+ */
+export async function fetchProfileVisibility(
+  database: Database,
+  userId: string,
+): Promise<ProfileVisibility | null> {
+  const rows = await database
+    .select({
+      userId: users.id,
+      publicProfile: sql<boolean>`coalesce(${userPreferences.publicProfile}, false)`,
+      subscriptionStatus: subscriptions.status,
+      subscriptionPlan: subscriptions.plan,
+    })
+    .from(users)
+    .leftJoin(userPreferences, eq(users.id, userPreferences.userId))
+    .leftJoin(subscriptions, eq(users.id, subscriptions.userId))
+    .where(and(eq(users.id, userId), isNull(users.deletedAt)))
+    .limit(1);
+
+  const row = rows[0];
+
+  if (!row) {
+    return null;
+  }
+
+  const entitled = subscriptionEntitlesPublicProfile({
+    plan: row.subscriptionPlan,
+    status: row.subscriptionStatus,
+  });
+
+  return {
+    userId: row.userId,
+    effectivelyPublic: row.publicProfile && entitled,
   };
 }
 
@@ -317,6 +373,33 @@ export async function fetchPublicGuides(
 }
 
 /**
+ * The single source of the profile visibility rule: throws 404 when `profile`
+ * is missing, or when it isn't effectively public and the viewer isn't its
+ * owner. Shared by `requireViewableProfile` (full row, used by the
+ * profile-detail endpoint) and `requireViewableProfileTarget` (lean
+ * visibility-only row, used by the sub-resource list endpoints) so the rule
+ * itself cannot drift between the two even though they fetch different
+ * shapes. Narrows `profile` to non-null for the caller via the `asserts`
+ * return type.
+ */
+function assertProfileViewable<T extends { effectivelyPublic: boolean }>(
+  profile: T | null,
+  currentUserId: string,
+  targetUserId: string,
+): asserts profile is T {
+  if (!profile) {
+    throw createError({ statusCode: 404, statusMessage: "Profile not found" });
+  }
+
+  // A profile that isn't effectively public (never opted in, or opted in but
+  // the subscription that entitled it has lapsed) is visible only to its owner
+  // — never leak it to others.
+  if (!profile.effectivelyPublic && currentUserId !== targetUserId) {
+    throw createError({ statusCode: 404, statusMessage: "Profile not found" });
+  }
+}
+
+/**
  * Loads a profile and enforces visibility in one place. Throws 404 when the
  * user does not exist, is soft-deleted, or is private and viewed by anyone but
  * its owner. Returns the row so the caller can use it. Every profile endpoint
@@ -329,27 +412,20 @@ export async function requireViewableProfile(
 ): Promise<ProfileRow> {
   const profile = await fetchProfileRow(database, targetUserId);
 
-  if (!profile) {
-    throw createError({ statusCode: 404, statusMessage: "Profile not found" });
-  }
-
-  // A profile that isn't effectively public (never opted in, or opted in but
-  // the subscription that entitled it has lapsed) is visible only to its owner
-  // — never leak it to others.
-  if (!profile.effectivelyPublic && currentUserId !== targetUserId) {
-    throw createError({ statusCode: 404, statusMessage: "Profile not found" });
-  }
+  assertProfileViewable(profile, currentUserId, targetUserId);
 
   return profile;
 }
 
 /**
  * Resolves the database, authenticated viewer, and the `id` route param, then
- * enforces requireViewableProfile before any `/api/users/[id]/*` sub-resource
- * list is read. Every such endpoint (followers, trips, guides) needs this
- * identical preamble; consolidating it here means a new one can't accidentally
- * skip the visibility check. Returns `viewerId` too (not just `targetUserId`)
- * so a list that treats the owner differently from any other viewer — see
+ * enforces the same visibility rule as `requireViewableProfile` — via the
+ * lean `fetchProfileVisibility` rather than the counts-laden `fetchProfileRow`
+ * — before any `/api/users/[id]/*` sub-resource list is read. Every such
+ * endpoint (followers, trips, guides) needs this identical preamble;
+ * consolidating it here means a new one can't accidentally skip the
+ * visibility check. Returns `viewerId` too (not just `targetUserId`) so a
+ * list that treats the owner differently from any other viewer — see
  * `fetchPublicGuides` — can do so without re-deriving the authenticated user.
  */
 export async function requireViewableProfileTarget(
@@ -359,7 +435,8 @@ export async function requireViewableProfileTarget(
   const targetUserId = requireRouterParam(event, "id");
   const database = getDb();
 
-  await requireViewableProfile(database, viewerId, targetUserId);
+  const profile = await fetchProfileVisibility(database, targetUserId);
+  assertProfileViewable(profile, viewerId, targetUserId);
 
   return { database, targetUserId, viewerId };
 }

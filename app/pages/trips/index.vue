@@ -144,11 +144,11 @@ import { useTripsStore } from "~/stores/trips";
 import type { Trip } from "~/stores/trips";
 import { formatCompact } from "~/utils/formatNumber";
 import { useStats } from "~/composables/useStats";
+import { formatTripDateRange } from "~/utils/tripDates";
+import type { TripStatus } from "~/utils/tripDates";
 
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Trips" });
-
-type TripStatus = "ongoing" | "upcoming" | "past";
 
 const STATUS_CLASSES: Record<TripStatus, string> = {
   ongoing: "tag tag--ongoing",
@@ -238,13 +238,6 @@ function tripStatusClass(status: TripStatus) {
   return STATUS_CLASSES[status];
 }
 
-const UTC_DATE_FORMAT = {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  timeZone: "UTC",
-} as const;
-
 function tripStatusLabel(trip: Trip) {
   if (!trip.startDate) {
     return trip.status;
@@ -254,24 +247,7 @@ function tripStatusLabel(trip: Trip) {
 }
 
 function formatTripDates(trip: Trip): string {
-  if (!trip.startDate) {
-    return "dates TBD";
-  }
-
-  const start = new Date(trip.startDate);
-  const startStr = start.toLocaleDateString("en-US", UTC_DATE_FORMAT);
-
-  if (!trip.endDate) {
-    return startStr;
-  }
-
-  const end = new Date(trip.endDate);
-  const endStr = end.toLocaleDateString("en-US", UTC_DATE_FORMAT);
-
-  const diffMs = end.getTime() - start.getTime();
-  const days = Math.round(diffMs / (1000 * 60 * 60 * 24));
-
-  return `${startStr} – ${endStr} · ${days} days`;
+  return formatTripDateRange(trip.startDate, trip.endDate);
 }
 
 function formatDistance(distanceKm: number): string {

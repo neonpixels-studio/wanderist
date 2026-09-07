@@ -33,6 +33,7 @@ vi.mock("../../../server/db/index", () => ({
 
 import {
   fetchProfileRow,
+  fetchProfileVisibility,
   fetchFollowers,
   fetchPublicTrips,
   fetchPublicGuides,
@@ -262,6 +263,96 @@ describe("fetchProfileRow", () => {
       "placeCount",
     );
     expect(placeCountSql).toMatch(/places\.user_id\s*=\s*"users"\."id"/);
+  });
+});
+
+describe("fetchProfileVisibility", () => {
+  it("derives effectivelyPublic true for an opted-in, entitled user", async () => {
+    const built = buildSelectChain([
+      {
+        userId: "user-1",
+        publicProfile: true,
+        subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
+        subscriptionPlan: PLAN.NOMAD,
+      },
+    ]);
+
+    const result = await fetchProfileVisibility(
+      built.chain as unknown as Database,
+      "user-1",
+    );
+
+    expect(result).toEqual({ userId: "user-1", effectivelyPublic: true });
+  });
+
+  it("derives effectivelyPublic false when opted in but the subscription lapsed", async () => {
+    const built = buildSelectChain([
+      {
+        userId: "user-1",
+        publicProfile: true,
+        subscriptionStatus: SUBSCRIPTION_STATUS.PAST_DUE,
+        subscriptionPlan: PLAN.NOMAD,
+      },
+    ]);
+
+    const result = await fetchProfileVisibility(
+      built.chain as unknown as Database,
+      "user-1",
+    );
+
+    expect(result).toEqual({ userId: "user-1", effectivelyPublic: false });
+  });
+
+  it("returns null when no matching user row exists", async () => {
+    const built = buildSelectChain([]);
+
+    const result = await fetchProfileVisibility(
+      built.chain as unknown as Database,
+      "missing",
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("scopes the query to the user id and excludes soft-deleted users", async () => {
+    const built = buildSelectChain([]);
+
+    await fetchProfileVisibility(built.chain as unknown as Database, "user-1");
+
+    expect(built.where).toHaveBeenCalledWith(
+      and(eq(users.id, "user-1"), isNull(users.deletedAt)),
+    );
+  });
+
+  it("left-joins preferences and subscriptions so a prefs-less/free user still resolves", async () => {
+    const built = buildSelectChain([]);
+
+    await fetchProfileVisibility(built.chain as unknown as Database, "user-1");
+
+    expect(built.leftJoin).toHaveBeenCalledTimes(2);
+    expect(built.innerJoin).not.toHaveBeenCalled();
+  });
+
+  it("defaults a prefs-less profile to private (coalesce publicProfile to false)", async () => {
+    const built = buildSelectChain([]);
+    await fetchProfileVisibility(built.chain as unknown as Database, "user-1");
+    const selection = built.select.mock.calls[0][0] as Record<string, unknown>;
+    const publicProfileSql = renderSelectField(selection, "publicProfile");
+    expect(publicProfileSql).toMatch(
+      /coalesce\("?user_preferences"?\."?public_profile"?,\s*false\)/,
+    );
+  });
+
+  it("selects no COUNT subqueries (the whole point of this lean sibling)", async () => {
+    const built = buildSelectChain([]);
+    await fetchProfileVisibility(built.chain as unknown as Database, "user-1");
+    const selection = built.select.mock.calls[0][0] as Record<string, unknown>;
+    expect(Object.keys(selection).sort()).toEqual([
+      "publicProfile",
+      "subscriptionPlan",
+      "subscriptionStatus",
+      "userId",
+    ]);
   });
 });
 
@@ -688,16 +779,9 @@ describe("requireViewableProfileTarget", () => {
     const built = buildSelectChain([
       {
         userId: "target-1",
-        displayName: "Elsa",
-        handle: "elsa_far",
-        homeBase: null,
-        bio: null,
         publicProfile: true,
         subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
         subscriptionPlan: PLAN.NOMAD,
-        followerCount: 0,
-        followingCount: 0,
-        placeCount: 0,
       },
     ]);
     mockRequireUser.mockReturnValue("viewer-1");
@@ -721,16 +805,9 @@ describe("requireViewableProfileTarget", () => {
     const built = buildSelectChain([
       {
         userId: "target-1",
-        displayName: "Elsa",
-        handle: "elsa_far",
-        homeBase: null,
-        bio: null,
         publicProfile: false,
         subscriptionStatus: null,
         subscriptionPlan: null,
-        followerCount: 0,
-        followingCount: 0,
-        placeCount: 0,
       },
     ]);
     mockRequireUser.mockReturnValue("viewer-1");
@@ -744,6 +821,38 @@ describe("requireViewableProfileTarget", () => {
         {} as Parameters<typeof requireViewableProfileTarget>[0],
       ),
     ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("uses the lean visibility-only query, not the counts-laden fetchProfileRow", async () => {
+    const built = buildSelectChain([
+      {
+        userId: "target-1",
+        publicProfile: true,
+        subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
+        subscriptionPlan: PLAN.NOMAD,
+      },
+    ]);
+    mockRequireUser.mockReturnValue("viewer-1");
+    mockGetDb.mockReturnValue(
+      built.chain as unknown as ReturnType<typeof getDb>,
+    );
+    stubRouterParam("target-1");
+
+    await requireViewableProfileTarget(
+      {} as Parameters<typeof requireViewableProfileTarget>[0],
+    );
+
+    // A regression back to fetchProfileRow here would recompute (and
+    // discard) three correlated COUNT subqueries on every followers/trips/
+    // guides request — this pins the lean selection shape so that can't
+    // silently creep back in.
+    const selection = built.select.mock.calls[0][0] as Record<string, unknown>;
+    expect(Object.keys(selection).sort()).toEqual([
+      "publicProfile",
+      "subscriptionPlan",
+      "subscriptionStatus",
+      "userId",
+    ]);
   });
 
   it("propagates the 401 when requireUser throws, without touching the database", async () => {
