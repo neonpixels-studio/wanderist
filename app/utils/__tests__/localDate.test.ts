@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { localDateToIso, localIsoDate, isValidLocalDate } from "../localDate";
 
 const originalTimeZone = process.env.TZ;

@@ -582,10 +582,10 @@ function applyDraftOrFreshForm(): void {
     tripId: draft.tripId,
     date: draft.date,
     visibility: draft.visibility,
-    // Matches uploadedPhotos below: a draft written before this field existed
-    // (or corrupted so it's missing) would otherwise restore `tags` as
-    // `undefined`, which crashes buildEntryPayload's `.length` read on publish.
-    tags: draft.tags ?? [],
+    // useEntryDraft.loadDraft already guarantees tags is an array (a draft
+    // missing it is rejected wholesale, same as any other malformed shape), so
+    // no defensive fallback is needed here.
+    tags: draft.tags,
     weather: draft.weather,
   };
   // Restore the saved place choice so it survives the round-trip. A draft

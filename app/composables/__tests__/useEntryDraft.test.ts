@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useEntryDraft } from "~/composables/useEntryDraft";
 import type { EntryDraft } from "~/composables/useEntryDraft";
 
@@ -79,59 +79,69 @@ describe("useEntryDraft", () => {
       expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
     });
 
+    describe("required field validation", () => {
+      it.each(["title", "body", "location", "tripId", "weather"] as const)(
+        "returns null and removes the key when %s is missing",
+        (field) => {
+          const corrupted = { ...SAMPLE_DRAFT };
+          delete (corrupted as Record<string, unknown>)[field];
+          localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+          const { loadDraft } = useEntryDraft();
+          expect(loadDraft()).toBeNull();
+          expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+        },
+      );
+
+      it("returns null and removes the key when tags is not an array", () => {
+        const corrupted = { ...SAMPLE_DRAFT, tags: "iceland" };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()).toBeNull();
+        expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+      });
+
+      it("returns null and removes the key when visibility is not a recognized value", () => {
+        const corrupted = { ...SAMPLE_DRAFT, visibility: "everyone" };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()).toBeNull();
+        expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+      });
+    });
+
     describe("date normalization", () => {
-      const originalTimeZone = process.env.TZ;
-
-      beforeEach(() => {
-        // Pin TZ, not just the clock: a host east of UTC+12 would see noon UTC
-        // as the next local day, breaking these assertions regardless of the
-        // instant under test.
-        process.env.TZ = "UTC";
-        vi.useFakeTimers();
-        vi.setSystemTime(new Date("2026-09-06T12:00:00.000Z"));
-      });
-
-      afterEach(() => {
-        vi.useRealTimers();
-        if (originalTimeZone === undefined) {
-          delete process.env.TZ;
-          return;
-        }
-        process.env.TZ = originalTimeZone;
-      });
-
       it("keeps a valid restored date untouched", () => {
         localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(SAMPLE_DRAFT));
         const { loadDraft } = useEntryDraft();
         expect(loadDraft()?.date).toBe("2026-06-14");
       });
 
-      it("falls back to today when the restored date is a malformed string", () => {
+      it("clears the date when it is a malformed string", () => {
         const corrupted = { ...SAMPLE_DRAFT, date: "not-a-date" };
         localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
         const { loadDraft } = useEntryDraft();
-        expect(loadDraft()?.date).toBe("2026-09-06");
+        expect(loadDraft()?.date).toBe("");
       });
 
-      it("falls back to today when the restored date overflows its month", () => {
+      it("clears the date when it overflows its month", () => {
         const corrupted = { ...SAMPLE_DRAFT, date: "2026-02-31" };
         localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
         const { loadDraft } = useEntryDraft();
-        expect(loadDraft()?.date).toBe("2026-09-06");
+        expect(loadDraft()?.date).toBe("");
       });
 
-      it("falls back to today when the restored date is missing", () => {
+      it("clears the date when it is missing", () => {
         const { date: _date, ...withoutDate } = SAMPLE_DRAFT;
         localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(withoutDate));
         const { loadDraft } = useEntryDraft();
-        expect(loadDraft()?.date).toBe("2026-09-06");
+        expect(loadDraft()?.date).toBe("");
       });
 
-      it("falls back to today when the restored date is the wrong type", () => {
+      it("clears the date when it is the wrong type", () => {
         const corrupted = { ...SAMPLE_DRAFT, date: 20260614 };
         localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
         const { loadDraft } = useEntryDraft();
-        expect(loadDraft()?.date).toBe("2026-09-06");
+        expect(loadDraft()?.date).toBe("");
       });
 
       it("preserves the rest of the draft when only the date is normalized", () => {

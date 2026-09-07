@@ -426,26 +426,32 @@ describe("AppNewEntry", () => {
     );
   });
 
-  it("falls back to an empty tags array when a restored draft lacks tags", async () => {
-    const { tags: _tags, ...draftWithoutTags } = {
+  it("blocks publish and shows an error when a restored draft's date was cleared", async () => {
+    // useEntryDraft.loadDraft normalizes an invalid date to "" rather than
+    // guessing a value, so a restored draft with a corrupt date reaches the
+    // form the same way a manually-cleared field would.
+    const draft: EntryDraft = {
       title: "Restored title",
       body: "Some body text",
       location: "Lisbon",
       tripId: "trip-saved",
-      date: "2026-06-01",
+      date: "",
       visibility: "public",
       tags: ["portugal"],
       weather: "clear",
       uploadedPhotos: [],
-    } satisfies EntryDraft;
-    mockLoadDraft.mockReturnValue(draftWithoutTags as EntryDraft);
+    };
+    mockLoadDraft.mockReturnValue(draft);
 
     const wrapper = mountOpen();
     await wrapper.vm.$nextTick();
-    await wrapper.find(".btn--ghost").trigger("click");
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
 
-    expect(mockSaveDraft).toHaveBeenCalledWith(
-      expect.objectContaining({ tags: [] }),
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "valid date",
     );
   });
 
