@@ -8,6 +8,8 @@
  *   const { saveDraft, loadDraft, clearDraft } = useEntryDraft()
  */
 
+import { isValidLocalDate, localIsoDate } from "~/utils/localDate";
+
 const DRAFT_STORAGE_KEY = "wanderist:new-entry-draft";
 
 export interface EntryDraft {
@@ -38,12 +40,30 @@ export function useEntryDraft() {
     }
 
     try {
-      return JSON.parse(raw) as EntryDraft;
+      const parsed = JSON.parse(raw) as EntryDraft;
+      if (!parsed || typeof parsed !== "object") {
+        localStorage.removeItem(DRAFT_STORAGE_KEY);
+        return null;
+      }
+      return { ...parsed, date: normalizeDraftDate(parsed.date) };
     } catch {
       // Corrupt storage; discard silently so the user gets a clean form
       localStorage.removeItem(DRAFT_STORAGE_KEY);
       return null;
     }
+  }
+
+  // A restored draft's date can be corrupt: hand-edited localStorage, a value
+  // written by an older/incompatible build, or a partial write. buildEntryPayload
+  // feeds this straight into localDateToIso, which silently returns undefined
+  // for anything that isn't a real "YYYY-MM-DD" calendar date — dropping
+  // occurredAt from the publish payload with no visible error. Normalize here so
+  // a bad value never survives the restore.
+  function normalizeDraftDate(date: unknown): string {
+    if (isValidLocalDate(date)) {
+      return date;
+    }
+    return localIsoDate();
   }
 
   function clearDraft(): void {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useEntryDraft } from "~/composables/useEntryDraft";
 import type { EntryDraft } from "~/composables/useEntryDraft";
 
@@ -59,6 +59,68 @@ describe("useEntryDraft", () => {
       const result = loadDraft();
       expect(result).toBeNull();
       expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+    });
+
+    it("returns null and removes the key when storage parses to a non-object", () => {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(null));
+      const { loadDraft } = useEntryDraft();
+      const result = loadDraft();
+      expect(result).toBeNull();
+      expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+    });
+
+    describe("date normalization", () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-09-06T12:00:00.000Z"));
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("keeps a valid restored date untouched", () => {
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(SAMPLE_DRAFT));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()?.date).toBe("2026-06-14");
+      });
+
+      it("falls back to today when the restored date is a malformed string", () => {
+        const corrupted = { ...SAMPLE_DRAFT, date: "not-a-date" };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()?.date).toBe("2026-09-06");
+      });
+
+      it("falls back to today when the restored date overflows its month", () => {
+        const corrupted = { ...SAMPLE_DRAFT, date: "2026-02-31" };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()?.date).toBe("2026-09-06");
+      });
+
+      it("falls back to today when the restored date is missing", () => {
+        const { date: _date, ...withoutDate } = SAMPLE_DRAFT;
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(withoutDate));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()?.date).toBe("2026-09-06");
+      });
+
+      it("falls back to today when the restored date is the wrong type", () => {
+        const corrupted = { ...SAMPLE_DRAFT, date: 20260614 };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()?.date).toBe("2026-09-06");
+      });
+
+      it("preserves the rest of the draft when only the date is normalized", () => {
+        const corrupted = { ...SAMPLE_DRAFT, date: "not-a-date" };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        const result = loadDraft();
+        expect(result?.title).toBe(SAMPLE_DRAFT.title);
+        expect(result?.body).toBe(SAMPLE_DRAFT.body);
+      });
     });
   });
 

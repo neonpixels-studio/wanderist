@@ -255,7 +255,7 @@ import type { Trip } from "~/stores/trips";
 import type { Entry } from "~/stores/entries";
 import type { Place } from "~/stores/places";
 import AppNewEntryLocationField from "~/components/AppNewEntryLocationField.vue";
-import { localDateToIso } from "~/utils/localDate";
+import { localDateToIso, localIsoDate } from "~/utils/localDate";
 
 const MAX_LOCATION_SUGGESTIONS = 5;
 
@@ -355,12 +355,6 @@ let placesReady: Promise<unknown> = Promise.resolve();
 // One-shot flag: true once the default tripId has been applied, so a later
 // trips-store update does not clobber an explicit "None" selection.
 const tripDefaulted = ref(false);
-
-function localIsoDate(): string {
-  const now = new Date();
-  const offsetMs = now.getTimezoneOffset() * 60_000;
-  return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10);
-}
 
 // Inverse of localDateToIso: read an entry's stored occurredAt back into the
 // date input's local YYYY-MM-DD, so editing then re-saving round-trips the same

@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { localDateToIso } from "../localDate";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { localDateToIso, localIsoDate, isValidLocalDate } from "../localDate";
 
 const originalTimeZone = process.env.TZ;
 
@@ -75,5 +75,42 @@ describe("localDateToIso", () => {
     expect(persisted.getUTCFullYear()).toBe(2026);
     expect(persisted.getUTCMonth()).toBe(0);
     expect(persisted.getUTCDate()).toBe(1);
+  });
+});
+
+describe("localIsoDate", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // Noon UTC keeps the local calendar date identical across any reasonable
+    // host timezone offset, so this assertion doesn't depend on the CI runner's TZ.
+    vi.setSystemTime(new Date("2026-09-06T12:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("returns today's date formatted as YYYY-MM-DD", () => {
+    expect(localIsoDate()).toBe("2026-09-06");
+  });
+});
+
+describe("isValidLocalDate", () => {
+  it("returns true for a real calendar date string", () => {
+    expect(isValidLocalDate("2026-06-14")).toBe(true);
+  });
+
+  it("returns false for a malformed string", () => {
+    expect(isValidLocalDate("not-a-date")).toBe(false);
+  });
+
+  it("returns false for a day that overflows its month", () => {
+    expect(isValidLocalDate("2026-02-31")).toBe(false);
+  });
+
+  it("returns false for non-string values", () => {
+    expect(isValidLocalDate(undefined)).toBe(false);
+    expect(isValidLocalDate(null)).toBe(false);
+    expect(isValidLocalDate(20260614)).toBe(false);
   });
 });
