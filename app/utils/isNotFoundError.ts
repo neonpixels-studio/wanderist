@@ -1,24 +1,14 @@
+import { getErrorStatus } from "~/utils/getErrorStatus";
+
 const NOT_FOUND_STATUS = 404;
 
 /**
  * True when a thrown fetch error's status is 404.
  *
- * ofetch's FetchError exposes statusCode, but this stays defensive about
- * wrappers that only preserve response.status or a nested data.statusCode —
- * otherwise a private/missing resource could render as a generic retryable
- * error instead of "not found". Shared by useProfile, stores/trips, and
- * stores/guides so a 404 (gone/private) reads as "not found" everywhere while
- * a 5xx or network failure surfaces as a distinct, retryable error.
+ * Shared by useProfile, stores/trips, and stores/guides so a 404 (gone/
+ * private) reads as "not found" everywhere while a 5xx or network failure
+ * surfaces as a distinct, retryable error.
  */
 export function isNotFoundError(error: unknown): boolean {
-  const candidate = error as {
-    statusCode?: number;
-    response?: { status?: number };
-    data?: { statusCode?: number };
-  };
-  const status =
-    candidate?.statusCode ??
-    candidate?.response?.status ??
-    candidate?.data?.statusCode;
-  return status === NOT_FOUND_STATUS;
+  return getErrorStatus(error) === NOT_FOUND_STATUS;
 }

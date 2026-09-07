@@ -4,7 +4,7 @@
   </div>
 
   <div
-    v-else-if="detailLoadError"
+    v-else-if="!tripDetail && detailLoadError"
     class="content content--wide"
     style="padding-top: 0"
   >
@@ -17,6 +17,9 @@
       >
         try again
       </button>
+      <NuxtLink to="/trips" class="empty-state__signin">
+        back to your trips
+      </NuxtLink>
       <NuxtLink
         v-if="isClerkLoaded && !isSignedIn"
         to="/login"
@@ -28,7 +31,7 @@
   </div>
 
   <div
-    v-else-if="tripsStore.detailNotFound || !tripDetail"
+    v-else-if="!tripDetail"
     class="content content--wide"
     style="padding-top: 0"
   >

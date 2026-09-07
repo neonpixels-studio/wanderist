@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { extractErrorMessage } from "~/utils/extractErrorMessage";
 import { isNotFoundError } from "~/utils/isNotFoundError";
+import { isUnauthorizedError } from "~/utils/isUnauthorizedError";
 
 export type GuideVisibility = "private" | "public";
 
@@ -183,10 +184,19 @@ export const useGuidesStore = defineStore("guides", () => {
       if (requestId !== latestGuideRequestId) {
         throw fetchError;
       }
-      // Clear any stale guide so the detail page shows its not-found/error
-      // state rather than the previously-open guide when a fetch fails.
-      currentGuide.value = null;
-      if (isNotFoundError(fetchError)) {
+      // A 404/401 means the guide is genuinely gone, private, or the caller's
+      // session no longer proves ownership (see isUnauthorizedError) — always
+      // clear any stale guide so the not-found state renders rather than
+      // content the viewer may no longer be entitled to see. A retryable
+      // failure (5xx/network) only clears the guide when nothing valid is
+      // already displayed for this id, so a transient background refetch of
+      // the guide already on screen doesn't blank it on a blip.
+      const isAuthOrMissing =
+        isNotFoundError(fetchError) || isUnauthorizedError(fetchError);
+      if (isAuthOrMissing || currentGuide.value?.id !== id) {
+        currentGuide.value = null;
+      }
+      if (isAuthOrMissing) {
         guideNotFound.value = true;
       } else {
         guideError.value = extractErrorMessage(fetchError);

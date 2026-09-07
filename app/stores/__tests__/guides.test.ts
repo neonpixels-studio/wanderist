@@ -266,6 +266,24 @@ describe("useGuidesStore", () => {
       expect(store.guideError).toBeNull();
     });
 
+    it("sets guideNotFound (not guideError) on a 401, since a stale/expired token isn't fixed by retrying", async () => {
+      // server/middleware/auth.ts 401s a request that sends a token that
+      // fails verification (expired/revoked session) rather than silently
+      // demoting the owner to a non-owner — that's not retryable with the
+      // same token, so it gets the same not-found treatment as 404.
+      const unauthorizedError = Object.assign(new Error("Unauthorized"), {
+        statusCode: 401,
+      });
+      mockApiFetch.mockRejectedValue(unauthorizedError);
+      const store = useGuidesStore();
+
+      await expect(store.fetchGuideById("g-1")).rejects.toThrow();
+
+      expect(store.currentGuide).toBeNull();
+      expect(store.guideNotFound).toBe(true);
+      expect(store.guideError).toBeNull();
+    });
+
     it("sets guideError (not guideNotFound) on a 5xx, so a share-link visitor sees a retryable error instead of not-found", async () => {
       const serverError = Object.assign(new Error("Internal Server Error"), {
         statusCode: 500,
@@ -288,6 +306,39 @@ describe("useGuidesStore", () => {
 
       expect(store.guideNotFound).toBe(false);
       expect(store.guideError).toBe("Failed to fetch");
+    });
+
+    it("keeps the already-displayed guide when a retryable background refetch of the SAME id fails", async () => {
+      mockApiFetch.mockResolvedValueOnce(guide);
+      const store = useGuidesStore();
+      await store.fetchGuideById("g-1");
+      expect(store.currentGuide).toEqual(guide);
+
+      mockApiFetch.mockRejectedValueOnce(
+        Object.assign(new Error("Internal Server Error"), {
+          statusCode: 500,
+        }),
+      );
+      await expect(store.fetchGuideById("g-1")).rejects.toThrow();
+
+      expect(store.currentGuide).toEqual(guide);
+      expect(store.guideError).toBe("Internal Server Error");
+    });
+
+    it("clears a stale guide on failure when nothing valid is displayed for the requested id", async () => {
+      mockApiFetch.mockResolvedValueOnce(guide);
+      const store = useGuidesStore();
+      await store.fetchGuideById("g-1");
+      expect(store.currentGuide).not.toBeNull();
+
+      mockApiFetch.mockRejectedValueOnce(
+        Object.assign(new Error("Internal Server Error"), {
+          statusCode: 500,
+        }),
+      );
+      await expect(store.fetchGuideById("g-2")).rejects.toThrow();
+
+      expect(store.currentGuide).toBeNull();
     });
 
     it("drops a stale response so an older request can't overwrite a newer guide", async () => {

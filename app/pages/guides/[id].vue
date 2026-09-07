@@ -3,7 +3,7 @@
     <div class="empty-note">Loading guide…</div>
   </div>
 
-  <div v-else-if="loadError" class="content content--wide">
+  <div v-else-if="!guide && loadError" class="content content--wide">
     <AppAlert intent="error" :message="loadError" />
     <button class="btn btn--outline btn--sm gdetail__back" @click="onRetryLoad">
       try again
@@ -13,10 +13,7 @@
     </NuxtLink>
   </div>
 
-  <div
-    v-else-if="guidesStore.guideNotFound || !guide"
-    class="content content--wide"
-  >
+  <div v-else-if="!guide" class="content content--wide">
     <div class="empty-note">Guide not found.</div>
     <NuxtLink to="/guides" class="btn btn--outline btn--sm gdetail__back">
       back to guides

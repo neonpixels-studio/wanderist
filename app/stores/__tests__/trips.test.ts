@@ -78,6 +78,24 @@ describe("useTripsStore", () => {
       expect(store.detailError).toBeNull();
     });
 
+    it("sets detailNotFound (not detailError) on a 401, since a stale/expired token isn't fixed by retrying", async () => {
+      // server/middleware/auth.ts 401s a request that sends a token that
+      // fails verification (expired/revoked session) rather than silently
+      // demoting the owner to a non-owner — that's not retryable with the
+      // same token, so it gets the same not-found + sign-in treatment as 404.
+      const unauthorizedError = Object.assign(new Error("Unauthorized"), {
+        statusCode: 401,
+      });
+      mockApiFetch.mockRejectedValue(unauthorizedError);
+      const store = useTripsStore();
+
+      await expect(store.fetchTripById("trip-1")).rejects.toThrow();
+
+      expect(store.currentTripDetail).toBeNull();
+      expect(store.detailNotFound).toBe(true);
+      expect(store.detailError).toBeNull();
+    });
+
     it("sets detailError (not detailNotFound) on a 5xx, so a share-link visitor sees a retryable error instead of the trip looking deleted", async () => {
       const serverError = Object.assign(new Error("Internal Server Error"), {
         statusCode: 500,
@@ -102,11 +120,32 @@ describe("useTripsStore", () => {
       expect(store.detailError).toBe("Failed to fetch");
     });
 
-    it("clears a previously-loaded trip on failure so stale content can't render under the error/not-found state", async () => {
+    it("clears a stale trip on failure when nothing valid is displayed for the requested id", async () => {
       mockApiFetch.mockResolvedValueOnce(SAMPLE_TRIP_DETAIL);
       const store = useTripsStore();
       await store.fetchTripById("trip-1");
       expect(store.currentTripDetail).not.toBeNull();
+
+      // Navigating to a DIFFERENT trip that then fails leaves nothing valid to
+      // show for trip-2, so the stale trip-1 content must not linger.
+      mockApiFetch.mockRejectedValueOnce(
+        Object.assign(new Error("Internal Server Error"), {
+          statusCode: 500,
+        }),
+      );
+      await expect(store.fetchTripById("trip-2")).rejects.toThrow();
+
+      expect(store.currentTripDetail).toBeNull();
+    });
+
+    it("keeps the already-displayed trip when a retryable background refetch of the SAME id fails", async () => {
+      // Regression guard: trips/[id].vue re-fetches once Clerk resolves
+      // (canRetryAuthenticated), which can race a transient failure after the
+      // trip already loaded successfully. A blip must not blank a good trip.
+      mockApiFetch.mockResolvedValueOnce(SAMPLE_TRIP_DETAIL);
+      const store = useTripsStore();
+      await store.fetchTripById("trip-1");
+      expect(store.currentTripDetail).toEqual(SAMPLE_TRIP_DETAIL);
 
       mockApiFetch.mockRejectedValueOnce(
         Object.assign(new Error("Internal Server Error"), {
@@ -115,7 +154,26 @@ describe("useTripsStore", () => {
       );
       await expect(store.fetchTripById("trip-1")).rejects.toThrow();
 
+      expect(store.currentTripDetail).toEqual(SAMPLE_TRIP_DETAIL);
+      expect(store.detailError).toBe("Internal Server Error");
+    });
+
+    it("clears the already-displayed trip on a 404/401 even when it was loaded for the same id", async () => {
+      // Unlike a retryable failure, a 404/401 means the viewer may no longer
+      // be entitled to see this trip (e.g. an expired session or the owner
+      // revoked sharing), so it must not keep showing stale content.
+      mockApiFetch.mockResolvedValueOnce(SAMPLE_TRIP_DETAIL);
+      const store = useTripsStore();
+      await store.fetchTripById("trip-1");
+      expect(store.currentTripDetail).not.toBeNull();
+
+      mockApiFetch.mockRejectedValueOnce(
+        Object.assign(new Error("Unauthorized"), { statusCode: 401 }),
+      );
+      await expect(store.fetchTripById("trip-1")).rejects.toThrow();
+
       expect(store.currentTripDetail).toBeNull();
+      expect(store.detailNotFound).toBe(true);
     });
 
     it("resets detailError and detailNotFound at the start of each call", async () => {

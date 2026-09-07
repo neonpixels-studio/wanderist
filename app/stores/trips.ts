@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { extractErrorMessage } from "~/utils/extractErrorMessage";
 import { isNotFoundError } from "~/utils/isNotFoundError";
+import { isUnauthorizedError } from "~/utils/isUnauthorizedError";
 
 type TripStatus = "ongoing" | "upcoming" | "past";
 type TripVisibility = "private" | "public";
@@ -212,10 +213,21 @@ export const useTripsStore = defineStore("trips", () => {
       if (requestId !== latestDetailRequestId) {
         throw error;
       }
-      // Clear any stale trip so the detail page renders its not-found/error
-      // state rather than the previously-open trip when a fetch fails.
-      currentTripDetail.value = null;
-      if (isNotFoundError(error)) {
+      // A 404/401 means the trip is genuinely gone, private, or the caller's
+      // session no longer proves ownership (see isUnauthorizedError) — always
+      // clear any stale trip so the not-found state (with its sign-in
+      // affordance) renders rather than content the viewer may no longer be
+      // entitled to see. A retryable failure (5xx/network) only clears the
+      // trip when nothing valid is already displayed for this id; a
+      // background refetch of the trip already on screen (e.g. the owner's
+      // re-fetch once Clerk resolves, watched in trips/[id].vue) keeps
+      // showing that still-valid content instead of blanking it on a blip.
+      const isAuthOrMissing =
+        isNotFoundError(error) || isUnauthorizedError(error);
+      if (isAuthOrMissing || currentTripDetail.value?.trip.id !== tripId) {
+        currentTripDetail.value = null;
+      }
+      if (isAuthOrMissing) {
         detailNotFound.value = true;
       } else {
         detailError.value = extractErrorMessage(error);
