@@ -22,6 +22,7 @@ let lastAsyncDataOptions: { watch?: unknown[]; server?: boolean } | undefined;
 const asyncDataStatus = ref<"idle" | "pending" | "success" | "error">(
   "success",
 );
+const mockRefresh = vi.fn().mockResolvedValue(undefined);
 vi.stubGlobal(
   "useAsyncData",
   (
@@ -36,7 +37,7 @@ vi.stubGlobal(
       pending: ref(false),
       error: ref(null),
       status: asyncDataStatus,
-      refresh: vi.fn(),
+      refresh: mockRefresh,
     };
   },
 );
@@ -53,6 +54,11 @@ const SAMPLE_GUIDE: Guide = {
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
 
+const alertStub = {
+  props: ["intent", "message"],
+  template: '<div class="alert-stub" :data-message="message" />',
+};
+
 function buildGlobalConfig(pinia: ReturnType<typeof createPinia>) {
   return {
     global: {
@@ -60,6 +66,7 @@ function buildGlobalConfig(pinia: ReturnType<typeof createPinia>) {
       stubs: {
         AppIcon: { template: "<svg data-icon />" },
         NuxtLink: nuxtLinkStub,
+        AppAlert: alertStub,
       },
     },
   };
@@ -71,6 +78,7 @@ describe("Guide Detail page (/guides/[id])", () => {
   beforeEach(() => {
     routeParams.id = "guide-1";
     asyncDataStatus.value = "success";
+    mockRefresh.mockClear();
     pinia = createPinia();
     setActivePinia(pinia);
 
@@ -160,21 +168,83 @@ describe("Guide Detail page (/guides/[id])", () => {
     expect(wrapper.text()).not.toContain("Guide not found");
   });
 
-  it("surfaces the store error message when a load fails", () => {
+  it("surfaces the store error message on a retryable failure (5xx/network), not the not-found state", () => {
     const guidesStore = useGuidesStore();
     guidesStore.currentGuide = null;
+    guidesStore.guideNotFound = false;
     guidesStore.guideError = "Something went wrong";
 
     const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
-    expect(wrapper.text()).toContain("Something went wrong");
+
+    expect(wrapper.find(".alert-stub").attributes("data-message")).toBe(
+      "Something went wrong",
+    );
+    expect(wrapper.text()).not.toContain("Guide not found");
+    expect(wrapper.text()).toContain("try again");
   });
 
-  it("shows the not-found state when no guide is loaded", () => {
+  it("retries the fetch when 'try again' is clicked on the error state", async () => {
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = null;
+    guidesStore.guideNotFound = false;
+    guidesStore.guideError = "Something went wrong";
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+    await wrapper.find("button").trigger("click");
+
+    expect(mockRefresh).toHaveBeenCalled();
+  });
+
+  it("offers a back-to-guides link in the retryable error state too, so a visitor isn't stranded on a retry that keeps failing", () => {
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = null;
+    guidesStore.guideNotFound = false;
+    guidesStore.guideError = "Something went wrong";
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+
+    expect(
+      wrapper
+        .findAll("a")
+        .some((link) => link.text().includes("back to guides")),
+    ).toBe(true);
+  });
+
+  it("keeps showing the guide and surfaces a non-blocking banner when a background refetch fails", () => {
+    // Regression guard for the preserve-on-same-id-failure store behavior:
+    // the content must still render, with the failure visible, not silent.
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = { ...SAMPLE_GUIDE };
+    guidesStore.guideError = "Something went wrong";
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".gdetail__head h1").text()).toBe("Tokyo on foot");
+    expect(wrapper.find(".alert-stub").attributes("data-message")).toBe(
+      "Couldn't refresh this guide: Something went wrong",
+    );
+  });
+
+  it("shows the not-found state (not the error alert) when no guide is loaded", () => {
     const guidesStore = useGuidesStore();
     guidesStore.currentGuide = null;
 
     const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
     expect(wrapper.text()).toContain("Guide not found.");
+    expect(wrapper.find(".alert-stub").exists()).toBe(false);
+  });
+
+  it("shows the not-found state for a 404 rather than the retryable error state", () => {
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = null;
+    guidesStore.guideNotFound = true;
+    guidesStore.guideError = null;
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.text()).toContain("Guide not found.");
+    expect(wrapper.find(".alert-stub").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("try again");
   });
 
   it("shows a placeholder when the guide has no body", () => {

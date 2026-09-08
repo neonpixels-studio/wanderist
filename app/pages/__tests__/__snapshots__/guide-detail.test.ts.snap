@@ -1,7 +1,8 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`Guide Detail page (/guides/[id]) > renders without crashing and matches snapshot 1`] = `
-"<article data-v-80a1fb78="" class="content content--wide gdetail"><a data-v-80a1fb78="" href="/guides" class="gdetail__back-link"><svg data-v-80a1fb78="" data-icon="" name="arrow-left" size="14"></svg> guides </a>
+"<article data-v-80a1fb78="" class="content content--wide gdetail">
+  <!--v-if--><a data-v-80a1fb78="" href="/guides" class="gdetail__back-link"><svg data-v-80a1fb78="" data-icon="" name="arrow-left" size="14"></svg> guides </a>
   <header data-v-80a1fb78="" class="gdetail__head">
     <h1 data-v-80a1fb78="">Tokyo on foot</h1>
     <div data-v-80a1fb78="" class="gdetail__meta"><span data-v-80a1fb78="" class="m"><svg data-v-80a1fb78="" data-icon="" name="clock" size="12"></svg> 8 min read </span><span data-v-80a1fb78="" class="m"><svg data-v-80a1fb78="" data-icon="" name="heart" size="12"></svg> 12</span><span data-v-80a1fb78="" class="tag tag--ongoing">public</span></div>

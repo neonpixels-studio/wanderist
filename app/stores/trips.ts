@@ -1,4 +1,6 @@
 import { defineStore } from "pinia";
+import { extractErrorMessage } from "~/utils/extractErrorMessage";
+import { isNotFoundError } from "~/utils/isNotFoundError";
 
 type TripStatus = "ongoing" | "upcoming" | "past";
 type TripVisibility = "private" | "public";
@@ -122,7 +124,11 @@ export const useTripsStore = defineStore("trips", () => {
   const isLoadingList = ref(false);
   const isLoadingDetail = ref(false);
   const listError = ref<string | null>(null);
+  // detailError carries a message for a retryable failure (5xx, network); a 404
+  // instead sets detailNotFound so the page can show "not found" rather than a
+  // retry prompt for a private/missing trip a share-link visitor hit.
   const detailError = ref<string | null>(null);
+  const detailNotFound = ref(false);
 
   // GET /api/trips is paginated server-side to keep each query bounded (see
   // server/api/trips/index.get.ts), but every UI consumer of the trips page
@@ -183,20 +189,56 @@ export const useTripsStore = defineStore("trips", () => {
     }
   }
 
+  // Monotonic request id; a resolved response is applied only if it is still
+  // the latest call, so a slower superseded call (e.g. home.vue's fire-and-
+  // forget fetch of the dashboard's "ongoing trip" racing the detail page's own
+  // fetch for a different trip) can't clobber fresher state on a late success
+  // or failure. Mirrors fetchGuideById's latestGuideRequestId in stores/guides.ts.
+  let latestDetailRequestId = 0;
+
   async function fetchTripById(tripId: string): Promise<void> {
+    const requestId = ++latestDetailRequestId;
     isLoadingDetail.value = true;
     detailError.value = null;
+    detailNotFound.value = false;
 
     try {
-      currentTripDetail.value = await apiFetch<TripDetail>(
-        `/api/trips/${tripId}`,
-      );
+      const detail = await apiFetch<TripDetail>(`/api/trips/${tripId}`);
+      if (requestId !== latestDetailRequestId) {
+        return;
+      }
+      currentTripDetail.value = detail;
     } catch (error) {
-      detailError.value =
-        error instanceof Error ? error.message : "Failed to load trip";
+      if (requestId !== latestDetailRequestId) {
+        throw error;
+      }
+      // A 404 means the trip is genuinely gone or private — always clear any
+      // stale trip so the not-found state (with its sign-in affordance)
+      // renders rather than content the viewer may no longer be entitled to
+      // see. A retryable failure (5xx/401/network) only clears the trip when
+      // nothing valid is already displayed for this id; a background refetch
+      // of the trip already on screen (e.g. the owner's re-fetch once Clerk
+      // resolves, watched in trips/[id].vue) keeps showing that still-valid
+      // content instead of blanking it on a blip. A 401 belongs in this
+      // retryable bucket, not not-found: apiFetch mints a fresh token per
+      // call, so "try again" can genuinely fix a token that expired in flight.
+      const tripIsGenuinelyMissing = isNotFoundError(error);
+      if (
+        tripIsGenuinelyMissing ||
+        currentTripDetail.value?.trip.id !== tripId
+      ) {
+        currentTripDetail.value = null;
+      }
+      if (tripIsGenuinelyMissing) {
+        detailNotFound.value = true;
+      } else {
+        detailError.value = extractErrorMessage(error);
+      }
       throw error;
     } finally {
-      isLoadingDetail.value = false;
+      if (requestId === latestDetailRequestId) {
+        isLoadingDetail.value = false;
+      }
     }
   }
 
@@ -360,6 +402,7 @@ export const useTripsStore = defineStore("trips", () => {
     isLoadingDetail,
     listError,
     detailError,
+    detailNotFound,
     fetchTrips,
     fetchTripById,
     createTrip,

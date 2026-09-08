@@ -41,3 +41,25 @@ export function localDateToIso(dateString: string): string | undefined {
   }
   return iso;
 }
+
+/**
+ * Today's calendar date in the host's local timezone, formatted as
+ * "YYYY-MM-DD" for direct use as an <input type="date"> value.
+ *
+ * Shared fallback for anywhere a date needs to default to "today": the new-entry
+ * form's initial state, and useEntryDraft's restore-time normalization below.
+ */
+export function localIsoDate(): string {
+  const now = new Date();
+  const offsetMs = now.getTimezoneOffset() * 60_000;
+  return new Date(now.getTime() - offsetMs).toISOString().slice(0, 10);
+}
+
+/**
+ * True when `date` is a real "YYYY-MM-DD" calendar date that localDateToIso can
+ * convert without ambiguity — the same check buildEntryPayload relies on
+ * implicitly, exposed here so callers can validate before that point.
+ */
+export function isValidLocalDate(date: unknown): date is string {
+  return typeof date === "string" && localDateToIso(date) !== undefined;
+}
