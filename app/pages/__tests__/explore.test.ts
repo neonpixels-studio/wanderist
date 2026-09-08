@@ -105,7 +105,7 @@ const featuredTrips = ref<FeaturedTrip[]>([
   },
 ]);
 
-const trendingPlaces = ref<TrendingPlace[]>([
+const DEFAULT_TRENDING_PLACES: TrendingPlace[] = [
   {
     name: "Reynisfjara",
     country: "Iceland",
@@ -134,7 +134,9 @@ const trendingPlaces = ref<TrendingPlace[]>([
     saveCount: 5100,
     recentSaveCount: 90,
   },
-]);
+];
+
+const trendingPlaces = ref<TrendingPlace[]>(DEFAULT_TRENDING_PLACES);
 
 const guides = ref<DiscoverGuide[]>([
   {
@@ -238,6 +240,7 @@ describe("Explore page (/explore)", () => {
       guides: [],
       people: [],
     };
+    trendingPlaces.value = DEFAULT_TRENDING_PLACES;
   });
 
   it("renders without crashing and matches snapshot", () => {
@@ -334,6 +337,46 @@ describe("Explore page (/explore)", () => {
     const names = wrapper.findAll(".pcard__name").map((el) => el.text());
     expect(names).toContain("Reynisfjara");
     expect(names).toContain("Alfama");
+  });
+
+  it("links each trending place card to /map with name/country/category as query params", () => {
+    const wrapper = mount(ExplorePage, globalConfig);
+    // Guards against every card linking to a bare /map with no way to focus
+    // the clicked place (see issue #218). Country and category ride along
+    // too, since fetchTrendingPlaces groups by all three — a name alone can
+    // collide across two visibly different cards.
+    const placeLinks = wrapper
+      .findAllComponents(linkStub)
+      .filter((link) => link.classes().includes("pcard"));
+    expect(placeLinks).toHaveLength(4);
+    expect(placeLinks[0].props("to")).toEqual({
+      path: "/map",
+      query: { place: "Reynisfjara", country: "Iceland", category: "nature" },
+    });
+    expect(placeLinks[1].props("to")).toEqual({
+      path: "/map",
+      query: { place: "Alfama", country: "Portugal", category: "city" },
+    });
+  });
+
+  it("omits country/category query params when a trending place has none", () => {
+    trendingPlaces.value = [
+      {
+        name: "Unnamed cove",
+        country: null,
+        category: null,
+        saveCount: 12,
+        recentSaveCount: 1,
+      },
+    ];
+    const wrapper = mount(ExplorePage, globalConfig);
+    const placeLink = wrapper
+      .findAllComponents(linkStub)
+      .find((link) => link.classes().includes("pcard"));
+    expect(placeLink?.props("to")).toEqual({
+      path: "/map",
+      query: { place: "Unnamed cove" },
+    });
   });
 
   it("renders 3 guide cards from API data", () => {
