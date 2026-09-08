@@ -17,6 +17,9 @@ import { resolveMapboxStyleUrl } from "./useMapboxStyles";
 // Named constant for the default map view
 const DEFAULT_CENTER: [number, number] = [0, 20];
 const DEFAULT_ZOOM = 2;
+// Zoom level used when flying to a single focused place — close enough to
+// read the surrounding area without being street-level.
+const FOCUS_ZOOM = 9;
 
 export type MapInstance = mapboxgl.Map;
 
@@ -262,12 +265,20 @@ export function useMapbox() {
     map.remove();
   }
 
+  // Centers the camera on a single place — used to focus a specific marker
+  // (e.g. arriving from a deep link) rather than leaving the viewer to find
+  // it at the default world view.
+  function flyTo(map: MapInstance, longitude: number, latitude: number): void {
+    map.flyTo({ center: [longitude, latitude], zoom: FOCUS_ZOOM });
+  }
+
   return {
     hasToken,
     initMap,
     setStyle,
     zoomIn,
     zoomOut,
+    flyTo,
     syncMarkers,
     setMarkerActive,
     startDropPin,

@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { extractErrorMessage } from "~/utils/extractErrorMessage";
+import { isNotFoundError } from "~/utils/isNotFoundError";
 
 export type GuideVisibility = "private" | "public";
 
@@ -66,7 +67,11 @@ export const useGuidesStore = defineStore("guides", () => {
   // guide the list may not contain (e.g. someone else's public guide).
   const currentGuide = ref<Guide | null>(null);
   const isLoadingGuide = ref(false);
+  // guideError carries a message for a retryable failure (5xx, network); a 404
+  // instead sets guideNotFound so the page can show "not found" rather than a
+  // retry prompt for a private/missing guide a share-link visitor hit.
   const guideError = ref<string | null>(null);
+  const guideNotFound = ref(false);
   const isLoading = ref(false);
   // Distinct from isLoading: lets a consumer tell "haven't fetched yet" apart
   // from "fetched and the list is genuinely empty", so a page doesn't flash
@@ -166,6 +171,7 @@ export const useGuidesStore = defineStore("guides", () => {
     const requestId = ++latestGuideRequestId;
     isLoadingGuide.value = true;
     guideError.value = null;
+    guideNotFound.value = false;
 
     try {
       const guide = await apiFetch<Guide>(`/api/guides/${id}`);
@@ -177,10 +183,23 @@ export const useGuidesStore = defineStore("guides", () => {
       if (requestId !== latestGuideRequestId) {
         throw fetchError;
       }
-      // Clear any stale guide so the detail page shows its not-found state
-      // rather than the previously-open guide when a fetch fails.
-      currentGuide.value = null;
-      guideError.value = extractErrorMessage(fetchError);
+      // A 404 means the guide is genuinely gone or private — always clear any
+      // stale guide so the not-found state renders rather than content the
+      // viewer may no longer be entitled to see. A retryable failure
+      // (5xx/401/network) only clears the guide when nothing valid is already
+      // displayed for this id, so a transient background refetch of the guide
+      // already on screen doesn't blank it on a blip. A 401 belongs in this
+      // retryable bucket, not not-found: apiFetch mints a fresh token per
+      // call, so "try again" can genuinely fix a token that expired in flight.
+      const guideIsGenuinelyMissing = isNotFoundError(fetchError);
+      if (guideIsGenuinelyMissing || currentGuide.value?.id !== id) {
+        currentGuide.value = null;
+      }
+      if (guideIsGenuinelyMissing) {
+        guideNotFound.value = true;
+      } else {
+        guideError.value = extractErrorMessage(fetchError);
+      }
       throw fetchError;
     } finally {
       if (requestId === latestGuideRequestId) {
@@ -283,6 +302,7 @@ export const useGuidesStore = defineStore("guides", () => {
     currentGuide,
     isLoadingGuide,
     guideError,
+    guideNotFound,
     isLoading,
     hasLoaded,
     error,

@@ -43,6 +43,7 @@ exports[`Map page (/map) > renders the map stage and matches snapshot 1`] = `
           <div data-v-346616cd="" class="place-item__sub">Portugal</div>
         </div><span data-v-346616cd="" class="place-item__n"></span>
       </div>
+      <!--v-if-->
     </div>
   </div><!-- Detail card -->
   <div data-v-346616cd="" class="detail">

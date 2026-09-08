@@ -15,6 +15,7 @@ exports[`Trip Detail page (/trips/[id]) > renders without crashing and matches s
   </div>
   <!--v-if-->
   <!--v-if-->
+  <!--v-if-->
   <div data-v-a25903e0="" class="tdcols">
     <!-- Itinerary -->
     <div data-v-a25903e0="">

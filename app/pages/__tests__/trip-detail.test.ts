@@ -40,6 +40,7 @@ let lastAsyncDataOptions: { watch?: unknown[]; server?: boolean } | undefined;
 const asyncDataStatus = ref<"idle" | "pending" | "success" | "error">(
   "success",
 );
+const mockRefresh = vi.fn().mockResolvedValue(undefined);
 vi.stubGlobal(
   "useAsyncData",
   (
@@ -63,7 +64,7 @@ vi.stubGlobal(
       pending: ref(false),
       error: ref(null),
       status: asyncDataStatus,
-      refresh: vi.fn(),
+      refresh: mockRefresh,
     };
   },
 );
@@ -129,6 +130,11 @@ const SAMPLE_DETAIL: TripDetail = {
   },
 };
 
+const alertStub = {
+  props: ["intent", "message"],
+  template: '<div class="alert-stub" :data-message="message" />',
+};
+
 function buildGlobalConfig(pinia: ReturnType<typeof createPinia>) {
   return {
     global: {
@@ -139,6 +145,7 @@ function buildGlobalConfig(pinia: ReturnType<typeof createPinia>) {
           template: '<a :href="to"><slot /></a>',
           props: ["to"],
         },
+        AppAlert: alertStub,
       },
     },
   };
@@ -151,6 +158,7 @@ describe("Trip Detail page (/trips/[id])", () => {
     routeParams.id = "trip-1";
     asyncDataStatus.value = "success";
     lastAsyncDataOptions = undefined;
+    mockRefresh.mockClear();
     // Default: Clerk resolved, viewing as the trip's owner, so the owner-only
     // controls render.
     clerkLoadedRef.value = true;
@@ -242,6 +250,89 @@ describe("Trip Detail page (/trips/[id])", () => {
     const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
     expect(wrapper.find(".empty-state").exists()).toBe(true);
     expect(wrapper.find(".thero").exists()).toBe(false);
+  });
+
+  it("shows not-found (not a retry prompt) for a 404, so a private/missing trip stays protected", () => {
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    tripsStore.detailNotFound = true;
+    tripsStore.detailError = null;
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.text()).toContain("Trip not found");
+    expect(wrapper.find(".alert-stub").exists()).toBe(false);
+  });
+
+  it("shows a retryable error state (not 'Trip not found') on a 5xx/network failure", () => {
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    tripsStore.detailNotFound = false;
+    tripsStore.detailError = "Something went wrong loading this trip";
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.text()).not.toContain("Trip not found");
+    expect(wrapper.find(".alert-stub").attributes("data-message")).toBe(
+      "Something went wrong loading this trip",
+    );
+    expect(wrapper.text()).toContain("try again");
+  });
+
+  it("retries the fetch when 'try again' is clicked on the error state", async () => {
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    tripsStore.detailNotFound = false;
+    tripsStore.detailError = "Something went wrong loading this trip";
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    await wrapper.find("button").trigger("click");
+
+    expect(mockRefresh).toHaveBeenCalled();
+  });
+
+  it("offers a sign-in link in the retryable error state too, so a signed-out visitor isn't stranded", () => {
+    // A retry that keeps failing (e.g. an expired session on a private trip)
+    // must not be the visitor's only way forward.
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    tripsStore.detailNotFound = false;
+    tripsStore.detailError = "Something went wrong loading this trip";
+    clerkSignedInRef.value = false;
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".empty-state__signin").exists()).toBe(true);
+  });
+
+  it("always offers a 'back to your trips' link in the retryable error state, even when signed in", () => {
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    tripsStore.detailNotFound = false;
+    tripsStore.detailError = "Something went wrong loading this trip";
+    clerkSignedInRef.value = true;
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".empty-state__back").exists()).toBe(true);
+    expect(wrapper.find(".empty-state__signin").exists()).toBe(false);
+  });
+
+  it("keeps showing the trip and surfaces a non-blocking banner when a background refetch fails", () => {
+    // Regression guard for the preserve-on-same-id-failure store behavior:
+    // the content must still render, with the failure visible, not silent.
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = { ...SAMPLE_DETAIL };
+    tripsStore.detailError = "Something went wrong loading this trip";
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    expect(wrapper.find(".thero h1").text()).toContain(
+      "Iceland, the ring road",
+    );
+    expect(wrapper.text()).toContain(
+      "Couldn't refresh this trip: Something went wrong loading this trip",
+    );
   });
 
   it("renders add a stop button", () => {

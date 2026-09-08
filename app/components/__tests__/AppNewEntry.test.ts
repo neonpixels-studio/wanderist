@@ -369,6 +369,19 @@ describe("AppNewEntry", () => {
     expect(wrapper.emitted("close")).toBeFalsy();
   });
 
+  it("blocks publish and shows an error when the date field is cleared", async () => {
+    const wrapper = mountOpen();
+    await wrapper.find('input[type="date"]').setValue("");
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "valid date",
+    );
+  });
+
   it("calls saveDraft composable when save draft is clicked", async () => {
     const wrapper = mountOpen();
     await wrapper.find(".btn--ghost").trigger("click");
@@ -410,6 +423,35 @@ describe("AppNewEntry", () => {
     );
     expect((titleInput.element as HTMLInputElement).value).toBe(
       "Restored title",
+    );
+  });
+
+  it("blocks publish and shows an error when a restored draft's date was cleared", async () => {
+    // useEntryDraft.loadDraft normalizes an invalid date to "" rather than
+    // guessing a value, so a restored draft with a corrupt date reaches the
+    // form the same way a manually-cleared field would.
+    const draft: EntryDraft = {
+      title: "Restored title",
+      body: "Some body text",
+      location: "Lisbon",
+      tripId: "trip-saved",
+      date: "",
+      visibility: "public",
+      tags: ["portugal"],
+      weather: "clear",
+      uploadedPhotos: [],
+    };
+    mockLoadDraft.mockReturnValue(draft);
+
+    const wrapper = mountOpen();
+    await wrapper.vm.$nextTick();
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(mockCreateEntry).not.toHaveBeenCalled();
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "valid date",
     );
   });
 

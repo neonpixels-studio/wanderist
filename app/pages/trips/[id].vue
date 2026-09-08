@@ -4,6 +4,37 @@
   </div>
 
   <div
+    v-else-if="!tripDetail && detailLoadError"
+    class="content content--wide"
+    style="padding-top: 0"
+  >
+    <div class="empty-state">
+      <AppAlert intent="error" :message="detailLoadError" />
+      <button
+        class="btn btn--outline btn--sm empty-state__retry"
+        @click="onRetryLoad"
+      >
+        try again
+      </button>
+      <NuxtLink to="/trips" class="empty-state__back">
+        back to your trips
+      </NuxtLink>
+      <NuxtLink
+        v-if="isClerkLoaded && !isSignedIn"
+        to="/login"
+        class="empty-state__signin"
+      >
+        Sign in to view your trips
+      </NuxtLink>
+    </div>
+  </div>
+
+  <!-- Reached whenever nothing loaded and the branch above didn't already
+       claim it: the store never sets detailError while classifying a fetch
+       as not-found (see fetchTripById in stores/trips.ts), so tripDetail
+       null + no detailLoadError always means detailNotFound (or the fetch
+       simply hasn't resolved with a trip yet). -->
+  <div
     v-else-if="!tripDetail"
     class="content content--wide"
     style="padding-top: 0"
@@ -92,6 +123,14 @@
           </span>
         </div>
       </div>
+    </div>
+
+    <div
+      v-if="detailLoadError"
+      class="alert alert--error"
+      style="margin: 12px 0"
+    >
+      Couldn't refresh this trip: {{ detailLoadError }}
     </div>
 
     <div v-if="uploadError" class="alert alert--error" style="margin: 12px 0">
@@ -382,11 +421,20 @@ const canRetryAuthenticated = computed(
 // trip. Re-running once the session resolves re-issues the request with a token
 // so the owner gets their private trip; a public trip already resolved on the
 // anonymous pass.
-const { status: fetchStatus } = useAsyncData(
+const { status: fetchStatus, refresh: refreshTripDetail } = useAsyncData(
   () => `trip-detail-${tripId.value}`,
   () => tripsStore.fetchTripById(tripId.value),
   { server: false, watch: [tripId, canRetryAuthenticated] },
 );
+
+// A 404 means the trip is missing or private — rendered as "Trip not found"
+// below. Any other failure (5xx, network) is retryable and must not look like
+// a missing trip to a share-link visitor, so it gets its own error state.
+const detailLoadError = computed(() => tripsStore.detailError);
+
+async function onRetryLoad(): Promise<void> {
+  await refreshTripDetail();
+}
 
 // Until the client fetch resolves, the SSR pass and hydration frame have no trip
 // yet. Treat that window as loading so a valid trip never flashes "Trip not
@@ -658,14 +706,19 @@ function onInvite(): void {
   color: var(--muted);
   font-size: 14px;
 }
-.empty-state__signin {
+.empty-state__signin,
+.empty-state__back {
   display: inline-block;
   margin-top: 10px;
   color: var(--accent-ink);
   text-decoration: none;
 }
-.empty-state__signin:hover {
+.empty-state__signin:hover,
+.empty-state__back:hover {
   text-decoration: underline;
+}
+.empty-state__retry {
+  margin-top: 12px;
 }
 
 .thero {

@@ -1,10 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ref, computed } from "vue";
+import { ref, computed, reactive } from "vue";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import MapPage from "../map.vue";
 import PlaceEditForm from "~/components/PlaceEditForm.vue";
 import { pageGlobalConfig as globalConfig } from "./test-utils";
+
+// Explore's trending-place cards link here with the place name as a `place`
+// query param (see issue #218). Reactive (like Nuxt's real useRoute) so the
+// page's watch(() => route.query.place, ...) can be exercised by mutating
+// this after mount; reset in beforeEach so it doesn't leak between tests.
+const routeQuery = reactive<{
+  place?: string | string[];
+  country?: string;
+  category?: string;
+}>({});
+vi.stubGlobal("useRoute", () => ({ params: {}, query: routeQuery }));
 
 const mockMapStats = ref({
   placesCount: 117,
@@ -50,8 +61,11 @@ function stubPaginatedPlacesResponse(places: unknown[]) {
 const { defineStore } = await import("pinia");
 vi.stubGlobal("defineStore", defineStore);
 
-// useMapbox is stubbed so tests don't need a real Mapbox token or DOM canvas.
-// hasToken returns false so the fallback (DOM pins) path is active throughout.
+// map.vue imports useMapbox directly from its module (not via Nuxt's
+// auto-import global), so it must be mocked with vi.mock rather than
+// vi.stubGlobal — the same reason useStats is mocked this way above.
+// hasToken defaults to false so the fallback (DOM pins) path is active
+// throughout, except in the tests that opt into the token-present path.
 const mockSyncMarkers = vi.fn().mockResolvedValue(undefined);
 const mockInitMap = vi.fn().mockResolvedValue(null);
 const mockSetStyle = vi.fn();
@@ -61,18 +75,27 @@ const mockSetMarkerActive = vi.fn();
 const mockStartDropPin = vi.fn();
 const mockCancelDropPin = vi.fn();
 const mockDestroyMap = vi.fn();
+const mockFlyTo = vi.fn();
 
-vi.stubGlobal("useMapbox", () => ({
-  hasToken: () => false,
-  initMap: mockInitMap,
-  setStyle: mockSetStyle,
-  zoomIn: mockZoomIn,
-  zoomOut: mockZoomOut,
-  syncMarkers: mockSyncMarkers,
-  setMarkerActive: mockSetMarkerActive,
-  startDropPin: mockStartDropPin,
-  cancelDropPin: mockCancelDropPin,
-  destroyMap: mockDestroyMap,
+// hasToken is mutable so a test can opt into the token-present path (real map
+// init + the 'load' callback) without every other test paying for a fake map
+// instance it doesn't need.
+let mockHasToken = false;
+
+vi.mock("~/composables/useMapbox", () => ({
+  useMapbox: () => ({
+    hasToken: () => mockHasToken,
+    initMap: mockInitMap,
+    setStyle: mockSetStyle,
+    zoomIn: mockZoomIn,
+    zoomOut: mockZoomOut,
+    flyTo: mockFlyTo,
+    syncMarkers: mockSyncMarkers,
+    setMarkerActive: mockSetMarkerActive,
+    startDropPin: mockStartDropPin,
+    cancelDropPin: mockCancelDropPin,
+    destroyMap: mockDestroyMap,
+  }),
 }));
 
 // useMapboxStyles is auto-imported; stub the composable wrapper and the named
@@ -132,6 +155,24 @@ const SAMPLE_PLACES = [
   },
 ];
 
+// A minimal stand-in for a mapbox-gl Map: captures the 'load' handler
+// map.vue registers so a test can invoke it once, the way mapbox-gl would
+// when the style finishes loading.
+function createFakeMapInstance() {
+  let loadHandler: (() => void | Promise<void>) | undefined;
+
+  return {
+    on: vi.fn((event: string, handler: () => void | Promise<void>) => {
+      if (event === "load") {
+        loadHandler = handler;
+      }
+    }),
+    triggerLoad: async () => {
+      await loadHandler?.();
+    },
+  };
+}
+
 async function mountWithPlaces(places = SAMPLE_PLACES) {
   // Make apiFetch return the given places so onMounted's fetchPlaces() call
   // populates the store with the expected data rather than clobbering it with [].
@@ -163,6 +204,11 @@ describe("Map page (/map)", () => {
     vi.clearAllMocks();
     stubPaginatedPlacesResponse([]);
     setActivePinia(createPinia());
+    delete routeQuery.place;
+    delete routeQuery.country;
+    delete routeQuery.category;
+    mockHasToken = false;
+    mockInitMap.mockResolvedValue(null);
   });
 
   it("renders the map stage and matches snapshot", async () => {
@@ -270,6 +316,22 @@ describe("Map page (/map)", () => {
     expect(wrapper.find(".place-item__name").text()).toBe("Tokyo");
   });
 
+  it("shows an empty-state note when a typed search matches nothing", async () => {
+    const wrapper = await mountWithPlaces();
+
+    const input = wrapper.find(".places__search input");
+    await input.setValue("nowhere");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.findAll(".place-item")).toHaveLength(0);
+    expect(wrapper.find(".place-list .empty-note").exists()).toBe(true);
+  });
+
+  it("does not show the empty-state note when the search box is empty", async () => {
+    const wrapper = await mountWithPlaces();
+    expect(wrapper.find(".place-list .empty-note").exists()).toBe(false);
+  });
+
   it("shows all places when the search query is cleared", async () => {
     const wrapper = await mountWithPlaces();
 
@@ -372,6 +434,199 @@ describe("Map page (/map)", () => {
 
     await wrapper.findAll(".place-item")[1].trigger("click");
     expect(wrapper.find(".place-edit-form").exists()).toBe(false);
+  });
+
+  it("auto-selects and pre-fills search for a place matching the ?place= query param", async () => {
+    routeQuery.place = "Tokyo";
+    const wrapper = await mountWithPlaces();
+
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("Tokyo");
+    expect(wrapper.find(".detail.is-open").exists()).toBe(true);
+    expect(wrapper.find(".detail__name").text()).toBe("Tokyo");
+  });
+
+  it("matches the ?place= query param case-insensitively", async () => {
+    routeQuery.place = "tokyo";
+    const wrapper = await mountWithPlaces();
+
+    expect(wrapper.find(".detail__name").text()).toBe("Tokyo");
+  });
+
+  it("matches the ?place= query param independent of Unicode normalization", async () => {
+    // "í" as a single precomposed code point (NFC) vs. "i" + combining acute
+    // accent (NFD) look identical but compare unequal without normalizing.
+    routeQuery.place = "Reykjavík";
+    const wrapper = await mountWithPlaces();
+
+    expect(wrapper.find(".detail__name").text()).toBe("Reykjavík");
+  });
+
+  it("uses ?country= to disambiguate two saved places sharing a name", async () => {
+    const duplicateNamePlaces = [
+      {
+        id: "p-lisbon-pt",
+        userId: "u-1",
+        name: "Lisbon",
+        subtitle: "Portugal",
+        country: "Portugal",
+        category: "city",
+        latitude: 38.7223,
+        longitude: -9.1393,
+        createdAt: new Date("2024-01-01"),
+        updatedAt: new Date("2024-01-01"),
+      },
+      {
+        id: "p-lisbon-oh",
+        userId: "u-1",
+        name: "Lisbon",
+        subtitle: "Ohio, USA",
+        country: "United States",
+        category: "city",
+        latitude: 41.4531,
+        longitude: -82.6021,
+        createdAt: new Date("2024-01-01"),
+        updatedAt: new Date("2024-01-01"),
+      },
+    ];
+    routeQuery.place = "Lisbon";
+    routeQuery.country = "United States";
+    const wrapper = await mountWithPlaces(duplicateNamePlaces);
+
+    expect(wrapper.find(".detail__name").text()).toBe("Lisbon");
+    expect(wrapper.find(".detail__loc").text()).toBe("Ohio, USA");
+  });
+
+  it("pre-fills search but selects nothing when ?place= matches no saved place", async () => {
+    // Trending places are aggregated across all users (see fetchTrendingPlaces),
+    // so most clicked-through names won't be among the viewer's own places —
+    // there is no marker to focus, only the search list to narrow.
+    routeQuery.place = "Reynisfjara";
+    const wrapper = await mountWithPlaces();
+
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("Reynisfjara");
+    expect(wrapper.find(".detail.is-open").exists()).toBe(false);
+    expect(wrapper.findAll(".place-item")).toHaveLength(0);
+    // The viewer shouldn't be left wondering why their whole places list
+    // just vanished after clicking a trending card.
+    expect(wrapper.find(".place-list .empty-note").text()).toContain(
+      "Reynisfjara",
+    );
+  });
+
+  it("ignores a repeated ?place= param (Vue Router yields a string array)", async () => {
+    routeQuery.place = ["Tokyo", "Kyoto"];
+    const wrapper = await mountWithPlaces();
+
+    expect(wrapper.find(".detail.is-open").exists()).toBe(false);
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("");
+  });
+
+  it("re-resolves the focused place when the ?place= query changes while already on the page", async () => {
+    routeQuery.place = "Tokyo";
+    const wrapper = await mountWithPlaces();
+    expect(wrapper.find(".detail__name").text()).toBe("Tokyo");
+
+    routeQuery.place = "Reykjavík";
+    await wrapper.vm.$nextTick();
+    await flushPromises();
+
+    expect(wrapper.find(".detail__name").text()).toBe("Reykjavík");
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("Reykjavík");
+  });
+
+  it("does not select or filter when no ?place= query param is present", async () => {
+    const wrapper = await mountWithPlaces();
+
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("");
+    expect(wrapper.find(".detail.is-open").exists()).toBe(false);
+    expect(wrapper.findAll(".place-item")).toHaveLength(SAMPLE_PLACES.length);
+  });
+
+  it("clears the search filter when the ?place= query is removed", async () => {
+    routeQuery.place = "Tokyo";
+    const wrapper = await mountWithPlaces();
+    expect(wrapper.findAll(".place-item")).toHaveLength(1);
+
+    delete routeQuery.place;
+    await wrapper.vm.$nextTick();
+    await flushPromises();
+
+    expect(
+      (wrapper.find(".places__search input").element as HTMLInputElement).value,
+    ).toBe("");
+    expect(wrapper.findAll(".place-item")).toHaveLength(SAMPLE_PLACES.length);
+  });
+
+  it("pans the camera to the focused place once the map finishes loading", async () => {
+    mockHasToken = true;
+    const fakeMapInstance = createFakeMapInstance();
+    mockInitMap.mockResolvedValueOnce(fakeMapInstance);
+    routeQuery.place = "Tokyo";
+
+    const wrapper = await mountWithPlaces();
+    await fakeMapInstance.triggerLoad();
+    await flushPromises();
+
+    expect(mockFlyTo).toHaveBeenCalledWith(fakeMapInstance, 139.6503, 35.6762);
+    expect(wrapper.find(".detail__name").text()).toBe("Tokyo");
+  });
+
+  it("does not pan the camera for a focused place with no coordinates", async () => {
+    mockHasToken = true;
+    const fakeMapInstance = createFakeMapInstance();
+    mockInitMap.mockResolvedValueOnce(fakeMapInstance);
+    routeQuery.place = "Lisbon";
+
+    await mountWithPlaces();
+    await fakeMapInstance.triggerLoad();
+    await flushPromises();
+
+    expect(mockFlyTo).not.toHaveBeenCalled();
+  });
+
+  it("does not pan the camera when no place matches the query", async () => {
+    mockHasToken = true;
+    const fakeMapInstance = createFakeMapInstance();
+    mockInitMap.mockResolvedValueOnce(fakeMapInstance);
+    routeQuery.place = "Reynisfjara";
+
+    await mountWithPlaces();
+    await fakeMapInstance.triggerLoad();
+    await flushPromises();
+
+    expect(mockFlyTo).not.toHaveBeenCalled();
+  });
+
+  it("pans the camera when the ?place= query changes while already on the page", async () => {
+    // This is the scenario the route.query.place watcher exists for: the map
+    // is already live (token present, 'load' already fired) and the viewer
+    // clicks a second trending card without leaving /map.
+    mockHasToken = true;
+    const fakeMapInstance = createFakeMapInstance();
+    mockInitMap.mockResolvedValueOnce(fakeMapInstance);
+    routeQuery.place = "Tokyo";
+
+    const wrapper = await mountWithPlaces();
+    await fakeMapInstance.triggerLoad();
+    await flushPromises();
+    expect(mockFlyTo).toHaveBeenCalledWith(fakeMapInstance, 139.6503, 35.6762);
+    mockFlyTo.mockClear();
+
+    routeQuery.place = "Reykjavík";
+    await wrapper.vm.$nextTick();
+    await flushPromises();
+
+    expect(mockFlyTo).toHaveBeenCalledWith(fakeMapInstance, -21.8954, 64.1355);
   });
 
   it("shows places error alert when fetchPlaces fails", async () => {

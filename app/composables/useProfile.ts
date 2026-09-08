@@ -21,8 +21,7 @@
  */
 
 import type { TripStatus } from "~/utils/tripDates";
-
-const NOT_FOUND_STATUS = 404;
+import { isNotFoundError } from "~/utils/isNotFoundError";
 
 export interface ProfileUser {
   userId: string;
@@ -56,22 +55,6 @@ export interface ProfileGuide {
   title: string;
   readTimeMinutes: number;
   likeCount: number;
-}
-
-function isNotFound(error: unknown): boolean {
-  // ofetch's FetchError exposes statusCode, but be defensive about wrappers that
-  // only preserve response.status or a nested data.statusCode — otherwise a
-  // private/missing profile would render as a generic error, not "unavailable".
-  const candidate = error as {
-    statusCode?: number;
-    response?: { status?: number };
-    data?: { statusCode?: number };
-  };
-  const status =
-    candidate?.statusCode ??
-    candidate?.response?.status ??
-    candidate?.data?.statusCode;
-  return status === NOT_FOUND_STATUS;
 }
 
 interface ListFetchState<Item> {
@@ -150,7 +133,7 @@ function createListFetcher<Item, Response>(
       // A private/missing profile already surfaces via fetchProfile's
       // notFound, so a 404 here needs no separate error. Any other failure
       // must not be shown to the user as an empty list — surface it loudly.
-      if (isNotFound(fetchError)) {
+      if (isNotFoundError(fetchError)) {
         return;
       }
       console.error(config.failureLogLabel, fetchError);
@@ -198,7 +181,7 @@ export function useProfile() {
         return;
       }
       profile.value = null;
-      if (isNotFound(fetchError)) {
+      if (isNotFoundError(fetchError)) {
         notFound.value = true;
         return;
       }

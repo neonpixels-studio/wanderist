@@ -124,6 +124,12 @@
           </div>
           <span class="place-item__n">{{ place.category ?? "" }}</span>
         </div>
+        <p
+          v-if="!filteredPlaces.length && searchQuery.trim()"
+          class="empty-note"
+        >
+          No saved places match &ldquo;{{ searchQuery }}&rdquo;.
+        </p>
       </div>
     </div>
 
@@ -252,6 +258,7 @@ import { useStats } from "~/composables/useStats";
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Map" });
 
+const route = useRoute();
 const placesStore = usePlacesStore();
 const mapbox = useMapbox();
 const {
@@ -354,6 +361,86 @@ function selectPlaceById(placeId: string): void {
   }
 
   selectPlace(place);
+}
+
+// Vue Router yields a string for a single query value and string[] for a
+// repeated one (e.g. ?place=a&place=b); only the single-value form is
+// meaningful here, so anything else is treated as absent.
+function readStringQueryParam(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+// Case-insensitive AND Unicode-normalization-insensitive: place names are
+// heavily accented, and the same accented character can arrive normalized
+// differently depending on where a row was written (e.g. "í" as one code
+// point vs. "i" plus a combining accent), which would otherwise silently
+// fail to match despite looking identical to the user.
+function normalizeForMatch(value: string): string {
+  return value.normalize("NFC").toLowerCase();
+}
+
+// Explore's trending-place cards can't deep-link by id (fetchTrendingPlaces
+// aggregates across users and drops it), so they link here with the same
+// name/country/category grouping keys as query params instead. Name alone
+// can collide across two visibly different cards (e.g. "Lisbon" the city and
+// "Lisbon" the culture pick), so country/category — when present — narrow
+// the match to the exact card that was clicked. Pre-filling the search
+// always narrows the list to the name; a saved place matching all three is
+// also auto-opened. A trending place the viewer hasn't personally saved has
+// no marker here to focus, so search-narrowing is the best available
+// fallback for that case.
+function focusPlaceFromQuery(): void {
+  const placeName = readStringQueryParam(route.query.place);
+
+  if (!placeName) {
+    return;
+  }
+
+  searchQuery.value = placeName;
+
+  const country = readStringQueryParam(route.query.country);
+  const category = readStringQueryParam(route.query.category);
+
+  const matchingPlace = placesStore.places.find((candidate) => {
+    if (normalizeForMatch(candidate.name) !== normalizeForMatch(placeName)) {
+      return false;
+    }
+    if (
+      country &&
+      normalizeForMatch(candidate.country ?? "") !== normalizeForMatch(country)
+    ) {
+      return false;
+    }
+    if (
+      category &&
+      normalizeForMatch(candidate.category ?? "") !==
+        normalizeForMatch(category)
+    ) {
+      return false;
+    }
+    return true;
+  });
+
+  if (matchingPlace) {
+    selectPlace(matchingPlace);
+  }
+}
+
+// Flies the camera to the currently selected place, if the map is ready and
+// the place has coordinates. No-ops otherwise (fallback DOM-pin mode, or a
+// selected place with no lat/lng) since there is no camera to move.
+function panToSelectedPlace(): void {
+  const place = selectedPlace.value;
+
+  if (!activeMapInstance.value || !place) {
+    return;
+  }
+
+  if (place.latitude === null || place.longitude === null) {
+    return;
+  }
+
+  mapbox.flyTo(activeMapInstance.value, place.longitude, place.latitude);
 }
 
 function closeDetail(): void {
@@ -536,6 +623,8 @@ async function initializeMap(): Promise<void> {
       selectedPlace.value?.id ?? null,
       selectPlaceById,
     );
+
+    panToSelectedPlace();
   });
 }
 
@@ -557,8 +646,24 @@ watch(
   },
 );
 
+// Vue Router reuses this component across query-only navigation on the same
+// route, so onMounted alone would miss a second /map?place=<name> link
+// clicked while already on this page (e.g. browser back/forward between two
+// such links). Re-resolve whenever the query itself changes; the initial
+// resolution on mount is handled separately below, once places have loaded.
+watch(
+  () => route.query.place,
+  () => {
+    closeDetail();
+    searchQuery.value = "";
+    focusPlaceFromQuery();
+    panToSelectedPlace();
+  },
+);
+
 onMounted(async () => {
   await placesStore.fetchPlaces().catch(() => undefined);
+  focusPlaceFromQuery();
   await initializeMap();
   fetchMapStats();
 });
@@ -899,6 +1004,11 @@ onBeforeUnmount(() => {
 .place-list {
   overflow-y: auto;
   padding: 8px;
+}
+.empty-note {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 10px 8px;
 }
 .place-item {
   display: flex;
