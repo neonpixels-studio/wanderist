@@ -15,6 +15,11 @@ export interface SvixHeaders {
  * Verifies a Svix webhook signature and returns the parsed payload.
  * Throws if the signature is invalid or headers are missing.
  * Isolated here so callers can stub this seam in tests without network access.
+ *
+ * svix 2.2.0 changed `Webhook.verify()` to always return `undefined` (it now
+ * calls the underlying standardwebhooks verify with `jsonParse: false` and
+ * discards the result) -- it only performs the signature/timestamp check and
+ * throws on failure. We parse `rawBody` ourselves once verification succeeds.
  */
 export function verifySvixSignature<T = unknown>(
   rawBody: string,
@@ -22,5 +27,6 @@ export function verifySvixSignature<T = unknown>(
   secret: string,
 ): T {
   const webhook = new Webhook(secret);
-  return webhook.verify(rawBody, svixHeaders) as T;
+  webhook.verify(rawBody, svixHeaders);
+  return JSON.parse(rawBody) as T;
 }
