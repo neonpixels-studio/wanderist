@@ -60,6 +60,99 @@ describe("useEntryDraft", () => {
       expect(result).toBeNull();
       expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
     });
+
+    it("returns null and removes the key when storage parses to a non-object", () => {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(null));
+      const { loadDraft } = useEntryDraft();
+      const result = loadDraft();
+      expect(result).toBeNull();
+      expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+    });
+
+    it("returns null and removes the key when storage parses to an array", () => {
+      // typeof [] === "object" and { ...[] } is {}, so an array must be rejected
+      // explicitly or it would silently pass through as an empty-ish draft.
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify([]));
+      const { loadDraft } = useEntryDraft();
+      const result = loadDraft();
+      expect(result).toBeNull();
+      expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+    });
+
+    describe("required field validation", () => {
+      it.each(["title", "body", "location", "tripId", "weather"] as const)(
+        "returns null and removes the key when %s is missing",
+        (field) => {
+          const corrupted = { ...SAMPLE_DRAFT };
+          delete (corrupted as Record<string, unknown>)[field];
+          localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+          const { loadDraft } = useEntryDraft();
+          expect(loadDraft()).toBeNull();
+          expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+        },
+      );
+
+      it("returns null and removes the key when tags is not an array", () => {
+        const corrupted = { ...SAMPLE_DRAFT, tags: "iceland" };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()).toBeNull();
+        expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+      });
+
+      it("returns null and removes the key when visibility is not a recognized value", () => {
+        const corrupted = { ...SAMPLE_DRAFT, visibility: "everyone" };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()).toBeNull();
+        expect(localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+      });
+    });
+
+    describe("date normalization", () => {
+      it("keeps a valid restored date untouched", () => {
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(SAMPLE_DRAFT));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()?.date).toBe("2026-06-14");
+      });
+
+      it("clears the date when it is a malformed string", () => {
+        const corrupted = { ...SAMPLE_DRAFT, date: "not-a-date" };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()?.date).toBe("");
+      });
+
+      it("clears the date when it overflows its month", () => {
+        const corrupted = { ...SAMPLE_DRAFT, date: "2026-02-31" };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()?.date).toBe("");
+      });
+
+      it("clears the date when it is missing", () => {
+        const { date: _date, ...withoutDate } = SAMPLE_DRAFT;
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(withoutDate));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()?.date).toBe("");
+      });
+
+      it("clears the date when it is the wrong type", () => {
+        const corrupted = { ...SAMPLE_DRAFT, date: 20260614 };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        expect(loadDraft()?.date).toBe("");
+      });
+
+      it("preserves the rest of the draft when only the date is normalized", () => {
+        const corrupted = { ...SAMPLE_DRAFT, date: "not-a-date" };
+        localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(corrupted));
+        const { loadDraft } = useEntryDraft();
+        const result = loadDraft();
+        expect(result?.title).toBe(SAMPLE_DRAFT.title);
+        expect(result?.body).toBe(SAMPLE_DRAFT.body);
+      });
+    });
   });
 
   describe("clearDraft", () => {
