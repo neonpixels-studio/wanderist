@@ -55,4 +55,13 @@ describe("formatTripDateRange", () => {
       "Jun 1, 2024",
     );
   });
+
+  it("renders just the start label for a same-day trip instead of '· 0 days'", () => {
+    expect(
+      formatTripDateRange(
+        "2024-06-01T00:00:00.000Z",
+        "2024-06-01T00:00:00.000Z",
+      ),
+    ).toBe("Jun 1, 2024");
+  });
 });

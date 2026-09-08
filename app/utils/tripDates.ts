@@ -65,5 +65,11 @@ export function formatTripDateRange(
   const endLabel = end.toLocaleDateString("en-US", UTC_DATE_FORMAT);
   const days = Math.round((end.getTime() - start.getTime()) / MS_PER_DAY);
 
+  // A same-day trip (a valid, API-accepted range) has an exclusive day
+  // difference of 0 — render it as a single date rather than "· 0 days".
+  if (days <= 0) {
+    return startLabel;
+  }
+
   return `${startLabel} – ${endLabel} · ${formatDayCount(days)}`;
 }

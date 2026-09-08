@@ -20,7 +20,7 @@
         <span>{{ formatTripDates(trip) }}</span>
       </div>
       <span class="tag" :class="tripStatusClass(trip.status)">{{
-        trip.status
+        tripStatusLabel(trip.status)
       }}</span>
     </NuxtLink>
     <p v-if="hasMore" class="trips-more">
@@ -51,11 +51,22 @@ const STATUS_CLASSES: Record<TripStatus, string> = {
   past: "tag--past",
 };
 
+const STATUS_LABELS: Record<TripStatus, string> = {
+  ongoing: "ongoing",
+  upcoming: "upcoming",
+  past: "past",
+};
+
 // The API response isn't statically validated, so a status outside the known
 // enum (a future value the frontend hasn't been updated for yet) falls back
-// to the neutral "past" styling instead of rendering an unstyled tag.
+// to the neutral "past" styling and label instead of rendering an unstyled
+// tag with copy the frontend has no rendering for.
 function tripStatusClass(status: TripStatus): string {
   return STATUS_CLASSES[status] ?? "tag--past";
+}
+
+function tripStatusLabel(status: TripStatus): string {
+  return STATUS_LABELS[status] ?? "past";
 }
 
 function formatTripDates(trip: ProfileTrip): string {

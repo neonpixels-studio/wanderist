@@ -313,6 +313,55 @@ describe("useProfile", () => {
     ]);
   });
 
+  it("keeps loading true when a stale trips response resolves while the newer request is still pending", async () => {
+    let resolveFirst!: (value: { trips: []; hasMore: boolean }) => void;
+    const firstPending = new Promise<{ trips: []; hasMore: boolean }>(
+      (resolve) => {
+        resolveFirst = resolve;
+      },
+    );
+    mockApiFetch
+      .mockReturnValueOnce(firstPending)
+      .mockReturnValueOnce(new Promise(() => {}));
+
+    const { trips, hasMoreTrips, tripsLoading, fetchTrips } = useProfile();
+    void fetchTrips("user-a");
+    void fetchTrips("user-b");
+
+    // The stale (user-a) call settles first, but user-b's request is still
+    // pending — loading must stay true and the stale payload must not apply.
+    resolveFirst({ trips: [], hasMore: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(tripsLoading.value).toBe(true);
+    expect(trips.value).toEqual([]);
+    expect(hasMoreTrips.value).toBe(false);
+  });
+
+  it("ignores a stale trips rejection while the newer request is still pending", async () => {
+    let rejectFirst!: (error: unknown) => void;
+    const firstPending = new Promise<{ trips: []; hasMore: boolean }>(
+      (_resolve, reject) => {
+        rejectFirst = reject;
+      },
+    );
+    mockApiFetch
+      .mockReturnValueOnce(firstPending)
+      .mockReturnValueOnce(new Promise(() => {}));
+
+    const { tripsError, tripsLoading, fetchTrips } = useProfile();
+    void fetchTrips("user-a");
+    void fetchTrips("user-b");
+
+    rejectFirst(new Error("boom"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(tripsError.value).toBeNull();
+    expect(tripsLoading.value).toBe(true);
+  });
+
   it("clears the trips list up front when switching to a different profile", async () => {
     const { trips, hasMoreTrips, fetchTrips } = useProfile();
 

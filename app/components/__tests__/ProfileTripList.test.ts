@@ -99,6 +99,17 @@ describe("ProfileTripList", () => {
     expect(wrapper.find(".tag").classes()).toContain("tag--past");
   });
 
+  it("falls back to the past tag label for an unrecognized status", () => {
+    const wrapper = mount(ProfileTripList, {
+      ...globalConfig,
+      props: {
+        trips: [{ ...TRIPS[0], status: "archived" }],
+      },
+    });
+
+    expect(wrapper.find(".tag").text()).toBe("past");
+  });
+
   it("shows an empty note when there are no public trips", () => {
     const wrapper = mount(ProfileTripList, {
       ...globalConfig,
