@@ -1,12 +1,12 @@
 import {
-  fetchFollowers,
+  fetchPublicTrips,
   requireViewableProfileTarget,
 } from "../../../utils/profile-queries";
 
 export default defineEventHandler(async (event) => {
   const { database, targetUserId } = await requireViewableProfileTarget(event);
 
-  const { followers, hasMore } = await fetchFollowers(database, targetUserId);
+  const { trips, hasMore } = await fetchPublicTrips(database, targetUserId);
 
-  return { followers, hasMore };
+  return { trips, hasMore };
 });

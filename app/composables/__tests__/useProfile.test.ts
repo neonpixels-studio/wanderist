@@ -263,4 +263,340 @@ describe("useProfile", () => {
 
     expect(mockApiFetch).toHaveBeenCalledWith("/api/users/user%2Fwith%20space");
   });
+
+  it("starts trips in a loading state and clears it after a fetch", async () => {
+    const { tripsLoading } = useProfile();
+    expect(tripsLoading.value).toBe(true);
+
+    mockApiFetch.mockResolvedValue({ trips: [], hasMore: false });
+    const composable = useProfile();
+    await composable.fetchTrips("user-1");
+    expect(composable.tripsLoading.value).toBe(false);
+  });
+
+  it("discards a superseded trips response so a→b navigation can't cross wires", async () => {
+    let resolveFirst!: (value: { trips: []; hasMore: boolean }) => void;
+    const firstPending = new Promise<{ trips: []; hasMore: boolean }>(
+      (resolve) => {
+        resolveFirst = resolve;
+      },
+    );
+    mockApiFetch.mockReturnValueOnce(firstPending).mockResolvedValueOnce({
+      trips: [
+        {
+          id: "trip-b",
+          name: "B",
+          status: "past",
+          startDate: null,
+          endDate: null,
+        },
+      ],
+      hasMore: false,
+    });
+
+    const { trips, fetchTrips } = useProfile();
+    const firstCall = fetchTrips("user-a");
+    const secondCall = fetchTrips("user-b");
+    await secondCall;
+
+    resolveFirst({ trips: [], hasMore: true });
+    await firstCall;
+
+    expect(trips.value).toEqual([
+      {
+        id: "trip-b",
+        name: "B",
+        status: "past",
+        startDate: null,
+        endDate: null,
+      },
+    ]);
+  });
+
+  it("keeps loading true when a stale trips response resolves while the newer request is still pending", async () => {
+    let resolveFirst!: (value: { trips: []; hasMore: boolean }) => void;
+    const firstPending = new Promise<{ trips: []; hasMore: boolean }>(
+      (resolve) => {
+        resolveFirst = resolve;
+      },
+    );
+    mockApiFetch
+      .mockReturnValueOnce(firstPending)
+      .mockReturnValueOnce(new Promise(() => {}));
+
+    const { trips, hasMoreTrips, tripsLoading, fetchTrips } = useProfile();
+    void fetchTrips("user-a");
+    void fetchTrips("user-b");
+
+    // The stale (user-a) call settles first, but user-b's request is still
+    // pending — loading must stay true and the stale payload must not apply.
+    resolveFirst({ trips: [], hasMore: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(tripsLoading.value).toBe(true);
+    expect(trips.value).toEqual([]);
+    expect(hasMoreTrips.value).toBe(false);
+  });
+
+  it("ignores a stale trips rejection while the newer request is still pending", async () => {
+    let rejectFirst!: (error: unknown) => void;
+    const firstPending = new Promise<{ trips: []; hasMore: boolean }>(
+      (_resolve, reject) => {
+        rejectFirst = reject;
+      },
+    );
+    mockApiFetch
+      .mockReturnValueOnce(firstPending)
+      .mockReturnValueOnce(new Promise(() => {}));
+
+    const { tripsError, tripsLoading, fetchTrips } = useProfile();
+    void fetchTrips("user-a");
+    void fetchTrips("user-b");
+
+    rejectFirst(new Error("boom"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(tripsError.value).toBeNull();
+    expect(tripsLoading.value).toBe(true);
+  });
+
+  it("clears the trips list up front when switching to a different profile", async () => {
+    const { trips, hasMoreTrips, fetchTrips } = useProfile();
+
+    mockApiFetch.mockResolvedValueOnce({
+      trips: [
+        {
+          id: "trip-a",
+          name: "A",
+          status: "past",
+          startDate: null,
+          endDate: null,
+        },
+      ],
+      hasMore: true,
+    });
+    await fetchTrips("user-a");
+    expect(trips.value).toHaveLength(1);
+
+    mockApiFetch.mockReturnValueOnce(new Promise(() => {}));
+    void fetchTrips("user-b");
+
+    expect(trips.value).toEqual([]);
+    expect(hasMoreTrips.value).toBe(false);
+  });
+
+  it("keeps the trips list visible during a same-user refresh", async () => {
+    const { trips, fetchTrips } = useProfile();
+
+    const tripRows = [
+      {
+        id: "trip-a",
+        name: "A",
+        status: "past",
+        startDate: null,
+        endDate: null,
+      },
+    ];
+    mockApiFetch.mockResolvedValueOnce({ trips: tripRows, hasMore: false });
+    await fetchTrips("user-a");
+    expect(trips.value).toHaveLength(1);
+
+    mockApiFetch.mockReturnValueOnce(new Promise(() => {}));
+    void fetchTrips("user-a");
+
+    expect(trips.value).toEqual(tripRows);
+  });
+
+  it("encodes the user ID in the trips request path", async () => {
+    mockApiFetch.mockResolvedValue({ trips: [], hasMore: false });
+    const { fetchTrips } = useProfile();
+
+    await fetchTrips("user/with space");
+
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      "/api/users/user%2Fwith%20space/trips",
+    );
+  });
+
+  it("fetchTrips loads the trips list and the hasMore flag", async () => {
+    const tripRows = [
+      {
+        id: "trip-1",
+        name: "Iceland Ring Road",
+        status: "past",
+        startDate: null,
+        endDate: null,
+      },
+    ];
+    mockApiFetch.mockResolvedValue({ trips: tripRows, hasMore: true });
+    const { trips, hasMoreTrips, fetchTrips } = useProfile();
+
+    await fetchTrips("user-1");
+
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/users/user-1/trips");
+    expect(trips.value).toEqual(tripRows);
+    expect(hasMoreTrips.value).toBe(true);
+  });
+
+  it("clears a previously-loaded trips list and surfaces an error on non-404 failure", async () => {
+    const { trips, tripsError, fetchTrips } = useProfile();
+
+    mockApiFetch.mockResolvedValueOnce({
+      trips: [
+        {
+          id: "trip-1",
+          name: "A",
+          status: "past",
+          startDate: null,
+          endDate: null,
+        },
+      ],
+      hasMore: false,
+    });
+    await fetchTrips("user-1");
+    expect(trips.value).toHaveLength(1);
+
+    mockApiFetch.mockRejectedValueOnce(new Error("boom"));
+    await expect(fetchTrips("user-1")).resolves.toBeUndefined();
+
+    expect(trips.value).toEqual([]);
+    expect(tripsError.value).toBe("Could not load trips");
+  });
+
+  it("does not raise a trips error for a 404 (private/missing profile)", async () => {
+    const { trips, tripsError, fetchTrips } = useProfile();
+
+    mockApiFetch.mockRejectedValue(notFoundError());
+    await fetchTrips("user-1");
+
+    expect(trips.value).toEqual([]);
+    expect(tripsError.value).toBeNull();
+  });
+
+  it("starts guides in a loading state and clears it after a fetch", async () => {
+    const { guidesLoading } = useProfile();
+    expect(guidesLoading.value).toBe(true);
+
+    mockApiFetch.mockResolvedValue({ guides: [], hasMore: false });
+    const composable = useProfile();
+    await composable.fetchGuides("user-1");
+    expect(composable.guidesLoading.value).toBe(false);
+  });
+
+  it("discards a superseded guides response so a→b navigation can't cross wires", async () => {
+    let resolveFirst!: (value: { guides: []; hasMore: boolean }) => void;
+    const firstPending = new Promise<{ guides: []; hasMore: boolean }>(
+      (resolve) => {
+        resolveFirst = resolve;
+      },
+    );
+    mockApiFetch.mockReturnValueOnce(firstPending).mockResolvedValueOnce({
+      guides: [{ id: "guide-b", title: "B", readTimeMinutes: 5, likeCount: 0 }],
+      hasMore: false,
+    });
+
+    const { guides, fetchGuides } = useProfile();
+    const firstCall = fetchGuides("user-a");
+    const secondCall = fetchGuides("user-b");
+    await secondCall;
+
+    resolveFirst({ guides: [], hasMore: true });
+    await firstCall;
+
+    expect(guides.value).toEqual([
+      { id: "guide-b", title: "B", readTimeMinutes: 5, likeCount: 0 },
+    ]);
+  });
+
+  it("clears the guides list up front when switching to a different profile", async () => {
+    const { guides, hasMoreGuides, fetchGuides } = useProfile();
+
+    mockApiFetch.mockResolvedValueOnce({
+      guides: [{ id: "guide-a", title: "A", readTimeMinutes: 5, likeCount: 0 }],
+      hasMore: true,
+    });
+    await fetchGuides("user-a");
+    expect(guides.value).toHaveLength(1);
+
+    mockApiFetch.mockReturnValueOnce(new Promise(() => {}));
+    void fetchGuides("user-b");
+
+    expect(guides.value).toEqual([]);
+    expect(hasMoreGuides.value).toBe(false);
+  });
+
+  it("keeps the guides list visible during a same-user refresh", async () => {
+    const { guides, fetchGuides } = useProfile();
+
+    const guideRows = [
+      { id: "guide-a", title: "A", readTimeMinutes: 5, likeCount: 0 },
+    ];
+    mockApiFetch.mockResolvedValueOnce({ guides: guideRows, hasMore: false });
+    await fetchGuides("user-a");
+    expect(guides.value).toHaveLength(1);
+
+    mockApiFetch.mockReturnValueOnce(new Promise(() => {}));
+    void fetchGuides("user-a");
+
+    expect(guides.value).toEqual(guideRows);
+  });
+
+  it("encodes the user ID in the guides request path", async () => {
+    mockApiFetch.mockResolvedValue({ guides: [], hasMore: false });
+    const { fetchGuides } = useProfile();
+
+    await fetchGuides("user/with space");
+
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      "/api/users/user%2Fwith%20space/guides",
+    );
+  });
+
+  it("fetchGuides loads the guides list and the hasMore flag", async () => {
+    const guideRows = [
+      {
+        id: "guide-1",
+        title: "Tokyo on foot",
+        readTimeMinutes: 8,
+        likeCount: 3,
+      },
+    ];
+    mockApiFetch.mockResolvedValue({ guides: guideRows, hasMore: true });
+    const { guides, hasMoreGuides, fetchGuides } = useProfile();
+
+    await fetchGuides("user-1");
+
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/users/user-1/guides");
+    expect(guides.value).toEqual(guideRows);
+    expect(hasMoreGuides.value).toBe(true);
+  });
+
+  it("clears a previously-loaded guides list and surfaces an error on non-404 failure", async () => {
+    const { guides, guidesError, fetchGuides } = useProfile();
+
+    mockApiFetch.mockResolvedValueOnce({
+      guides: [{ id: "guide-1", title: "A", readTimeMinutes: 5, likeCount: 0 }],
+      hasMore: false,
+    });
+    await fetchGuides("user-1");
+    expect(guides.value).toHaveLength(1);
+
+    mockApiFetch.mockRejectedValueOnce(new Error("boom"));
+    await expect(fetchGuides("user-1")).resolves.toBeUndefined();
+
+    expect(guides.value).toEqual([]);
+    expect(guidesError.value).toBe("Could not load guides");
+  });
+
+  it("does not raise a guides error for a 404 (private/missing profile)", async () => {
+    const { guides, guidesError, fetchGuides } = useProfile();
+
+    mockApiFetch.mockRejectedValue(notFoundError());
+    await fetchGuides("user-1");
+
+    expect(guides.value).toEqual([]);
+    expect(guidesError.value).toBeNull();
+  });
 });

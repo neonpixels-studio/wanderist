@@ -32,5 +32,27 @@ exports[`profile page > renders a loaded public profile 1`] = `
       <!--v-if-->
     </div>
   </section>
+  <section data-v-0199c68f="" class="psec">
+    <div data-v-0199c68f="" class="sec-head">
+      <div data-v-0199c68f="">
+        <div data-v-0199c68f="" class="label">// trips</div>
+        <h2 data-v-0199c68f="">Elsa’s public trips</h2>
+      </div>
+    </div>
+    <!-- Not dismissible: this is the section's only content when it errors, so
+       dismissing it would leave the section blank with no way to recover. -->
+    <p data-v-e61945d1="" data-v-0199c68f="" class="empty-note">No public trips yet.</p>
+  </section>
+  <section data-v-0199c68f="" class="psec">
+    <div data-v-0199c68f="" class="sec-head">
+      <div data-v-0199c68f="">
+        <div data-v-0199c68f="" class="label">// guides</div>
+        <h2 data-v-0199c68f="">Elsa’s public guides</h2>
+      </div>
+    </div>
+    <!-- Not dismissible: this is the section's only content when it errors, so
+       dismissing it would leave the section blank with no way to recover. -->
+    <p data-v-f5aed45f="" data-v-0199c68f="" class="empty-note">No public guides yet.</p>
+  </section>
 </div>"
 `;

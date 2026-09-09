@@ -1,8 +1,8 @@
 import { defineStore } from "pinia";
 import { extractErrorMessage } from "~/utils/extractErrorMessage";
 import { isNotFoundError } from "~/utils/isNotFoundError";
+import type { TripStatus } from "~/utils/tripDates";
 
-type TripStatus = "ongoing" | "upcoming" | "past";
 type TripVisibility = "private" | "public";
 type TripStopStatus = "done" | "next" | "planned";
 

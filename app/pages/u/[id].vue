@@ -74,6 +74,36 @@
           :has-more="hasMoreFollowers"
         />
       </section>
+
+      <section class="psec">
+        <div class="sec-head">
+          <div>
+            <div class="label">// trips</div>
+            <h2>{{ displayName }}’s public trips</h2>
+          </div>
+        </div>
+        <ProfileTripList
+          :trips="trips"
+          :loading="tripsLoading"
+          :error-message="tripsError"
+          :has-more="hasMoreTrips"
+        />
+      </section>
+
+      <section class="psec">
+        <div class="sec-head">
+          <div>
+            <div class="label">// guides</div>
+            <h2>{{ displayName }}’s public guides</h2>
+          </div>
+        </div>
+        <ProfileGuideList
+          :guides="guides"
+          :loading="guidesLoading"
+          :error-message="guidesError"
+          :has-more="hasMoreGuides"
+        />
+      </section>
     </template>
   </div>
 </template>
@@ -96,13 +126,23 @@ const {
   profile,
   followers,
   hasMoreFollowers,
+  trips,
+  hasMoreTrips,
+  guides,
+  hasMoreGuides,
   isLoading,
   followersLoading,
+  tripsLoading,
+  guidesLoading,
   notFound,
   error,
   followersError,
+  tripsError,
+  guidesError,
   fetchProfile,
   fetchFollowers,
+  fetchTrips,
+  fetchGuides,
 } = useProfile();
 
 const {
@@ -167,7 +207,13 @@ async function onToggleFollow(): Promise<void> {
 // while keeping trips/[id].vue's watch-on-param refetch.
 useAsyncData(
   () => `profile-${userId.value}`,
-  () => Promise.all([fetchProfile(userId.value), fetchFollowers(userId.value)]),
+  () =>
+    Promise.all([
+      fetchProfile(userId.value),
+      fetchFollowers(userId.value),
+      fetchTrips(userId.value),
+      fetchGuides(userId.value),
+    ]),
   { server: false, watch: [userId] },
 );
 
