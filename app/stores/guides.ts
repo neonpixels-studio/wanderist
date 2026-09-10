@@ -20,6 +20,13 @@ export interface Guide {
   visibility: GuideVisibility;
   createdAt: string;
   updatedAt: string;
+  // Author byline fields. Only the single-guide read (GET /api/guides/:id,
+  // see loadReadableGuideWithAuthor) populates these — the list endpoint
+  // (GET /api/guides) is always the current user's own guides, where a
+  // byline would be redundant, so it omits them and callers should treat
+  // their absence as "not applicable here" rather than "anonymous".
+  ownerDisplayName?: string | null;
+  ownerHandle?: string | null;
 }
 
 export interface CreateGuideInput {

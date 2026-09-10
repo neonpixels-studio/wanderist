@@ -4,6 +4,7 @@
       <NuxtLink :to="`/guides/${guide.id}`" class="gcard__name">
         {{ guide.title }}
       </NuxtLink>
+      <div v-if="authorLabel" class="gcard__by">{{ authorLabel }}</div>
       <div class="gcard__meta">
         <span class="m">
           <AppIcon name="clock" :size="12" />
@@ -59,6 +60,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { Guide } from "~/stores/guides";
+import { formatAuthorByline } from "~/utils/travelerLabels";
 
 const VISIBILITY_TAG_CLASS: Record<Guide["visibility"], string> = {
   public: "tag--ongoing",
@@ -83,6 +85,21 @@ const confirmingDelete = ref(false);
 const visibilityTagClass = computed(
   () => VISIBILITY_TAG_CLASS[props.guide.visibility],
 );
+// Empty (not "by a traveler") when the guide carries no owner fields at all —
+// today that's every card here, since this component only renders the
+// current user's own guides (GET /api/guides doesn't join the author), so a
+// byline would just say "by you" in disguise. Guarded rather than removed so
+// a future public listing that reuses this card picks up attribution for
+// free the moment it starts passing ownerHandle/ownerDisplayName.
+const authorLabel = computed(() => {
+  if (!props.guide.ownerHandle && !props.guide.ownerDisplayName) {
+    return "";
+  }
+  return formatAuthorByline(
+    props.guide.ownerHandle,
+    props.guide.ownerDisplayName,
+  );
+});
 </script>
 
 <style scoped>
@@ -113,6 +130,10 @@ const visibilityTagClass = computed(
 }
 .gcard__name:hover {
   color: var(--accent-ink);
+}
+.gcard__by {
+  font-size: 11px;
+  color: var(--faint);
 }
 .gcard__meta {
   display: flex;

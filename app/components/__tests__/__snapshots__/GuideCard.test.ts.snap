@@ -3,6 +3,7 @@
 exports[`GuideCard > renders without crashing and matches snapshot 1`] = `
 "<div data-v-d468186a="" class="gcard">
   <div data-v-d468186a="" class="gcard__body"><a data-v-d468186a="" href="/guides/g-1" class="gcard__name">Tokyo on foot</a>
+    <!--v-if-->
     <div data-v-d468186a="" class="gcard__meta"><span data-v-d468186a="" class="m"><svg data-v-d468186a="" data-icon="" name="clock" size="12"></svg> 8 min read </span><button data-v-d468186a="" type="button" class="gcard__like" aria-label="Like guide"><svg data-v-d468186a="" data-icon="" name="heart" size="12"></svg> 12</button><span data-v-d468186a="" class="tag tag--ongoing">public</span></div>
   </div>
   <div data-v-d468186a="" class="gcard__acts"><button data-v-d468186a="" class="btn btn--outline btn--sm"> edit </button><button data-v-d468186a="" class="btn btn--outline btn--sm"> delete </button></div>

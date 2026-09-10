@@ -17,3 +17,24 @@ export function formatHandle(handle: string | null | undefined): string {
   }
   return `@${handle.replace(/^@+/, "")}`;
 }
+
+/**
+ * "by @handle" / "by Display Name" / "by a traveler" byline used anywhere a
+ * piece of content (a guide card, a guide's detail header, ...) attributes its
+ * author. Handle wins over display name, matching formatHandle's precedence
+ * elsewhere; falls back to a generic label rather than leaving the byline
+ * blank when the author has set neither.
+ */
+export function formatAuthorByline(
+  handle: string | null | undefined,
+  displayName: string | null | undefined,
+): string {
+  const formattedHandle = formatHandle(handle);
+  if (formattedHandle) {
+    return `by ${formattedHandle}`;
+  }
+  if (displayName) {
+    return `by ${displayName}`;
+  }
+  return "by a traveler";
+}

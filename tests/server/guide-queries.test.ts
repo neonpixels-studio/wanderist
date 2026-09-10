@@ -13,7 +13,8 @@ Object.assign(globalThis, {
   createError: mockCreateError,
 });
 
-const { loadReadableGuide } = await import("../../server/utils/guide-queries");
+const { loadReadableGuide, loadReadableGuideWithAuthor } =
+  await import("../../server/utils/guide-queries");
 
 type FakeDatabase = Parameters<typeof loadReadableGuide>[0];
 
@@ -112,6 +113,71 @@ describe("loadReadableGuide", () => {
 
     await expect(
       loadReadableGuide(fakeDbSequence([[guide]]), "guide-1", null),
+    ).rejects.toEqual(expect.objectContaining({ statusCode: 404 }));
+  });
+});
+
+describe("loadReadableGuideWithAuthor", () => {
+  const discoverableOwner = [{ userId: OWNER_ID }];
+  const authorRow = [{ displayName: "Elsa", handle: "elsa_far" }];
+
+  it("merges the author's displayName/handle onto a guide read by its owner", async () => {
+    const guide = guideRow({ visibility: "private", userId: OWNER_ID });
+
+    await expect(
+      loadReadableGuideWithAuthor(
+        fakeDbSequence([[guide], authorRow]),
+        "guide-1",
+        OWNER_ID,
+      ),
+    ).resolves.toEqual({
+      ...guide,
+      ownerDisplayName: "Elsa",
+      ownerHandle: "elsa_far",
+    });
+  });
+
+  it("merges the author's displayName/handle onto a public guide read by a non-owner", async () => {
+    const guide = guideRow({ visibility: "public", userId: OWNER_ID });
+
+    await expect(
+      loadReadableGuideWithAuthor(
+        fakeDbSequence([[guide], discoverableOwner, authorRow]),
+        "guide-1",
+        OTHER_ID,
+      ),
+    ).resolves.toEqual({
+      ...guide,
+      ownerDisplayName: "Elsa",
+      ownerHandle: "elsa_far",
+    });
+  });
+
+  it("falls back to null displayName/handle when the author has no preferences row", async () => {
+    const guide = guideRow({ visibility: "private", userId: OWNER_ID });
+
+    await expect(
+      loadReadableGuideWithAuthor(
+        fakeDbSequence([[guide], []]),
+        "guide-1",
+        OWNER_ID,
+      ),
+    ).resolves.toEqual({
+      ...guide,
+      ownerDisplayName: null,
+      ownerHandle: null,
+    });
+  });
+
+  it("still throws 404 for a private guide requested by a non-owner (visibility check runs first)", async () => {
+    const guide = guideRow({ visibility: "private", userId: OWNER_ID });
+
+    await expect(
+      loadReadableGuideWithAuthor(
+        fakeDbSequence([[guide]]),
+        "guide-1",
+        OTHER_ID,
+      ),
     ).rejects.toEqual(expect.objectContaining({ statusCode: 404 }));
   });
 });

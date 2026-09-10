@@ -69,6 +69,38 @@ describe("GuideCard", () => {
     expect(wrapper.find(".tag--past").exists()).toBe(true);
   });
 
+  it("shows no byline when the guide carries no owner fields", () => {
+    const wrapper = mount(GuideCard, {
+      ...globalConfig,
+      props: { guide: SAMPLE_GUIDE },
+    });
+    expect(wrapper.find(".gcard__by").exists()).toBe(false);
+  });
+
+  it("shows a handle byline when the guide carries an owner handle", () => {
+    const wrapper = mount(GuideCard, {
+      ...globalConfig,
+      props: {
+        guide: {
+          ...SAMPLE_GUIDE,
+          ownerHandle: "elsa_far",
+          ownerDisplayName: "Elsa",
+        },
+      },
+    });
+    expect(wrapper.find(".gcard__by").text()).toBe("by @elsa_far");
+  });
+
+  it("shows no byline when owner fields are explicitly null", () => {
+    const wrapper = mount(GuideCard, {
+      ...globalConfig,
+      props: {
+        guide: { ...SAMPLE_GUIDE, ownerHandle: null, ownerDisplayName: null },
+      },
+    });
+    expect(wrapper.find(".gcard__by").exists()).toBe(false);
+  });
+
   it("emits toggle-like with the guide when the like button is clicked", async () => {
     const wrapper = mount(GuideCard, {
       ...globalConfig,
