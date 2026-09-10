@@ -26,6 +26,7 @@
  */
 
 import { eq, and, inArray } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import { ensureUser } from "../../../utils/auth";
 import { getDb } from "../../../db/index";
 import {
@@ -195,14 +196,17 @@ interface RollbackResult {
   mediaDeleted: boolean;
 }
 
-// Best-effort rollback for a partially-written import. The app's drizzle client
-// uses the neon-http driver (see server/db/index.ts), which has no interactive
-// transactions, so a failed import is undone by hand: deleting the entry cascades
-// its entryPhotos, and deleting the media row cascades any entryPhotos that hung
-// off it (both FKs are ON DELETE CASCADE). Deletes are id-scoped (and owner-scoped
-// as defence in depth), so deleting a row that was never written — or a race
-// loser's row that lost the unique-index insert — is a harmless no-op that cannot
-// touch the race winner's differently-keyed row. A newly-created place row is
+// Best-effort rollback for an import whose DB rows already committed but whose
+// blob write then failed (see importSinglePhoto). persistImportedPhotoRows
+// writes media/entries/entryPhotos as one atomic database.batch() call (a real
+// BEGIN/COMMIT on the neon-http driver — see server/db/index.ts), so a DB-only
+// failure there needs no manual rollback at all: the whole batch rolls back on
+// its own. This function only runs after that batch has already succeeded and
+// a *separate*, non-transactional write (the blob store) failed afterward:
+// deleting the entry cascades its entryPhotos, and deleting the media row
+// cascades any entryPhotos that hung off it (both FKs are ON DELETE CASCADE).
+// Deletes are id-scoped (and owner-scoped as defence in depth), so deleting a
+// row that was never written is a harmless no-op. A newly-created place row is
 // intentionally left: it is deduplicated (matched on name + coordinates) and
 // reused by the next import run for the same location, so deleting it risks
 // nulling a sibling entry's placeId. Returns which deletes succeeded.
@@ -291,18 +295,20 @@ interface MediaInsertInput {
   dimensions: { width: number; height: number } | null;
 }
 
-// Writes the media, place, entry, and entryPhotos rows for one imported photo.
-// The neon-http driver has no interactive transactions (see server/db/index.ts),
-// so the rows are written sequentially and undone by hand on failure rather than
-// rolled back. The media row is inserted FIRST because it carries the
-// (user_id, source, source_id) unique index: a concurrent race for the same item
-// loses at that insert, and rollbackOrThrow's id-scoped delete of the loser's own
-// (never-committed or self-owned) row is a no-op that never touches the winner.
-// Wrapping the whole sequence means even a media insert that commits but then
-// fails on the HTTP response (timeout/502) is rolled back rather than left as an
-// unreferenced, permanently-skipped row. A place created before a later failure
-// is deliberately left behind: it is deduplicated by name + coordinates and
-// reused by the next run, so it is harmless (see rollbackPartialImport).
+// Writes the media, entry, and entryPhotos rows for one imported photo as ONE
+// atomic database.batch() call — the neon-http driver's real BEGIN/COMMIT unit
+// (see server/db/index.ts). Every value used below (mediaInput.mediaId,
+// entryId, placeId, the item's own fields) is already known in JS before the
+// batch is built, so none of these three statements needs to read another
+// statement's DB result. If any statement fails — e.g. a concurrent import
+// racing the same Instagram item into media's (user_id, source, source_id)
+// unique index — the whole batch rolls back on its own: nothing commits, so
+// there is nothing to clean up by hand (contrast with rollbackPartialImport
+// below, which only handles a failure *after* this batch has already
+// committed). placeId is resolved separately, before the batch:
+// resolveOrCreatePlace is a read that conditionally writes depending on its
+// own result, so it can't be folded into a batch whose statements must all be
+// buildable up front.
 async function persistImportedPhotoRows(
   database: DbClient,
   userId: string,
@@ -310,64 +316,35 @@ async function persistImportedPhotoRows(
   mediaInput: MediaInsertInput,
 ): Promise<{ entryId: string }> {
   const entryId = crypto.randomUUID();
+  const placeId = await resolveOrCreatePlace(database, userId, item);
 
-  try {
-    const [mediaRow] = await database
-      .insert(media)
-      .values({
-        id: mediaInput.mediaId,
-        userId,
-        url: mediaInput.storageKey,
-        contentType: mediaInput.contentType,
-        width: mediaInput.dimensions?.width ?? null,
-        height: mediaInput.dimensions?.height ?? null,
-        source: MEDIA_SOURCE.INSTAGRAM,
-        sourceId: item.id,
-      })
-      .returning({ id: media.id });
-
-    if (!mediaRow) {
-      throw new Error(
-        `Failed to insert media record for Instagram item ${item.id}`,
-      );
-    }
-
-    const placeId = await resolveOrCreatePlace(database, userId, item);
-
-    const [entryRow] = await database
-      .insert(entries)
-      .values({
-        id: entryId,
-        userId,
-        placeId,
-        title: buildEntryTitle(item),
-        body: item.caption ?? null,
-        occurredAt: new Date(item.timestamp),
-        visibility: VISIBILITY.PRIVATE,
-      })
-      .returning({ id: entries.id });
-
-    if (!entryRow) {
-      throw new Error(`Failed to insert entry for Instagram item ${item.id}`);
-    }
-
-    await database.insert(entryPhotos).values({
-      id: crypto.randomUUID(),
-      entryId: entryRow.id,
-      mediaId: mediaRow.id,
-      sortOrder: 0,
-    });
-  } catch (error) {
-    // rollbackOrThrow always throws; `throw await` keeps that a compile-time
-    // guarantee so `return { entryId }` is unreachable after a failure.
-    throw await rollbackOrThrow(
-      database,
+  await database.batch([
+    database.insert(media).values({
+      id: mediaInput.mediaId,
       userId,
+      url: mediaInput.storageKey,
+      contentType: mediaInput.contentType,
+      width: mediaInput.dimensions?.width ?? null,
+      height: mediaInput.dimensions?.height ?? null,
+      source: MEDIA_SOURCE.INSTAGRAM,
+      sourceId: item.id,
+    }),
+    database.insert(entries).values({
+      id: entryId,
+      userId,
+      placeId,
+      title: buildEntryTitle(item),
+      body: item.caption ?? null,
+      occurredAt: new Date(item.timestamp),
+      visibility: VISIBILITY.PRIVATE,
+    }),
+    database.insert(entryPhotos).values({
+      id: crypto.randomUUID(),
       entryId,
-      mediaInput.mediaId,
-      error,
-    );
-  }
+      mediaId: mediaInput.mediaId,
+      sortOrder: 0,
+    }),
+  ] as [BatchItem<"pg">, BatchItem<"pg">, BatchItem<"pg">]);
 
   return { entryId };
 }

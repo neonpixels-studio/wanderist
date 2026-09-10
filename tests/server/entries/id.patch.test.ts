@@ -119,11 +119,15 @@ const mockAssertTripOwnershipIfPresent = vi.mocked(
   assertTripOwnershipIfPresent,
 );
 
-// The neon-http driver has no interactive transactions, so the handler runs its
-// writes sequentially on the base client. Each mock therefore exposes the write
-// methods directly (no transaction wrapper) plus a `transaction` spy that must
-// stay uncalled — the regression guard for issue #200, where a stray
-// database.transaction() call 500s every entry PATCH.
+// The neon-http driver has no interactive transactions of its own, but the
+// handler now runs its scalar update plus tag/photo replaces as one atomic
+// database.batch() call (see server/api/entries/[id].patch.ts) instead of
+// separate sequential writes. `batch` mirrors that by awaiting every
+// statement it's given — each statement here is already a promise (or, for
+// the scalar update's `.where()` result, a plain value Promise.all resolves
+// immediately) — plus a `transaction` spy that must stay uncalled — the
+// regression guard for issue #200, where a stray database.transaction() call
+// 500s every entry PATCH.
 function makeDbForPatch(updatedEntry: Record<string, unknown>) {
   const returningMock = vi.fn().mockResolvedValue([updatedEntry]);
   const whereMock = vi.fn().mockReturnValue({ returning: returningMock });
@@ -141,6 +145,7 @@ function makeDbForPatch(updatedEntry: Record<string, unknown>) {
       values: vi.fn().mockResolvedValue([]),
     }),
     select: vi.fn().mockReturnValue({ from: selectFromMock }),
+    batch: vi.fn((statements: unknown[]) => Promise.all(statements)),
     transaction: vi.fn(),
   };
 }
@@ -181,6 +186,7 @@ function makeDbForPhotoPatch(
       values: vi.fn().mockResolvedValue([]),
     }),
     select: selectMock,
+    batch: vi.fn((statements: unknown[]) => Promise.all(statements)),
     transaction: vi.fn(),
   };
 }
@@ -408,6 +414,46 @@ describe("PATCH /api/entries/:id", () => {
     expect(mockUpsertTags.mock.invocationCallOrder[0]).toBeLessThan(
       mockDb.delete.mock.invocationCallOrder[0],
     );
+  });
+
+  it("issues the scalar update, tag replace, and photo replace as one atomic batch", async () => {
+    const updatedEntry = { id: "e-1", userId: "user-1", title: "Trip" };
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({
+      title: "Trip",
+      tags: ["hiking"],
+      photoMediaIds: ["media-1"],
+    });
+    const mockDb = makeDbForPhotoPatch(updatedEntry, []);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+    mockUpsertTags.mockResolvedValueOnce(["tag-1"]);
+
+    await invokeHandler({});
+
+    // Scalar update (1) + tag delete/insert (2) + photo delete/insert (2) = 5
+    // statements travel in a single database.batch() call — a real
+    // BEGIN/COMMIT on the neon-http driver — instead of 5 independent,
+    // non-atomic round trips.
+    expect(mockDb.batch).toHaveBeenCalledTimes(1);
+    expect(mockDb.batch.mock.calls[0][0]).toHaveLength(5);
+  });
+
+  it("rolls the whole batch back atomically when one statement in it fails", async () => {
+    // Previously a mid-sequence failure could leave the entry's tags or
+    // photos half-replaced with no rollback (see the historical comment on
+    // applyEntryWrites). Now every statement is one atomic database.batch()
+    // call: a failure anywhere in it means nothing in the batch committed.
+    const updatedEntry = { id: "e-1", userId: "user-1", title: "Trip" };
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({ title: "Trip", tags: ["hiking"] });
+    const mockDb = makeDbForPatch(updatedEntry);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+    mockUpsertTags.mockResolvedValueOnce(["tag-1"]);
+    const batchError = new Error("batch failed");
+    mockDb.batch = vi.fn().mockRejectedValue(batchError);
+
+    await expect(invokeHandler({})).rejects.toThrow(batchError);
+    expect(mockDeleteMediaIfUnreferenced).not.toHaveBeenCalled();
   });
 
   it("throws 404 and runs no transaction when a photoMediaId is not owned", async () => {

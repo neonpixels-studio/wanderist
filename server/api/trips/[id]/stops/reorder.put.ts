@@ -1,4 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import { getDb } from "../../../../db/index";
 import { tripStops } from "../../../../db/schema";
 import { requireTripId, loadOwnedTrip } from "../../../../utils/trip-helpers";
@@ -97,17 +98,20 @@ export default defineEventHandler(async (event) => {
 
   validateAllStopsPresent(stopIds, existingIds);
 
-  // Note: neon-http uses HTTP connections which do not support interactive
-  // transactions. Each UPDATE is issued independently. If any fails partway
-  // through, earlier updates will have committed. Switching to neon-serverless
-  // (WebSocket pool) would allow wrapping these in a real transaction.
-  await Promise.all(
-    stopIds.map((stopId, index) =>
-      database
-        .update(tripStops)
-        .set({ sortOrder: index })
-        .where(and(eq(tripStops.id, stopId), eq(tripStops.tripId, tripId))),
-    ),
+  // Each stop's new sortOrder is already known (its index in the caller's
+  // list), so none of these updates depends on another's result — they run as
+  // ONE atomic database.batch() call, the neon-http driver's real BEGIN/COMMIT
+  // unit (see server/db/index.ts), instead of the previous Promise.all of
+  // independent HTTP calls where a mid-sequence failure could leave the trip's
+  // stops in a half-reordered state.
+  const updateStatements = stopIds.map((stopId, index) =>
+    database
+      .update(tripStops)
+      .set({ sortOrder: index })
+      .where(and(eq(tripStops.id, stopId), eq(tripStops.tripId, tripId))),
+  );
+  await database.batch(
+    updateStatements as [BatchItem<"pg">, ...BatchItem<"pg">[]],
   );
 
   const reorderedStops = await database

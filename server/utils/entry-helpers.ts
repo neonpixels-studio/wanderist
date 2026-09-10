@@ -1,4 +1,5 @@
 import { asc, eq, inArray } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import { getDb } from "../db/index";
 import {
   entries,
@@ -88,6 +89,13 @@ export function parseRequiredStringArray(
   return result ?? [];
 }
 
+// Upserts every unique tag name in ONE atomic database.batch() call — the
+// neon-http driver's real BEGIN/COMMIT unit (see server/db/index.ts) — rather
+// than one round trip per name. Each name's upsert is independent of every
+// other name's result (onConflictDoUpdate needs only the name itself, not
+// another name's returned id), so batching them introduces no ordering
+// dependency: this is a straight round-trip reduction, N calls to 1, with the
+// side benefit that all-or-nothing failure is now atomic across the set too.
 export async function upsertTags(
   database: ReturnType<typeof getDb>,
   tagNames: string[],
@@ -95,16 +103,24 @@ export async function upsertTags(
   const uniqueNames = [
     ...new Set(tagNames.map((name) => name.trim()).filter(Boolean)),
   ];
-  const tagIds: string[] = [];
-  for (const name of uniqueNames) {
-    const existing = await database
+
+  if (uniqueNames.length === 0) {
+    return [];
+  }
+
+  const statements = uniqueNames.map((name) =>
+    database
       .insert(tags)
       .values({ id: generateId(), name })
       .onConflictDoUpdate({ target: tags.name, set: { name } })
-      .returning({ id: tags.id });
-    tagIds.push(existing[0].id);
-  }
-  return tagIds;
+      .returning({ id: tags.id }),
+  );
+
+  const results = (await database.batch(
+    statements as [BatchItem<"pg">, ...BatchItem<"pg">[]],
+  )) as { id: string }[][];
+
+  return results.map((rows) => rows[0].id);
 }
 
 export interface EntryRelations {

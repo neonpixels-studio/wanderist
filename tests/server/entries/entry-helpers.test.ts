@@ -7,6 +7,7 @@ import {
   loadRelationsForEntries,
   parseStringArray,
   parseRequiredStringArray,
+  upsertTags,
   MAX_STRING_ARRAY_LENGTH,
 } from "../../../server/utils/entry-helpers";
 import type { getDb } from "../../../server/db/index";
@@ -62,6 +63,60 @@ function createFakeDatabase(photoRows: unknown[], tagRows: unknown[]) {
     photoOrderBy: typeof photoOrderBy;
   };
 }
+
+/**
+ * Builds a fake database for upsertTags. Each insert().values() call returns
+ * a chain ending in .returning() resolving to the id mapped from `idsByName`
+ * (falling back to the generated row's own id, mirroring onConflictDoUpdate
+ * returning the existing row's real id). `batch` awaits every statement it's
+ * given, matching drizzle's real "one HTTP call, every statement resolves
+ * together" behaviour closely enough for these unit tests.
+ */
+function createFakeDatabaseForUpsertTags(idsByName: Record<string, string>) {
+  const batch = vi.fn((statements: Promise<{ id: string }[]>[]) =>
+    Promise.all(statements),
+  );
+  const insert = vi.fn(() => ({
+    values: vi.fn((row: { id: string; name: string }) => ({
+      onConflictDoUpdate: vi.fn(() => ({
+        returning: vi
+          .fn()
+          .mockResolvedValue([{ id: idsByName[row.name] ?? row.id }]),
+      })),
+    })),
+  }));
+
+  return { insert, batch } as unknown as ReturnType<typeof getDb>;
+}
+
+describe("upsertTags", () => {
+  it("returns an empty array without touching the database when there are no tag names", async () => {
+    const database = createFakeDatabaseForUpsertTags({});
+
+    const result = await upsertTags(database, []);
+
+    expect(result).toEqual([]);
+    expect(database.insert).not.toHaveBeenCalled();
+    expect(database.batch).not.toHaveBeenCalled();
+  });
+
+  it("upserts every unique tag name in one atomic batch call, preserving order", async () => {
+    const database = createFakeDatabaseForUpsertTags({
+      Beach: "tag-beach",
+      Hiking: "tag-hiking",
+    });
+
+    const result = await upsertTags(database, ["Beach", "Hiking", "Beach"]);
+
+    // "Beach" appears twice in the input but is deduped to one statement.
+    expect(result).toEqual(["tag-beach", "tag-hiking"]);
+    expect(database.batch).toHaveBeenCalledTimes(1);
+    const batchedStatements = (database.batch as ReturnType<typeof vi.fn>).mock
+      .calls[0][0] as unknown[];
+    expect(batchedStatements).toHaveLength(2);
+    expect(database.insert).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("parseStringArray", () => {
   it("returns undefined when the value is absent", () => {

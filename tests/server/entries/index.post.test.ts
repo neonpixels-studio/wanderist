@@ -84,14 +84,23 @@ const mockAssertTripOwnershipIfPresent = vi.mocked(
 
 function makeDbForCreate(createdEntry: Record<string, unknown>) {
   const returningMock = vi.fn().mockResolvedValue([createdEntry]);
-  const valuesMock = vi.fn().mockReturnValue({ returning: returningMock });
+  const valuesMock = vi.fn().mockImplementation(() => {
+    // Awaitable directly (entryPhotos/entryTags inserts, which never call
+    // .returning()) and also exposing .returning() (the entries insert).
+    const thenable = Promise.resolve(undefined);
+    return Object.assign(thenable, { returning: returningMock });
+  });
 
-  // The handler no longer wraps writes in database.transaction() — the
-  // neon-http driver used everywhere in this app has no transaction support
-  // (see the comment in server/api/entries/index.post.ts) — so it calls
-  // database.insert(...) directly.
+  // The handler writes the entry row plus its photo/tag links as one atomic
+  // database.batch() call (see server/api/entries/index.post.ts) instead of a
+  // standalone insert followed by separate insert/delete round trips, so the
+  // mock's `batch` resolves every statement it's given — each statement here
+  // is already a promise (the mocked insert chains above), so awaiting the
+  // whole array mirrors drizzle's real "one HTTP call, every statement
+  // resolves together" behaviour closely enough for these unit tests.
   return {
     insert: vi.fn().mockImplementation(() => ({ values: valuesMock })),
+    batch: vi.fn((statements: Promise<unknown>[]) => Promise.all(statements)),
   };
 }
 
@@ -284,14 +293,14 @@ describe("POST /api/entries", () => {
     expect(result).toMatchObject(createdEntry);
   });
 
-  it("deletes the orphaned entry and rethrows when a post-insert step fails", async () => {
+  it("inserts nothing when tag upsert fails", async () => {
+    // upsertTags resolves the entry's tagIds *before* the write batch is
+    // built (see server/api/entries/index.post.ts), so a failure there never
+    // reaches the database at all — nothing to roll back.
     const createdEntry = { id: "generated-id", userId: "user-1" };
     mockEnsureUser.mockResolvedValue("user-1");
     mockReadBody.mockResolvedValue({ title: "My Entry" });
-    const mockDb = {
-      ...makeDbForCreate(createdEntry),
-      ...makeDbForDelete(),
-    };
+    const mockDb = makeDbForCreate(createdEntry);
     mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
 
     const upsertError = new Error("tag upsert failed");
@@ -303,6 +312,49 @@ describe("POST /api/entries", () => {
       (defaultHandler as (event: unknown) => unknown)({}),
     ).rejects.toThrow(upsertError);
 
-    expect(mockDb.delete).toHaveBeenCalledTimes(1);
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it("does not attempt a manual rollback when the write batch fails (atomic by construction)", async () => {
+    // Previously a mid-sequence failure needed a hand-rolled delete of the
+    // already-committed entry row. Now entries/entryPhotos/entryTags all
+    // travel in one database.batch() call, so a failure anywhere in it means
+    // nothing committed — there is no partial state to clean up, and the
+    // handler must not even try.
+    const createdEntry = { id: "generated-id", userId: "user-1" };
+    mockEnsureUser.mockResolvedValue("user-1");
+    mockReadBody.mockResolvedValue({
+      title: "My Entry",
+      photoMediaIds: ["media-1"],
+    });
+    const mockDb = {
+      ...makeDbForCreate(createdEntry),
+      ...makeDbForDelete(),
+    };
+    const returningMock = vi.fn().mockResolvedValue([createdEntry]);
+    const photoInsertError = new Error("photo insert failed");
+    let insertCallCount = 0;
+    mockDb.insert = vi.fn().mockImplementation(() => ({
+      values: vi.fn().mockImplementation(() => {
+        insertCallCount += 1;
+        // First insert() call is the entries row (needs .returning()); the
+        // second is entryPhotos, whose write batch.batch() fails.
+        if (insertCallCount === 1) {
+          const thenable = Promise.resolve(undefined);
+          return Object.assign(thenable, { returning: returningMock });
+        }
+        return Promise.reject(photoInsertError);
+      }),
+    }));
+
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+
+    await expect(
+      (defaultHandler as (event: unknown) => unknown)({}),
+    ).rejects.toThrow(photoInsertError);
+
+    expect(mockDb.delete).not.toHaveBeenCalled();
   });
 });

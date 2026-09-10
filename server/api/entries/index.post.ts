@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import { ensureUser } from "../../utils/auth";
 import { getDb } from "../../db/index";
 import { entries, entryPhotos, entryTags } from "../../db/schema";
@@ -16,34 +16,65 @@ import {
 import { assertTripOwnershipIfPresent } from "../../utils/trip-helpers";
 
 type DbClient = ReturnType<typeof getDb>;
+type Entry = typeof entries.$inferSelect;
+type NewEntry = typeof entries.$inferInsert;
 
-async function insertEntryPhotos(
-  database: DbClient,
-  entryId: string,
-  mediaIds: string[],
-): Promise<void> {
-  if (mediaIds.length === 0) {
-    return;
-  }
-  const photoRows = mediaIds.map((mediaId, index) => ({
+function buildEntryPhotoRows(entryId: string, mediaIds: string[]) {
+  return mediaIds.map((mediaId, index) => ({
     id: generateId(),
     entryId,
     mediaId,
     sortOrder: index,
   }));
-  await database.insert(entryPhotos).values(photoRows);
 }
 
-async function insertEntryTags(
+function buildEntryTagRows(entryId: string, tagIds: string[]) {
+  return tagIds.map((tagId) => ({ entryId, tagId }));
+}
+
+// Writes the entry row plus its photo and tag links as ONE atomic
+// database.batch() call — the neon-http driver's real BEGIN/COMMIT unit (see
+// server/db/index.ts). `input.id`, `tagIds`, and `photoMediaIds` are all
+// resolved in JS before this runs (tagIds comes from upsertTags, a separate
+// read/write round trip that must finish first because its result feeds the
+// entryTags insert values), so none of these statements needs to read another
+// statement's result within the batch. A failure anywhere in the batch (e.g.
+// a bad photoMediaId slipping past assertPhotoMediaOwned) rolls the whole
+// thing back atomically, so there is no orphaned entry row to delete by hand
+// — replacing the old insert-then-try/catch-delete compensation entirely.
+async function insertEntryWithRelations(
   database: DbClient,
-  entryId: string,
+  input: NewEntry & { id: string },
   tagIds: string[],
-): Promise<void> {
-  if (tagIds.length === 0) {
-    return;
+  photoMediaIds: string[],
+): Promise<Entry> {
+  const statements: BatchItem<"pg">[] = [
+    database.insert(entries).values(input).returning(),
+  ];
+
+  if (photoMediaIds.length > 0) {
+    statements.push(
+      database
+        .insert(entryPhotos)
+        .values(buildEntryPhotoRows(input.id, photoMediaIds)),
+    );
   }
-  const tagRows = tagIds.map((tagId) => ({ entryId, tagId }));
-  await database.insert(entryTags).values(tagRows);
+
+  if (tagIds.length > 0) {
+    statements.push(
+      database.insert(entryTags).values(buildEntryTagRows(input.id, tagIds)),
+    );
+  }
+
+  const [insertedRows] = (await database.batch(
+    statements as [BatchItem<"pg">, ...BatchItem<"pg">[]],
+  )) as [Entry[]];
+
+  const insertedEntry = insertedRows[0];
+  if (!insertedEntry) {
+    throw new Error(`Failed to insert entry ${input.id}`);
+  }
+  return insertedEntry;
 }
 
 export default defineEventHandler(async (event) => {
@@ -86,20 +117,14 @@ export default defineEventHandler(async (event) => {
 
   const entryId = generateId();
 
-  // Not wrapped in database.transaction(): the app's drizzle client is
-  // configured with the neon-http driver everywhere (see server/db/index.ts),
-  // which has no transaction support (it issues each query as its own HTTP
-  // call). Write steps run sequentially instead; upsertTags is already
-  // idempotent (insert ... onConflictDoUpdate) so a partial failure there is
-  // safe to retry. If a later write step still fails, the entry row is
-  // deleted below (its entryTags/entryPhotos foreign keys are ON DELETE
-  // CASCADE, so those rows are cleaned up too) so a 500 never leaves an
-  // orphaned entry behind. The relations load that follows is a read, not a
-  // write, so it is deliberately outside this try/catch: a transient read
-  // failure must not delete an entry whose writes already committed.
-  const inserted = await database
-    .insert(entries)
-    .values({
+  // Resolved before the write batch: upsertTags does its own read/write round
+  // trip(s) per tag name, so its result (tagIds) is a known value by the time
+  // insertEntryWithRelations builds its batch, not something read mid-batch.
+  const tagIds = await upsertTags(database, tagNames);
+
+  const insertedEntry = await insertEntryWithRelations(
+    database,
+    {
       id: entryId,
       userId,
       title,
@@ -109,27 +134,11 @@ export default defineEventHandler(async (event) => {
       weather,
       occurredAt,
       visibility,
-    })
-    .returning();
-
-  try {
-    const tagIds = await upsertTags(database, tagNames);
-    await insertEntryPhotos(database, entryId, photoMediaIds);
-    await insertEntryTags(database, entryId, tagIds);
-  } catch (error) {
-    try {
-      await database.delete(entries).where(eq(entries.id, entryId));
-    } catch (cleanupError) {
-      // Cleanup best-effort only: surface the original failure below, not a
-      // secondary error from the cleanup delete itself.
-      console.error(
-        "entries.post: cleanup after partial write failed",
-        cleanupError,
-      );
-    }
-    throw error;
-  }
+    },
+    tagIds,
+    photoMediaIds,
+  );
 
   const relations = await loadEntryRelations(database, entryId);
-  return { ...inserted[0], ...relations };
+  return { ...insertedEntry, ...relations };
 });
