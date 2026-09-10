@@ -5,29 +5,29 @@
   <!-- Only show the loading note when there is nothing yet; a refresh (e.g.
        after a follow toggle) keeps the existing list visible rather than
        flashing back to this line. -->
-  <p v-else-if="loading && !followers.length" class="empty-note">
-    Loading followers…
+  <p v-else-if="loading && !following.length" class="empty-note">
+    Loading following…
   </p>
-  <div v-else-if="followers.length" class="card card--pad">
+  <div v-else-if="following.length" class="card card--pad">
     <ProfilePersonRow
-      v-for="follower in followers"
-      :key="follower.userId"
-      :person="follower"
+      v-for="followee in following"
+      :key="followee.userId"
+      :person="followee"
     />
-    <p v-if="hasMore" class="followers-more">
-      Showing the {{ followers.length }} most recent followers.
+    <p v-if="hasMore" class="following-more">
+      Showing the {{ following.length }} most recently followed travelers.
     </p>
   </div>
-  <p v-else class="empty-note">No public followers yet.</p>
+  <p v-else class="empty-note">Not following anyone publicly yet.</p>
 </template>
 
 <script setup lang="ts">
 import ProfilePersonRow from "~/components/ProfilePersonRow.vue";
-import type { ProfileFollower } from "~/composables/useProfile";
+import type { ProfileFollowee } from "~/composables/useProfile";
 
 withDefaults(
   defineProps<{
-    followers: ProfileFollower[];
+    following: ProfileFollowee[];
     loading?: boolean;
     errorMessage?: string | null;
     hasMore?: boolean;
@@ -43,7 +43,7 @@ withDefaults(
   padding: 12px 0;
 }
 
-.followers-more {
+.following-more {
   font-size: 11.5px;
   color: var(--faint);
   padding: 12px 2px 2px;

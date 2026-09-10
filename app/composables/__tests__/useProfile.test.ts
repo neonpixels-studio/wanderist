@@ -255,6 +255,138 @@ describe("useProfile", () => {
     expect(followersError.value).toBeNull();
   });
 
+  it("starts following in a loading state and clears it after a fetch", async () => {
+    const { followingLoading } = useProfile();
+    expect(followingLoading.value).toBe(true);
+
+    mockApiFetch.mockResolvedValue({ following: [], hasMore: false });
+    const composable = useProfile();
+    await composable.fetchFollowingList("user-1");
+    expect(composable.followingLoading.value).toBe(false);
+  });
+
+  it("discards a superseded following response so a→b navigation can't cross wires", async () => {
+    let resolveFirst!: (value: { following: []; hasMore: boolean }) => void;
+    const firstPending = new Promise<{ following: []; hasMore: boolean }>(
+      (resolve) => {
+        resolveFirst = resolve;
+      },
+    );
+    mockApiFetch.mockReturnValueOnce(firstPending).mockResolvedValueOnce({
+      following: [{ userId: "user-b", displayName: "B", handle: "b" }],
+      hasMore: false,
+    });
+
+    const { following, fetchFollowingList } = useProfile();
+    const firstCall = fetchFollowingList("user-a");
+    const secondCall = fetchFollowingList("user-b");
+    await secondCall;
+
+    resolveFirst({ following: [], hasMore: true });
+    await firstCall;
+
+    expect(following.value).toEqual([
+      { userId: "user-b", displayName: "B", handle: "b" },
+    ]);
+  });
+
+  it("clears the following list up front when switching to a different profile", async () => {
+    const { following, hasMoreFollowing, fetchFollowingList } = useProfile();
+
+    mockApiFetch.mockResolvedValueOnce({
+      following: [{ userId: "user-a-followee", displayName: "A", handle: "a" }],
+      hasMore: true,
+    });
+    await fetchFollowingList("user-a");
+    expect(following.value).toHaveLength(1);
+
+    // A new profile's fetch is in flight (unresolved): the previous traveler's
+    // following list must be gone immediately so it never renders under the
+    // new name.
+    mockApiFetch.mockReturnValueOnce(new Promise(() => {}));
+    void fetchFollowingList("user-b");
+
+    expect(following.value).toEqual([]);
+    expect(hasMoreFollowing.value).toBe(false);
+  });
+
+  it("keeps the following list visible during a same-user refresh", async () => {
+    const { following, fetchFollowingList } = useProfile();
+
+    const followingRows = [
+      { userId: "user-a-followee", displayName: "A", handle: "a" },
+    ];
+    mockApiFetch.mockResolvedValueOnce({
+      following: followingRows,
+      hasMore: false,
+    });
+    await fetchFollowingList("user-a");
+    expect(following.value).toHaveLength(1);
+
+    // A refresh for the same user must not flash the list away while the
+    // refetch is in flight.
+    mockApiFetch.mockReturnValueOnce(new Promise(() => {}));
+    void fetchFollowingList("user-a");
+
+    expect(following.value).toEqual(followingRows);
+  });
+
+  it("encodes the user ID in the following request path", async () => {
+    mockApiFetch.mockResolvedValue({ following: [], hasMore: false });
+    const { fetchFollowingList } = useProfile();
+
+    await fetchFollowingList("user/with space");
+
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      "/api/users/user%2Fwith%20space/following",
+    );
+  });
+
+  it("fetchFollowingList loads the following list and the hasMore flag", async () => {
+    const followingRows = [
+      { userId: "user-2", displayName: "Marco", handle: "marco" },
+    ];
+    mockApiFetch.mockResolvedValue({
+      following: followingRows,
+      hasMore: true,
+    });
+    const { following, hasMoreFollowing, fetchFollowingList } = useProfile();
+
+    await fetchFollowingList("user-1");
+
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/users/user-1/following");
+    expect(following.value).toEqual(followingRows);
+    expect(hasMoreFollowing.value).toBe(true);
+  });
+
+  it("clears a previously-loaded following list and surfaces an error on non-404 failure", async () => {
+    const { following, followingError, fetchFollowingList } = useProfile();
+
+    // Seed a successful load first so the failure path has something to clear.
+    mockApiFetch.mockResolvedValueOnce({
+      following: [{ userId: "user-2", displayName: "Marco", handle: "marco" }],
+      hasMore: false,
+    });
+    await fetchFollowingList("user-1");
+    expect(following.value).toHaveLength(1);
+
+    mockApiFetch.mockRejectedValueOnce(new Error("boom"));
+    await expect(fetchFollowingList("user-1")).resolves.toBeUndefined();
+
+    expect(following.value).toEqual([]);
+    expect(followingError.value).toBe("Could not load following");
+  });
+
+  it("does not raise a following error for a 404 (private/missing profile)", async () => {
+    const { following, followingError, fetchFollowingList } = useProfile();
+
+    mockApiFetch.mockRejectedValue(notFoundError());
+    await fetchFollowingList("user-1");
+
+    expect(following.value).toEqual([]);
+    expect(followingError.value).toBeNull();
+  });
+
   it("encodes the user ID in the request path", async () => {
     mockApiFetch.mockResolvedValue(SAMPLE_PROFILE);
     const { fetchProfile } = useProfile();

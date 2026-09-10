@@ -35,11 +35,13 @@ import {
   fetchProfileRow,
   fetchProfileVisibility,
   fetchFollowers,
+  fetchFollowing,
   fetchPublicTrips,
   fetchPublicGuides,
   requireViewableProfile,
   requireViewableProfileTarget,
   FOLLOWERS_PAGE_SIZE,
+  FOLLOWING_PAGE_SIZE,
   PROFILE_TRIPS_PAGE_SIZE,
   PROFILE_GUIDES_PAGE_SIZE,
 } from "../../../server/utils/profile-queries";
@@ -405,14 +407,38 @@ describe("fetchFollowers", () => {
     );
   });
 
+  it("joins on follower_id so each row is the counterparty (not the target user)", async () => {
+    const built = buildSelectChain([]);
+
+    await fetchFollowers(built.chain as unknown as Database, "user-1");
+
+    // A copy-paste of the followee-side join here would return the target
+    // user's own row N times and check their own visibility, not each
+    // follower's.
+    expect(built.innerJoin).toHaveBeenNthCalledWith(
+      1,
+      users,
+      eq(follows.followerId, users.id),
+    );
+    expect(built.innerJoin).toHaveBeenNthCalledWith(
+      2,
+      userPreferences,
+      eq(follows.followerId, userPreferences.userId),
+    );
+  });
+
   it("orders by most-recent follow and caps the result set", async () => {
     const built = buildSelectChain([]);
 
     await fetchFollowers(built.chain as unknown as Database, "user-1");
 
     // Assert the ordering itself: flipping desc→asc would silently return the
-    // oldest followers instead of the most recent.
-    expect(built.orderBy).toHaveBeenCalledWith(desc(follows.createdAt));
+    // oldest followers instead of the most recent. The follower_id tiebreaker
+    // keeps the LIMIT cut deterministic when rows share a createdAt.
+    expect(built.orderBy).toHaveBeenCalledWith(
+      desc(follows.createdAt),
+      desc(follows.followerId),
+    );
     // One extra row is fetched to detect hasMore.
     expect(built.limit).toHaveBeenCalledWith(FOLLOWERS_PAGE_SIZE + 1);
   });
@@ -426,6 +452,104 @@ describe("fetchFollowers", () => {
     );
 
     expect(result).toEqual({ followers: [], hasMore: false });
+  });
+});
+
+describe("fetchFollowing", () => {
+  it("returns the mapped public followees with hasMore false under the cap", async () => {
+    const rows = [
+      { userId: "user-2", displayName: "Marco", handle: "marco" },
+      { userId: "user-3", displayName: null, handle: "nina" },
+    ];
+    const built = buildSelectChain(rows);
+
+    const result = await fetchFollowing(
+      built.chain as unknown as Database,
+      "user-1",
+    );
+
+    expect(result).toEqual({ following: rows, hasMore: false });
+  });
+
+  it("signals hasMore and trims to the page size when an extra row comes back", async () => {
+    // The query fetches PAGE_SIZE + 1; the extra row means "more exist".
+    const rows = Array.from(
+      { length: FOLLOWING_PAGE_SIZE + 1 },
+      (_, index) => ({
+        userId: `user-${index}`,
+        displayName: `Traveler ${index}`,
+        handle: `t${index}`,
+      }),
+    );
+    const built = buildSelectChain(rows);
+
+    const result = await fetchFollowing(
+      built.chain as unknown as Database,
+      "user-1",
+    );
+
+    expect(result.hasMore).toBe(true);
+    expect(result.following).toHaveLength(FOLLOWING_PAGE_SIZE);
+  });
+
+  it("filters to public, non-deleted accounts followed by the target user", async () => {
+    const built = buildSelectChain([]);
+
+    await fetchFollowing(built.chain as unknown as Database, "user-1");
+
+    // These predicates are the whole privacy contract: they keep private and
+    // soft-deleted accounts out of another user's following list.
+    expect(built.where).toHaveBeenCalledWith(
+      and(eq(follows.followerId, "user-1"), publiclyVisibleAuthorCondition()),
+    );
+  });
+
+  it("joins on followee_id so each row is the followed account (not the target user)", async () => {
+    const built = buildSelectChain([]);
+
+    await fetchFollowing(built.chain as unknown as Database, "user-1");
+
+    // A copy-paste of the follower-side join here would return the target
+    // user's own row N times and check their own visibility, not each
+    // followee's.
+    expect(built.innerJoin).toHaveBeenNthCalledWith(
+      1,
+      users,
+      eq(follows.followeeId, users.id),
+    );
+    expect(built.innerJoin).toHaveBeenNthCalledWith(
+      2,
+      userPreferences,
+      eq(follows.followeeId, userPreferences.userId),
+    );
+  });
+
+  it("orders by most-recently followed and caps the result set", async () => {
+    const built = buildSelectChain([]);
+
+    await fetchFollowing(built.chain as unknown as Database, "user-1");
+
+    // Assert the ordering itself: flipping desc→asc would silently return the
+    // oldest follows instead of the most recently followed. The followee_id
+    // tiebreaker keeps the LIMIT cut deterministic when rows share a
+    // createdAt.
+    expect(built.orderBy).toHaveBeenCalledWith(
+      desc(follows.createdAt),
+      desc(follows.followeeId),
+    );
+    // One extra row is fetched to detect hasMore.
+    expect(built.limit).toHaveBeenCalledWith(FOLLOWING_PAGE_SIZE + 1);
+  });
+
+  it("returns an empty page when the user follows nobody public", async () => {
+    const built = buildSelectChain([]);
+
+    const result = await fetchFollowing(
+      built.chain as unknown as Database,
+      "user-1",
+    );
+
+    expect(result).toEqual({ following: [], hasMore: false });
   });
 });
 

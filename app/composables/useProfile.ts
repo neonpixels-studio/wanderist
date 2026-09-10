@@ -1,23 +1,24 @@
 /**
- * useProfile — fetches a public user profile plus its followers, public
- * trips, and public guides.
+ * useProfile — fetches a public user profile plus its followers, who it
+ * follows, public trips, and public guides.
  *
  * - profile: the loaded profile (null until fetched, or when not viewable)
  * - followers: the profile's public followers
+ * - following: the public accounts the profile owner follows
  * - trips: the profile owner's public trips
  * - guides: the profile owner's public guides
  * - notFound: true when the profile does not exist or is private to the viewer
- * - fetchProfile / fetchFollowers / fetchTrips / fetchGuides: load each part
- *   for a given user ID
+ * - fetchProfile / fetchFollowers / fetchFollowingList / fetchTrips /
+ *   fetchGuides: load each part for a given user ID
  *
  * The backend returns 404 both for a missing user and for a private profile the
  * viewer may not see, so the composable cannot (and should not) distinguish
  * them — both surface as `notFound`.
  *
- * fetchProfile aside, the followers/trips/guides fetchers share one identical
- * request lifecycle (bump a request id, clear the list on a profile switch,
- * discard a superseded response, surface a non-404 failure) — see
- * `createListFetcher` — so it lives once instead of three times.
+ * fetchProfile aside, the followers/following/trips/guides fetchers share one
+ * identical request lifecycle (bump a request id, clear the list on a profile
+ * switch, discard a superseded response, surface a non-404 failure) — see
+ * `createListFetcher` — so it lives once instead of four times.
  */
 
 import type { TripStatus } from "~/utils/tripDates";
@@ -41,6 +42,11 @@ export interface ProfileFollower {
   displayName: string | null;
   handle: string | null;
 }
+
+// Same shape as ProfileFollower — a followee is rendered identically to a
+// follower — kept as its own alias so the two lists read distinctly at call
+// sites even though the underlying data is identical.
+export type ProfileFollowee = ProfileFollower;
 
 export interface ProfileTrip {
   id: string;
@@ -157,6 +163,7 @@ export function useProfile() {
   const error = ref<string | null>(null);
 
   const followersState = createListFetchState<ProfileFollower>();
+  const followingState = createListFetchState<ProfileFollowee>();
   const tripsState = createListFetchState<ProfileTrip>();
   const guidesState = createListFetchState<ProfileGuide>();
 
@@ -207,6 +214,23 @@ export function useProfile() {
     userFacingErrorMessage: "Could not load followers",
   });
 
+  // Named `fetchFollowingList` (not `fetchFollowing`) because callers on the
+  // profile page also use `useFollows().fetchFollowing`, which loads the
+  // *viewer's own* follow state — a same-named export here would collide with
+  // that unrelated composable at every call site.
+  const fetchFollowingList = createListFetcher<
+    ProfileFollowee,
+    { following: ProfileFollowee[]; hasMore: boolean }
+  >(apiFetch, followingState, {
+    resourcePath: "following",
+    extractPage: (response) => ({
+      items: response.following,
+      hasMore: response.hasMore,
+    }),
+    failureLogLabel: "useProfile: fetchFollowingList failed",
+    userFacingErrorMessage: "Could not load following",
+  });
+
   const fetchTrips = createListFetcher<
     ProfileTrip,
     { trips: ProfileTrip[]; hasMore: boolean }
@@ -237,21 +261,26 @@ export function useProfile() {
     profile,
     followers: followersState.items,
     hasMoreFollowers: followersState.hasMore,
+    following: followingState.items,
+    hasMoreFollowing: followingState.hasMore,
     trips: tripsState.items,
     hasMoreTrips: tripsState.hasMore,
     guides: guidesState.items,
     hasMoreGuides: guidesState.hasMore,
     isLoading,
     followersLoading: followersState.loading,
+    followingLoading: followingState.loading,
     tripsLoading: tripsState.loading,
     guidesLoading: guidesState.loading,
     notFound,
     error,
     followersError: followersState.errorMessage,
+    followingError: followingState.errorMessage,
     tripsError: tripsState.errorMessage,
     guidesError: guidesState.errorMessage,
     fetchProfile,
     fetchFollowers,
+    fetchFollowingList,
     fetchTrips,
     fetchGuides,
   };

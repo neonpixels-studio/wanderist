@@ -26,11 +26,22 @@ exports[`profile page > renders a loaded public profile 1`] = `
     </div>
     <!-- Not dismissible: this is the section's only content when it errors, so
        dismissing it would leave the section blank with no way to recover. -->
-    <div data-v-42077964="" data-v-0199c68f="" class="card card--pad"><a data-v-42077964="" href="/u/user-2" class="person"><span data-v-42077964="" class="person__av"><svg data-v-42077964="" data-icon="" name="user" size="19"></svg></span>
-        <div data-v-42077964="" class="person__name"><b data-v-42077964="">Marco</b><span data-v-42077964="">@marco</span></div>
+    <div data-v-42077964="" data-v-0199c68f="" class="card card--pad"><a data-v-1bc42a10="" data-v-42077964="" href="/u/user-2" class="person"><span data-v-1bc42a10="" class="person__av"><svg data-v-1bc42a10="" data-icon="" name="user" size="19"></svg></span>
+        <div data-v-1bc42a10="" class="person__name"><b data-v-1bc42a10="">Marco</b><span data-v-1bc42a10="">@marco</span></div>
       </a>
       <!--v-if-->
     </div>
+  </section>
+  <section data-v-0199c68f="" class="psec">
+    <div data-v-0199c68f="" class="sec-head">
+      <div data-v-0199c68f="">
+        <div data-v-0199c68f="" class="label">// following</div>
+        <h2 data-v-0199c68f="">Who Elsa follows</h2>
+      </div>
+    </div>
+    <!-- Not dismissible: this is the section's only content when it errors, so
+       dismissing it would leave the section blank with no way to recover. -->
+    <p data-v-5b80b86e="" data-v-0199c68f="" class="empty-note">Not following anyone publicly yet.</p>
   </section>
   <section data-v-0199c68f="" class="psec">
     <div data-v-0199c68f="" class="sec-head">

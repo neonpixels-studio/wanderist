@@ -4,11 +4,13 @@ import { reactive, ref } from "vue";
 import ProfilePage from "../u/[id].vue";
 import ProfileHeader from "~/components/ProfileHeader.vue";
 import ProfileFollowerList from "~/components/ProfileFollowerList.vue";
+import ProfileFollowingList from "~/components/ProfileFollowingList.vue";
 import ProfileTripList from "~/components/ProfileTripList.vue";
 import ProfileGuideList from "~/components/ProfileGuideList.vue";
 import type {
   ProfileUser,
   ProfileFollower,
+  ProfileFollowee,
   ProfileTrip,
   ProfileGuide,
 } from "~/composables/useProfile";
@@ -47,21 +49,26 @@ vi.stubGlobal(
 const profile = ref<ProfileUser | null>(null);
 const followers = ref<ProfileFollower[]>([]);
 const hasMoreFollowers = ref(false);
+const following = ref<ProfileFollowee[]>([]);
+const hasMoreFollowing = ref(false);
 const trips = ref<ProfileTrip[]>([]);
 const hasMoreTrips = ref(false);
 const guides = ref<ProfileGuide[]>([]);
 const hasMoreGuides = ref(false);
 const isLoading = ref(false);
 const followersLoading = ref(false);
+const followingLoading = ref(false);
 const tripsLoading = ref(false);
 const guidesLoading = ref(false);
 const notFound = ref(false);
 const profileError = ref<string | null>(null);
 const followersError = ref<string | null>(null);
+const followingError = ref<string | null>(null);
 const tripsError = ref<string | null>(null);
 const guidesError = ref<string | null>(null);
 const mockFetchProfile = vi.fn();
 const mockFetchFollowers = vi.fn();
+const mockFetchFollowingList = vi.fn();
 const mockFetchTrips = vi.fn();
 const mockFetchGuides = vi.fn();
 
@@ -69,21 +76,26 @@ vi.stubGlobal("useProfile", () => ({
   profile,
   followers,
   hasMoreFollowers,
+  following,
+  hasMoreFollowing,
   trips,
   hasMoreTrips,
   guides,
   hasMoreGuides,
   isLoading,
   followersLoading,
+  followingLoading,
   tripsLoading,
   guidesLoading,
   notFound,
   error: profileError,
   followersError,
+  followingError,
   tripsError,
   guidesError,
   fetchProfile: mockFetchProfile,
   fetchFollowers: mockFetchFollowers,
+  fetchFollowingList: mockFetchFollowingList,
   fetchTrips: mockFetchTrips,
   fetchGuides: mockFetchGuides,
 }));
@@ -123,6 +135,7 @@ const globalConfig = {
     components: {
       ProfileHeader,
       ProfileFollowerList,
+      ProfileFollowingList,
       ProfileTripList,
       ProfileGuideList,
     },
@@ -155,17 +168,21 @@ describe("profile page", () => {
     profile.value = null;
     followers.value = [];
     hasMoreFollowers.value = false;
+    following.value = [];
+    hasMoreFollowing.value = false;
     trips.value = [];
     hasMoreTrips.value = false;
     guides.value = [];
     hasMoreGuides.value = false;
     isLoading.value = false;
     followersLoading.value = false;
+    followingLoading.value = false;
     tripsLoading.value = false;
     guidesLoading.value = false;
     notFound.value = false;
     profileError.value = null;
     followersError.value = null;
+    followingError.value = null;
     tripsError.value = null;
     guidesError.value = null;
     followingIds.value = new Set();
@@ -186,12 +203,13 @@ describe("profile page", () => {
     expect(lastAsyncDataCall?.options.server).toBe(false);
   });
 
-  it("fetches the profile, followers, trips, guides, and follow state on mount", () => {
+  it("fetches the profile, followers, following, trips, guides, and follow state on mount", () => {
     profile.value = { ...SAMPLE_PROFILE };
     mount(ProfilePage, globalConfig);
 
     expect(mockFetchProfile).toHaveBeenCalledWith("user-1");
     expect(mockFetchFollowers).toHaveBeenCalledWith("user-1");
+    expect(mockFetchFollowingList).toHaveBeenCalledWith("user-1");
     expect(mockFetchTrips).toHaveBeenCalledWith("user-1");
     expect(mockFetchGuides).toHaveBeenCalledWith("user-1");
     expect(mockFetchFollowing).toHaveBeenCalled();
@@ -222,27 +240,57 @@ describe("profile page", () => {
     profile.value = { ...SAMPLE_PROFILE };
     followersLoading.value = true;
     const wrapper = mount(ProfilePage, globalConfig);
+    const followerList = wrapper.findComponent(ProfileFollowerList);
 
-    expect(wrapper.findComponent(ProfileFollowerList).props("loading")).toBe(
-      true,
-    );
+    expect(followerList.props("loading")).toBe(true);
     expect(wrapper.text()).toContain("Loading followers…");
-    expect(wrapper.find("a.person").exists()).toBe(false);
+    // Scoped to this list: ProfileFollowingList renders the same `a.person`
+    // shape via the shared ProfilePersonRow, so an unscoped find would pass
+    // for the wrong reason once following has rows too.
+    expect(followerList.find("a.person").exists()).toBe(false);
   });
 
   it("forwards a followers error so the list is replaced by the error", () => {
     profile.value = { ...SAMPLE_PROFILE };
     followersError.value = "Could not load followers";
     const wrapper = mount(ProfilePage, globalConfig);
+    const followerList = wrapper.findComponent(ProfileFollowerList);
 
-    expect(
-      wrapper.findComponent(ProfileFollowerList).props("errorMessage"),
-    ).toBe("Could not load followers");
-    expect(wrapper.find(".alert-stub").attributes("data-message")).toBe(
+    expect(followerList.props("errorMessage")).toBe("Could not load followers");
+    expect(followerList.find(".alert-stub").attributes("data-message")).toBe(
       "Could not load followers",
     );
-    expect(wrapper.find("a.person").exists()).toBe(false);
-    expect(wrapper.text()).not.toContain("No public followers yet");
+    expect(followerList.find("a.person").exists()).toBe(false);
+    expect(followerList.text()).not.toContain("No public followers yet");
+  });
+
+  it("forwards the following loading state so the list shows no false empty state", () => {
+    profile.value = { ...SAMPLE_PROFILE };
+    followingLoading.value = true;
+    const wrapper = mount(ProfilePage, globalConfig);
+    const followingList = wrapper.findComponent(ProfileFollowingList);
+
+    expect(followingList.props("loading")).toBe(true);
+    expect(wrapper.text()).toContain("Loading following…");
+    expect(followingList.find("a.person").exists()).toBe(false);
+  });
+
+  it("forwards a following error so the list is replaced by the error", () => {
+    profile.value = { ...SAMPLE_PROFILE };
+    followingError.value = "Could not load following";
+    const wrapper = mount(ProfilePage, globalConfig);
+    const followingList = wrapper.findComponent(ProfileFollowingList);
+
+    expect(followingList.props("errorMessage")).toBe(
+      "Could not load following",
+    );
+    expect(followingList.find(".alert-stub").attributes("data-message")).toBe(
+      "Could not load following",
+    );
+    expect(followingList.find("a.person").exists()).toBe(false);
+    expect(followingList.text()).not.toContain(
+      "Not following anyone publicly yet",
+    );
   });
 
   it("forwards the trips loading state so the list shows no false empty state", () => {
