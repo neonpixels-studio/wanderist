@@ -262,8 +262,18 @@ export const useGuidesStore = defineStore("guides", () => {
     );
     // Keep the open detail page (which renders from currentGuide, not the
     // list) in sync so an edit doesn't leave it showing pre-edit content.
+    // The PATCH response is the bare guide row (see server/api/guides/[id]
+    // .patch.ts) — it never carries ownerDisplayName/ownerHandle, and editing
+    // title/body/visibility never changes who the author is, so carry the
+    // byline fields already on currentGuide forward rather than letting this
+    // splice blank them out (which would wrongly show "by a traveler" under
+    // the owner's own guide until the next full fetch).
     if (currentGuide.value?.id === id) {
-      currentGuide.value = updated;
+      currentGuide.value = {
+        ...updated,
+        ownerDisplayName: currentGuide.value.ownerDisplayName,
+        ownerHandle: currentGuide.value.ownerHandle,
+      };
     }
     await markLoadSucceeded();
 

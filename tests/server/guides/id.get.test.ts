@@ -41,7 +41,7 @@ import { eq } from "drizzle-orm";
 import { requireRouterParam } from "../../../server/utils/db-helpers";
 import { optionalUser } from "../../../server/utils/auth";
 import { getDb } from "../../../server/db/index";
-import { guides } from "../../../server/db/schema";
+import { guides, userPreferences } from "../../../server/db/schema";
 
 const mockEq = vi.mocked(eq);
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
@@ -144,6 +144,10 @@ describe("GET /api/guides/:id", () => {
       ownerDisplayName: "Elsa",
       ownerHandle: "elsa_far",
     });
+    // The byline must be looked up for the guide's owner, not the requesting
+    // viewer (OTHER_ID) — a regression here would show the viewer's own name
+    // on someone else's guide instead of 404ing or showing the real author.
+    expect(mockEq).toHaveBeenCalledWith(userPreferences.userId, OWNER_ID);
   });
 
   it("hides a private guide from a non-owner with a 404", async () => {
@@ -195,6 +199,10 @@ describe("GET /api/guides/:id", () => {
       ownerDisplayName: "Elsa",
       ownerHandle: "elsa_far",
     });
+    // Same guard as the non-owner test above: an anonymous viewer has no id
+    // of their own to leak, but a regression that swapped in a hardcoded or
+    // wrong id here would slip past a plain result-shape assertion.
+    expect(mockEq).toHaveBeenCalledWith(userPreferences.userId, OWNER_ID);
   });
 
   it("falls back to a null byline when the author has no preferences row", async () => {

@@ -663,6 +663,40 @@ describe("useGuidesStore", () => {
 
       expect(store.currentGuide).toEqual(updated);
     });
+
+    it("keeps the byline fields on the open detail guide after an edit, since the PATCH response never carries them", async () => {
+      // GET /api/guides/:id (the only endpoint that joins the author) returns
+      // owner fields; PATCH does not (see server/api/guides/[id].patch.ts) —
+      // the store must not let that PATCH response blank out a byline the
+      // detail page already has.
+      const original = {
+        id: "g-1",
+        userId: "u-1",
+        title: "Tokyo on foot",
+        ownerHandle: "elsa_far",
+        ownerDisplayName: "Elsa",
+      };
+      const patchResponse = {
+        id: "g-1",
+        userId: "u-1",
+        title: "Tokyo, revised",
+      };
+
+      mockApiFetch
+        .mockResolvedValueOnce(original)
+        .mockResolvedValueOnce(patchResponse)
+        .mockResolvedValue([]);
+
+      const store = useGuidesStore();
+      await store.fetchGuideById("g-1");
+      await store.updateGuide("g-1", { title: "Tokyo, revised" });
+
+      expect(store.currentGuide).toEqual({
+        ...patchResponse,
+        ownerHandle: "elsa_far",
+        ownerDisplayName: "Elsa",
+      });
+    });
   });
 
   // ---------------------------------------------------------------------------

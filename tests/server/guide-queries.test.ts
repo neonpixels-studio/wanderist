@@ -18,9 +18,11 @@ const { loadReadableGuide, loadReadableGuideWithAuthor } =
 
 type FakeDatabase = Parameters<typeof loadReadableGuide>[0];
 
-// Minimal stand-in for the query chains loadReadableGuide walks. It may issue
-// up to two queries — the guide lookup, then (for a non-owner) the author's
-// discoverability check — so each `.limit()` returns the next queued response.
+// Minimal stand-in for the query chains loadReadableGuide(WithAuthor) walks.
+// loadReadableGuide issues up to two queries — the guide lookup, then (for a
+// non-owner) the author's discoverability check. loadReadableGuideWithAuthor
+// adds a third, always-run author byline lookup. Each `.limit()` returns the
+// next queued response, shared by both describe blocks below.
 function fakeDbSequence(responses: Record<string, unknown>[][]): FakeDatabase {
   let call = 0;
   const chain = {
