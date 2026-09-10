@@ -93,6 +93,20 @@ const guide = computed(() =>
 // a missing guide to a share-link visitor, so it gets its own error state.
 const loadError = computed(() => guidesStore.guideError);
 
+// isLoaded gates nothing rendered on this page (unlike trips/[id].vue, which
+// has an owner-only UI split), but the fetch below still needs it: mirrors
+// trips/[id].vue's canRetryAuthenticated so a signed-in owner opening their own
+// private guide isn't stuck on the anonymous-first-fetch 404.
+const { isLoaded: isClerkLoaded, isSignedIn } = useClerkAuth();
+
+// A refetch only changes the answer once the viewer is a signed-in user who can
+// carry a token; an anonymous visitor never gains one, so watching this instead
+// of isClerkLoaded gives them a single fetch while still re-issuing the owner's
+// request once their session resolves.
+const canRetryAuthenticated = computed(
+  () => isClerkLoaded.value && !!isSignedIn.value,
+);
+
 // `server: false` keeps the fetch client-only, mirroring u/[id].vue: the request
 // carries the Clerk session token, which only exists on the client (Clerk runs
 // with skipServerMiddleware). Running it during SSR would hang, since Clerk's
@@ -103,10 +117,16 @@ const loadError = computed(() => guidesStore.guideError);
 // rather than being redirected to /login. This does mean a shared link is not
 // server-rendered (no unfurl preview); that is an accepted trade for staying
 // on the codebase's client-only-auth pattern.
+//
+// Watch canRetryAuthenticated as well as the id: the first pass can run before
+// Clerk is ready, sending an anonymous request that 404s the owner's own private
+// guide. Re-running once the session resolves re-issues the request with a
+// token so the owner gets their private guide; a public guide already resolved
+// on the anonymous pass.
 const { status: fetchStatus, refresh: refreshGuide } = useAsyncData(
   () => `guide-detail-${guideId.value}`,
   () => guidesStore.fetchGuideById(guideId.value),
-  { server: false, watch: [guideId] },
+  { server: false, watch: [guideId, canRetryAuthenticated] },
 );
 
 async function onRetryLoad(): Promise<void> {

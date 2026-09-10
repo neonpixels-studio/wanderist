@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { ref, reactive, nextTick, unref } from "vue";
+import { ref, reactive, nextTick, unref, watch } from "vue";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import GuideDetailPage from "../guides/[id].vue";
@@ -11,6 +11,17 @@ import type { Guide } from "~/stores/guides";
 // change the guide id and assert the page's watched ref tracks it.
 const routeParams = reactive({ id: "guide-1" });
 vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
+
+// The fetch's canRetryAuthenticated watch reads useClerkAuth; drive it from
+// refs so a test can simulate the Clerk bootstrap window and a signed-in
+// owner's session resolving after the anonymous first pass.
+const clerkLoadedRef = ref(true);
+const clerkSignedInRef = ref(false);
+vi.stubGlobal("useClerkAuth", () => ({
+  isLoaded: clerkLoadedRef,
+  isSignedIn: clerkSignedInRef,
+  getToken: vi.fn().mockResolvedValue(null),
+}));
 
 // The global useAsyncData stub never invokes its handler, so by default the
 // page's fetch wiring is dead under test. Override it to run the handler once
@@ -32,6 +43,15 @@ vi.stubGlobal(
   ) => {
     lastAsyncDataOptions = options;
     handler();
+    // Honour the real refetch-on-watch contract so a test can assert an
+    // anonymous visitor fetches once while the owner's request re-runs when the
+    // session resolves — asserting the watch array alone would pass even if the
+    // page dropped the watcher entirely.
+    if (options?.watch) {
+      watch(options.watch as Parameters<typeof watch>[0], () => {
+        handler();
+      });
+    }
     return {
       data: ref(null),
       pending: ref(false),
@@ -79,6 +99,10 @@ describe("Guide Detail page (/guides/[id])", () => {
     routeParams.id = "guide-1";
     asyncDataStatus.value = "success";
     mockRefresh.mockClear();
+    // Default: Clerk resolved and signed in, matching most existing assertions
+    // (which don't exercise the auth-aware refetch itself).
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = true;
     pinia = createPinia();
     setActivePinia(pinia);
 
@@ -253,5 +277,32 @@ describe("Guide Detail page (/guides/[id])", () => {
 
     const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
     expect(wrapper.text()).toContain("This guide has no content yet.");
+  });
+
+  it("fetches once for an anonymous visitor and retries once the owner's session resolves", async () => {
+    // Start anonymous with Clerk still loading.
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+    const guidesStore = useGuidesStore();
+    const fetchSpy = guidesStore.fetchGuideById as unknown as ReturnType<
+      typeof vi.fn
+    >;
+
+    mount(GuideDetailPage, buildGlobalConfig(pinia));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // Clerk finishing its load for an anonymous visitor must NOT retry: they
+    // never gain a token, so a second identical request is wasted.
+    clerkLoadedRef.value = true;
+    await nextTick();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // A resolved, signed-in session triggers exactly one authenticated retry so
+    // the owner's own private guide loads after the anonymous first pass 404'd.
+    clerkSignedInRef.value = true;
+    await nextTick();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    expect(lastAsyncDataOptions?.watch).toHaveLength(2);
   });
 });
