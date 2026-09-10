@@ -5,32 +5,18 @@ exports[`AppNotifications > renders the panel when open and matches snapshot 1`]
   <div class="notif__head"><b>Notifications</b><button class="notif__mark"> mark all read </button></div>
   <div class="notif__list">
     <!--v-if-->
+    <!--v-if-->
     <div class="notif__item is-unread"><span class="notif__ico notif__ico--info"><svg data-icon="" name="instagram" size="16"></svg></span>
-      <!-- The mark-as-read control, not the dismiss button below: role and
-             the click/keydown handlers live here (not on .notif__item) so the
-             dismiss button is this element's sibling rather than a button
-             nested inside a role="button" ancestor, which assistive tech
-             collapses into a single unlabelled control. -->
       <div class="notif__body" tabindex="0" role="button">
         <p class="notif__title">12 geotagged photos from Lisbon are ready to import</p><span class="notif__time">2h</span>
       </div><span class="notif__dot"></span><button type="button" class="notif__dismiss" aria-label="Dismiss notification: 12 geotagged photos from Lisbon are ready to import"><svg data-icon="" name="x" size="14"></svg></button>
     </div>
     <div class="notif__item is-unread"><span class="notif__ico notif__ico--accent"><svg data-icon="" name="heart" size="16"></svg></span>
-      <!-- The mark-as-read control, not the dismiss button below: role and
-             the click/keydown handlers live here (not on .notif__item) so the
-             dismiss button is this element's sibling rather than a button
-             nested inside a role="button" ancestor, which assistive tech
-             collapses into a single unlabelled control. -->
       <div class="notif__body" tabindex="0" role="button">
         <p class="notif__title">elsa_far liked your entry</p><span class="notif__time">5h</span>
       </div><span class="notif__dot"></span><button type="button" class="notif__dismiss" aria-label="Dismiss notification: elsa_far liked your entry"><svg data-icon="" name="x" size="14"></svg></button>
     </div>
     <div class="notif__item"><span class="notif__ico notif__ico--accent"><svg data-icon="" name="users" size="16"></svg></span>
-      <!-- The mark-as-read control, not the dismiss button below: role and
-             the click/keydown handlers live here (not on .notif__item) so the
-             dismiss button is this element's sibling rather than a button
-             nested inside a role="button" ancestor, which assistive tech
-             collapses into a single unlabelled control. -->
       <div class="notif__body">
         <p class="notif__title">Elsa Farsdottir started following you</p><span class="notif__time">4d</span>
       </div><span class="notif__dot"></span><button type="button" class="notif__dismiss" aria-label="Dismiss notification: Elsa Farsdottir started following you"><svg data-icon="" name="x" size="14"></svg></button>

@@ -15,59 +15,32 @@
       <div v-if="isLoading && notifications.length === 0" class="notif__empty">
         Loading…
       </div>
+      <!-- Only the empty-list case replaces the row area with the error
+           state, mirroring /activity: once rows are showing, a later error
+           (e.g. a failed dismiss) renders as a banner instead of a message
+           masquerading as an empty state on top of a populated list. -->
       <div
-        v-else-if="error"
+        v-else-if="error && notifications.length === 0"
         class="notif__empty notif__empty--error"
         role="alert"
       >
         {{ error }}
       </div>
       <div
+        v-if="error && notifications.length > 0"
+        class="alert alert--error notif__error"
+        role="alert"
+      >
+        {{ error }}
+      </div>
+      <NotificationDrawerItem
         v-for="notification in previewNotifications"
         :key="notification.id"
-        class="notif__item"
-        :class="{ 'is-unread': !notification.isRead }"
-      >
-        <span
-          class="notif__ico"
-          :class="`notif__ico--${notification.tone ?? 'info'}`"
-        >
-          <AppIcon
-            :name="resolveNotificationIcon(notification.type)"
-            :size="16"
-          />
-        </span>
-        <!-- The mark-as-read control, not the dismiss button below: role and
-             the click/keydown handlers live here (not on .notif__item) so the
-             dismiss button is this element's sibling rather than a button
-             nested inside a role="button" ancestor, which assistive tech
-             collapses into a single unlabelled control. -->
-        <div
-          class="notif__body"
-          :tabindex="notification.isRead ? undefined : 0"
-          :role="notification.isRead ? undefined : 'button'"
-          @click="handleItemClick(notification)"
-          @keydown.enter="handleItemClick(notification)"
-          @keydown.space.prevent="handleItemClick(notification)"
-        >
-          <p class="notif__title">
-            {{ resolveNotificationText(notification) }}
-          </p>
-          <span class="notif__time">{{
-            formatNotificationTime(notification.createdAt)
-          }}</span>
-        </div>
-        <span class="notif__dot" />
-        <button
-          type="button"
-          class="notif__dismiss"
-          :aria-label="`Dismiss notification: ${resolveNotificationText(notification)}`"
-          :disabled="dismissingIds.has(notification.id)"
-          @click="handleDismiss(notification)"
-        >
-          <AppIcon name="x" :size="14" />
-        </button>
-      </div>
+        :notification="notification"
+        :dismissing="dismissingIds.has(notification.id)"
+        @activate="handleItemClick"
+        @dismiss="handleDismiss"
+      />
     </div>
     <NuxtLink class="notif__foot" to="/activity">
       View all activity
@@ -78,12 +51,8 @@
 
 <script setup lang="ts">
 // Vue APIs are Nuxt auto-imports (accessed as globals so tests can substitute
-// them via vi.stubGlobal). Utility functions are imported explicitly.
-import {
-  resolveNotificationIcon,
-  formatNotificationTime,
-  resolveNotificationText,
-} from "~/utils/notificationDisplay";
+// them via vi.stubGlobal). Components/composables are imported explicitly.
+import NotificationDrawerItem from "~/components/NotificationDrawerItem.vue";
 import type { AppNotification } from "~/composables/useNotifications";
 
 const props = defineProps<{ open: boolean }>();

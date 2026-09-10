@@ -1118,6 +1118,9 @@ textarea.field__input {
   max-height: 380px;
   overflow-y: auto;
 }
+.notif__error {
+  margin: 10px 16px 0;
+}
 .notif__item {
   display: flex;
   align-items: flex-start;

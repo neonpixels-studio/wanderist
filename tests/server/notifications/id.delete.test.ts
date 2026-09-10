@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { installNitroGlobals, makeDeleteChain } from "./_helpers";
+import {
+  installNitroGlobals,
+  makeDeleteChain,
+  describeEqCondition,
+} from "./_helpers";
 
 installNitroGlobals();
 
@@ -47,6 +51,14 @@ describe("DELETE /api/notifications/:id", () => {
     expect(deleteChain.delete).toHaveBeenCalledTimes(1);
     expect(deleteChain.delete).toHaveBeenCalledWith(notifications);
     expect(deleteChain.where).toHaveBeenCalledTimes(1);
+    // Not just "where was called" — a handler that filtered on the wrong
+    // column (e.g. userId instead of id) would still pass every assertion
+    // above and delete the wrong row(s). eq() is real here (not mocked), so
+    // this decodes the actual condition passed to .where().
+    expect(describeEqCondition(deleteChain.where.mock.calls[0][0])).toEqual([
+      "notifications.id",
+      'literal:"notif-1"',
+    ]);
   });
 
   it("checks ownership scoped to the route id before issuing the delete", async () => {

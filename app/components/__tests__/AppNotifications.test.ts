@@ -141,6 +141,19 @@ describe("AppNotifications", () => {
     expect(mockMarkRead).toHaveBeenCalledWith("n-1");
   });
 
+  it("calls composable markRead when clicking elsewhere on an unread row (e.g. the icon), not just the body text", async () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const unreadIcon = wrapper
+      .findAll(".notif__item.is-unread")[0]
+      ?.find(".notif__ico");
+    await unreadIcon?.trigger("click");
+    expect(mockMarkRead).toHaveBeenCalledTimes(1);
+    expect(mockMarkRead).toHaveBeenCalledWith("n-1");
+  });
+
   it("does not call composable markRead when an already-read notification's body is clicked", async () => {
     const wrapper = mount(AppNotifications, {
       props: { open: true },
@@ -261,7 +274,7 @@ describe("AppNotifications", () => {
     expect(wrapper.find(".notif__list").text()).toContain("Loading");
   });
 
-  it("renders the error state when error is set", () => {
+  it("renders the full-page error state when error is set and no notifications have loaded", () => {
     notificationsRef.value = [];
     errorRef.value = "Could not load notifications";
 
@@ -273,6 +286,21 @@ describe("AppNotifications", () => {
     expect(wrapper.find('[role="alert"]').text()).toContain(
       "Could not load notifications",
     );
+    expect(wrapper.findAll(".notif__item")).toHaveLength(0);
+  });
+
+  it("shows an error banner without hiding an already-loaded list (e.g. a failed dismiss)", () => {
+    errorRef.value = "Could not dismiss notification";
+
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+    expect(wrapper.find('[role="alert"]').text()).toContain(
+      "Could not dismiss notification",
+    );
+    expect(wrapper.findAll(".notif__item")).toHaveLength(3);
   });
 
   it("renders a dismiss button on every notification item", () => {

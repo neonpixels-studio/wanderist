@@ -259,8 +259,13 @@ describe("useNotifications", () => {
       })
       .mockRejectedValueOnce(new Error("Server error"));
 
-    const { notifications, error, fetchNotifications, dismissNotification } =
-      useNotifications();
+    const {
+      notifications,
+      error,
+      dismissingIds,
+      fetchNotifications,
+      dismissNotification,
+    } = useNotifications();
     await fetchNotifications();
 
     await expect(dismissNotification("n-1")).resolves.toBeUndefined();
@@ -269,6 +274,10 @@ describe("useNotifications", () => {
     expect(notifications.value.map((notification) => notification.id)).toEqual([
       "n-1",
     ]);
+    // The `finally` cleanup must run even on failure, or the row's dismiss
+    // button would stay disabled forever after one failed attempt with no
+    // way to retry.
+    expect(dismissingIds.value.has("n-1")).toBe(false);
   });
 
   it("dismissNotification guards against overlapping calls for the same id (e.g. a double-click)", async () => {

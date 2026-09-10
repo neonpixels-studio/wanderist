@@ -233,6 +233,18 @@ export function useNotifications() {
     );
   }
 
+  // A 404 means the row is already gone — dismissed from another tab/device,
+  // or the losing side of a double-dismiss race. The caller wanted this row
+  // gone and it is, so that's treated as success rather than a surfaced
+  // error; anything else is a genuine failure.
+  function handleDismissError(id: string, dismissError: unknown): void {
+    if (isNotFoundError(dismissError)) {
+      removeDismissedNotification(id);
+      return;
+    }
+    error.value = extractErrorMessage(dismissError);
+  }
+
   // Hard-deletes the notification server-side and drops it from the shared
   // list so the drawer and /activity page reflect the dismissal immediately,
   // without a refetch. Guarded by dismissingIds so a double-click (or the
@@ -250,14 +262,7 @@ export function useNotifications() {
       await apiFetch(`/api/notifications/${id}`, { method: "DELETE" });
       removeDismissedNotification(id);
     } catch (dismissError: unknown) {
-      if (isNotFoundError(dismissError)) {
-        // Already gone — dismissed from another tab/device, or the losing
-        // side of a double-dismiss race. The caller wanted this row gone and
-        // it is, so this is success, not an error to surface.
-        removeDismissedNotification(id);
-      } else {
-        error.value = extractErrorMessage(dismissError);
-      }
+      handleDismissError(id, dismissError);
     } finally {
       dismissingIds.value.delete(id);
     }
