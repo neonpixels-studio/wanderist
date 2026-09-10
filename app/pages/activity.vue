@@ -6,8 +6,12 @@
       Loading activity…
     </div>
 
+    <!-- Only the initial-load case (no notifications loaded at all) replaces
+         the whole view with the error state. Once a list is showing, a later
+         error (e.g. a failed dismiss) renders as a banner above it instead —
+         otherwise one failed dismiss would wipe out an already-loaded list. -->
     <div
-      v-else-if="error"
+      v-else-if="error && notifications.length === 0"
       class="activity__state activity__state--error"
       role="alert"
     >
@@ -15,55 +19,29 @@
     </div>
 
     <template v-else>
+      <div v-if="error" class="alert alert--error activity__error" role="alert">
+        {{ error }}
+      </div>
+
       <div v-if="notifications.length === 0" class="activity__state">
         No activity yet.
       </div>
 
       <div v-else class="activity__list">
-        <div
+        <ActivityNotificationItem
           v-for="notification in notifications"
           :key="notification.id"
-          class="activity__item"
-          :class="{ 'is-unread': !notification.isRead }"
-        >
-          <span
-            class="activity__ico"
-            :class="`activity__ico--${notification.tone ?? 'info'}`"
-          >
-            <AppIcon
-              :name="resolveNotificationIcon(notification.type)"
-              :size="16"
-            />
-          </span>
-          <div class="activity__body">
-            <p class="activity__text">
-              {{ resolveNotificationText(notification) }}
-            </p>
-            <span class="activity__time">{{
-              formatNotificationTime(notification.createdAt)
-            }}</span>
-          </div>
-          <span v-if="!notification.isRead" class="activity__dot" />
-          <button
-            type="button"
-            class="activity__dismiss"
-            aria-label="Dismiss notification"
-            @click="handleDismiss(notification.id)"
-          >
-            <AppIcon name="x" :size="14" />
-          </button>
-        </div>
+          :notification="notification"
+          :dismissing="dismissingIds.has(notification.id)"
+          @dismiss="handleDismiss"
+        />
       </div>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import {
-  resolveNotificationIcon,
-  formatNotificationTime,
-  resolveNotificationText,
-} from "~/utils/notificationDisplay";
+import ActivityNotificationItem from "~/components/ActivityNotificationItem.vue";
 
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Activity" });
@@ -74,6 +52,7 @@ const {
   notifications,
   isLoading,
   error,
+  dismissingIds,
   fetchAllNotifications,
   dismissNotification,
 } = useNotifications();
@@ -110,98 +89,7 @@ async function handleDismiss(id: string): Promise<void> {
   overflow: hidden;
 }
 
-.activity__item {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
-  transition: background 0.12s;
-}
-
-.activity__item:last-child {
-  border-bottom: none;
-}
-
-.activity__item.is-unread {
-  background: var(--accent-weak);
-}
-
-.activity__ico {
-  width: 36px;
-  height: 36px;
-  border-radius: 9px;
-  display: grid;
-  place-items: center;
-  flex: none;
-  background: var(--surface-2);
-  color: var(--muted);
-}
-
-.activity__ico--accent {
-  background: var(--accent-weak);
-  color: var(--accent-ink);
-}
-
-.activity__ico--info {
-  background: color-mix(in srgb, var(--info, #3b82f6) 12%, transparent);
-  color: var(--info, #3b82f6);
-}
-
-.activity__ico--success {
-  background: color-mix(in srgb, var(--success-ink, #16a34a) 12%, transparent);
-  color: var(--success-ink, #16a34a);
-}
-
-.activity__ico--warning {
-  background: color-mix(in srgb, var(--warning, #f59e0b) 12%, transparent);
-  color: var(--warning, #f59e0b);
-}
-
-.activity__body {
-  flex: 1;
-  min-width: 0;
-}
-
-.activity__text {
-  font-size: 13.5px;
-  line-height: 1.4;
-  margin: 0;
-}
-
-.activity__time {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 2px;
-  display: block;
-}
-
-.activity__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  flex: none;
-}
-
-.activity__dismiss {
-  width: 26px;
-  height: 26px;
-  flex: none;
-  display: grid;
-  place-items: center;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: none;
-  color: var(--muted);
-  transition:
-    background 0.12s,
-    color 0.12s;
-}
-
-.activity__dismiss:hover {
-  background: var(--surface-2);
-  color: var(--ink);
+.activity__error {
+  margin-bottom: 14px;
 }
 </style>

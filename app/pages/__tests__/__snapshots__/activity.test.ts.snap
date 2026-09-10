@@ -3,17 +3,18 @@
 exports[`Activity page (/activity) > renders without crashing and matches snapshot 1`] = `
 "<div data-v-570ac06b="" class="content content--wide">
   <header data-v-570ac06b="" class="topbar"></header>
+  <!--v-if-->
   <div data-v-570ac06b="" class="activity__list">
-    <div data-v-570ac06b="" class="activity__item is-unread"><span data-v-570ac06b="" class="activity__ico activity__ico--accent"><svg data-v-570ac06b="" data-icon="" name="users" size="16"></svg></span>
-      <div data-v-570ac06b="" class="activity__body">
-        <p data-v-570ac06b="" class="activity__text">Someone started following you</p><span data-v-570ac06b="" class="activity__time">2h</span>
-      </div><span data-v-570ac06b="" class="activity__dot"></span><button data-v-570ac06b="" type="button" class="activity__dismiss" aria-label="Dismiss notification"><svg data-v-570ac06b="" data-icon="" name="x" size="14"></svg></button>
+    <div data-v-4a109b0f="" data-v-570ac06b="" class="activity__item is-unread"><span data-v-4a109b0f="" class="activity__ico activity__ico--accent"><svg data-v-4a109b0f="" data-icon="" name="users" size="16"></svg></span>
+      <div data-v-4a109b0f="" class="activity__body">
+        <p data-v-4a109b0f="" class="activity__text">Someone started following you</p><span data-v-4a109b0f="" class="activity__time">2h</span>
+      </div><span data-v-4a109b0f="" class="activity__dot"></span><button data-v-4a109b0f="" type="button" class="activity__dismiss" aria-label="Dismiss notification"><svg data-v-4a109b0f="" data-icon="" name="x" size="14"></svg></button>
     </div>
-    <div data-v-570ac06b="" class="activity__item"><span data-v-570ac06b="" class="activity__ico activity__ico--accent"><svg data-v-570ac06b="" data-icon="" name="heart" size="16"></svg></span>
-      <div data-v-570ac06b="" class="activity__body">
-        <p data-v-570ac06b="" class="activity__text">Someone liked your entry</p><span data-v-570ac06b="" class="activity__time">5h</span>
+    <div data-v-4a109b0f="" data-v-570ac06b="" class="activity__item"><span data-v-4a109b0f="" class="activity__ico activity__ico--accent"><svg data-v-4a109b0f="" data-icon="" name="heart" size="16"></svg></span>
+      <div data-v-4a109b0f="" class="activity__body">
+        <p data-v-4a109b0f="" class="activity__text">Someone liked your entry</p><span data-v-4a109b0f="" class="activity__time">5h</span>
       </div>
-      <!--v-if--><button data-v-570ac06b="" type="button" class="activity__dismiss" aria-label="Dismiss notification"><svg data-v-570ac06b="" data-icon="" name="x" size="14"></svg></button>
+      <!--v-if--><button data-v-4a109b0f="" type="button" class="activity__dismiss" aria-label="Dismiss notification"><svg data-v-4a109b0f="" data-icon="" name="x" size="14"></svg></button>
     </div>
   </div>
 </div>"

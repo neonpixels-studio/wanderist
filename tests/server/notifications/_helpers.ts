@@ -140,5 +140,5 @@ export function makeUpdateChain() {
 export function makeDeleteChain() {
   const where = vi.fn().mockResolvedValue(undefined);
   const del = vi.fn().mockReturnValue({ where });
-  return { delete: del };
+  return { delete: del, where };
 }

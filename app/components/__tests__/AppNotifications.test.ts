@@ -10,6 +10,7 @@ import type { AppNotification } from "~/composables/useNotifications";
 const notificationsRef = ref<AppNotification[]>([]);
 const isLoadingRef = ref(false);
 const errorRef = ref<string | null>(null);
+const dismissingIdsRef = ref<Set<string>>(new Set());
 const mockMarkAllRead = vi.fn();
 const mockMarkRead = vi.fn();
 const mockDismissNotification = vi.fn();
@@ -19,6 +20,7 @@ vi.stubGlobal("useNotifications", () => ({
   notifications: notificationsRef,
   isLoading: isLoadingRef,
   error: errorRef,
+  dismissingIds: dismissingIdsRef,
   unreadCount: 0,
   fetchNotifications: mockFetchNotifications,
   markAllRead: mockMarkAllRead,
@@ -81,6 +83,7 @@ describe("AppNotifications", () => {
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
+    dismissingIdsRef.value = new Set();
   });
 
   it("renders nothing when closed", () => {
@@ -280,5 +283,28 @@ describe("AppNotifications", () => {
     const dismissButton = wrapper.findAll(".notif__dismiss")[0];
     await dismissButton?.trigger("click");
     expect(mockMarkRead).not.toHaveBeenCalled();
+  });
+
+  it("does not call composable markRead when Enter or Space is pressed on the dismiss button of an unread item", async () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const dismissButton = wrapper.findAll(".notif__dismiss")[0];
+    await dismissButton?.trigger("keydown.enter");
+    await dismissButton?.trigger("keydown.space");
+    expect(mockMarkRead).not.toHaveBeenCalled();
+  });
+
+  it("disables the dismiss button while that notification's dismissal is in flight", () => {
+    dismissingIdsRef.value = new Set(["n-1"]);
+
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const dismissButtons = wrapper.findAll(".notif__dismiss");
+    expect(dismissButtons[0]?.attributes("disabled")).toBeDefined();
+    expect(dismissButtons[1]?.attributes("disabled")).toBeUndefined();
   });
 });

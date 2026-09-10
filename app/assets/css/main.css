@@ -1202,19 +1202,33 @@ textarea.field__input {
   border-radius: var(--radius-sm);
   background: none;
   color: var(--faint);
-  opacity: 0;
   transition:
     opacity 0.12s,
     background 0.12s,
     color 0.12s;
 }
-.notif__item:hover .notif__dismiss,
+/* Hidden-until-hover only applies on devices that actually have hover (mouse/
+   trackpad) — on touch devices `:hover` never fires, which would otherwise
+   leave a permanently-invisible-but-still-tappable delete target at the edge
+   of every row. Touch users always see the button. */
+@media (hover: hover) {
+  .notif__dismiss {
+    opacity: 0;
+  }
+  .notif__item:hover .notif__dismiss {
+    opacity: 1;
+  }
+}
 .notif__dismiss:focus-visible {
   opacity: 1;
 }
 .notif__dismiss:hover {
   background: var(--surface-2);
   color: var(--ink-2);
+}
+.notif__dismiss:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .notif__dismiss .ico {
   width: 14px;

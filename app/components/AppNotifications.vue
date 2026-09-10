@@ -30,8 +30,8 @@
         :tabindex="notification.isRead ? undefined : 0"
         :role="notification.isRead ? undefined : 'button'"
         @click="handleItemClick(notification)"
-        @keydown.enter="handleItemClick(notification)"
-        @keydown.space.prevent="handleItemClick(notification)"
+        @keydown.enter.self="handleItemClick(notification)"
+        @keydown.space.self.prevent="handleItemClick(notification)"
       >
         <span
           class="notif__ico"
@@ -51,10 +51,14 @@
           }}</span>
         </div>
         <span class="notif__dot" />
+        <!-- .stop keeps the click from also bubbling to the item's own
+             @click (mark-as-read); the item's @keydown.enter/space.self
+             guards the equivalent keyboard path. -->
         <button
           type="button"
           class="notif__dismiss"
           aria-label="Dismiss notification"
+          :disabled="dismissingIds.has(notification.id)"
           @click.stop="handleDismiss(notification)"
         >
           <AppIcon name="x" :size="14" />
@@ -85,6 +89,7 @@ const {
   notifications,
   isLoading,
   error,
+  dismissingIds,
   fetchNotifications,
   markAllRead,
   markRead,
@@ -124,8 +129,6 @@ async function handleItemClick(notification: AppNotification): Promise<void> {
   await markRead(notification.id);
 }
 
-// @click.stop on the dismiss button keeps this from also triggering
-// handleItemClick's mark-as-read behavior on the parent item.
 async function handleDismiss(notification: AppNotification): Promise<void> {
   await dismissNotification(notification.id);
 }

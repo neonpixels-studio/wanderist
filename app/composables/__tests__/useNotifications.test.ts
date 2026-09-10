@@ -271,6 +271,45 @@ describe("useNotifications", () => {
     ]);
   });
 
+  it("dismissNotification guards against overlapping calls for the same id (e.g. a double-click)", async () => {
+    mockApiFetch.mockResolvedValueOnce({
+      notifications: [makeSample("n-1")],
+      page: 1,
+      hasMore: false,
+    });
+    const {
+      notifications,
+      fetchNotifications,
+      dismissNotification,
+      dismissingIds,
+    } = useNotifications();
+    await fetchNotifications();
+
+    let resolveDelete: (value: unknown) => void = () => {};
+    mockApiFetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveDelete = resolve;
+        }),
+    );
+
+    const firstCall = dismissNotification("n-1");
+    expect(dismissingIds.value.has("n-1")).toBe(true);
+
+    // Fires while the first DELETE is still in flight — must be a no-op, not
+    // a second DELETE that would 404 against the row the first call already
+    // removed.
+    const secondCall = dismissNotification("n-1");
+
+    resolveDelete({ success: true });
+    await Promise.all([firstCall, secondCall]);
+
+    // 1 call for fetchNotifications' page fetch + 1 for the single DELETE.
+    expect(mockApiFetch).toHaveBeenCalledTimes(2);
+    expect(notifications.value).toEqual([]);
+    expect(dismissingIds.value.has("n-1")).toBe(false);
+  });
+
   it("isLoading is false initially", () => {
     const { isLoading } = useNotifications();
     expect(isLoading.value).toBe(false);

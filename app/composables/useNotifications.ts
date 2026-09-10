@@ -27,6 +27,7 @@ interface NotificationsResponse {
 }
 
 const NOTIFICATIONS_STATE_KEY = "notifications:list";
+const NOTIFICATIONS_DISMISSING_STATE_KEY = "notifications:dismissing";
 
 const FIRST_PAGE = 1;
 
@@ -94,6 +95,13 @@ export function useNotifications() {
   const notifications = useState<AppNotification[]>(
     NOTIFICATIONS_STATE_KEY,
     () => [],
+  );
+  // Shared (not per-component) so the drawer and /activity page — which can
+  // both render the same notification — agree on which ids have a DELETE in
+  // flight, matching the shared `notifications` list above.
+  const dismissingIds = useState<Set<string>>(
+    NOTIFICATIONS_DISMISSING_STATE_KEY,
+    () => new Set(),
   );
   const isLoading = ref(false);
   const error = ref<string | null>(null);
@@ -199,8 +207,16 @@ export function useNotifications() {
 
   // Hard-deletes the notification server-side and drops it from the shared
   // list so the drawer and /activity page reflect the dismissal immediately,
-  // without a refetch.
+  // without a refetch. Guarded by dismissingIds so a double-click (or the
+  // same id dismissed from both the drawer and /activity at once) sends only
+  // one DELETE rather than racing a second request that would 404 against an
+  // already-removed row.
   async function dismissNotification(id: string): Promise<void> {
+    if (dismissingIds.value.has(id)) {
+      return;
+    }
+
+    dismissingIds.value.add(id);
     error.value = null;
     try {
       await apiFetch(`/api/notifications/${id}`, { method: "DELETE" });
@@ -209,6 +225,8 @@ export function useNotifications() {
       );
     } catch (dismissError: unknown) {
       error.value = extractErrorMessage(dismissError);
+    } finally {
+      dismissingIds.value.delete(id);
     }
   }
 
@@ -217,6 +235,7 @@ export function useNotifications() {
     isLoading: readonly(isLoading),
     error: readonly(error),
     unreadCount,
+    dismissingIds: readonly(dismissingIds),
     fetchNotifications,
     fetchAllNotifications,
     markAllRead,

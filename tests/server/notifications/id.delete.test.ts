@@ -17,6 +17,7 @@ import {
   assertOwnership,
 } from "../../../server/utils/db-helpers";
 import { getDb } from "../../../server/db/index";
+import { notifications } from "../../../server/db/schema";
 
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
 const mockAssertOwnership = vi.mocked(assertOwnership);
@@ -44,9 +45,11 @@ describe("DELETE /api/notifications/:id", () => {
 
     expect(result).toEqual({ success: true });
     expect(deleteChain.delete).toHaveBeenCalledTimes(1);
+    expect(deleteChain.delete).toHaveBeenCalledWith(notifications);
+    expect(deleteChain.where).toHaveBeenCalledTimes(1);
   });
 
-  it("calls assertOwnership before deleting", async () => {
+  it("checks ownership scoped to the route id before issuing the delete", async () => {
     mockRequireRouterParam.mockReturnValue("notif-1");
     mockAssertOwnership.mockResolvedValue(undefined);
 
@@ -58,7 +61,19 @@ describe("DELETE /api/notifications/:id", () => {
     await callHandler();
 
     expect(mockAssertOwnership).toHaveBeenCalledTimes(1);
-    expect(deleteChain.delete).toHaveBeenCalledTimes(1);
+    expect(mockAssertOwnership).toHaveBeenCalledWith(
+      expect.anything(),
+      notifications,
+      notifications.id,
+      notifications.userId,
+      "notif-1",
+    );
+    // Not just "both were called" — assertOwnership's resolution must
+    // actually precede the delete, since that ordering is the entire
+    // ownership guarantee this endpoint exists to enforce.
+    expect(mockAssertOwnership.mock.invocationCallOrder[0]).toBeLessThan(
+      deleteChain.delete.mock.invocationCallOrder[0],
+    );
   });
 
   it("throws 400 when id param is missing", async () => {
@@ -71,23 +86,37 @@ describe("DELETE /api/notifications/:id", () => {
     });
 
     await expect(callHandler()).rejects.toMatchObject({ statusCode: 400 });
+    expect(mockAssertOwnership).not.toHaveBeenCalled();
+    expect(mockGetDb).not.toHaveBeenCalled();
   });
 
-  it("throws 401 when the user is not authenticated", async () => {
+  it("throws 401 and never issues the delete when the user is not authenticated", async () => {
     mockRequireRouterParam.mockReturnValue("notif-1");
     mockAssertOwnership.mockImplementation(() => {
       throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
     });
 
+    const deleteChain = makeDeleteChain();
+    mockGetDb.mockReturnValue(
+      deleteChain as unknown as ReturnType<typeof getDb>,
+    );
+
     await expect(callHandler()).rejects.toMatchObject({ statusCode: 401 });
+    expect(deleteChain.delete).not.toHaveBeenCalled();
   });
 
-  it("throws 404 when the notification is not owned by the user", async () => {
+  it("throws 404 and never issues the delete when the notification is not owned by the user", async () => {
     mockRequireRouterParam.mockReturnValue("notif-1");
     mockAssertOwnership.mockImplementation(() => {
       throw createError({ statusCode: 404, statusMessage: "Not found" });
     });
 
+    const deleteChain = makeDeleteChain();
+    mockGetDb.mockReturnValue(
+      deleteChain as unknown as ReturnType<typeof getDb>,
+    );
+
     await expect(callHandler()).rejects.toMatchObject({ statusCode: 404 });
+    expect(deleteChain.delete).not.toHaveBeenCalled();
   });
 });
