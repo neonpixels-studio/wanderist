@@ -17,21 +17,31 @@ const { loadReadableGuide, loadReadableGuideWithAuthor } =
   await import("../../server/utils/guide-queries");
 
 type FakeDatabase = Parameters<typeof loadReadableGuide>[0];
+// `_limit` exposes the query-count spy so a test can assert a short-circuit
+// path (e.g. a visibility rejection) never reached a later query, not just
+// that it eventually threw.
+type FakeDatabaseWithSpy = FakeDatabase & { _limit: ReturnType<typeof vi.fn> };
 
 // Minimal stand-in for the query chains loadReadableGuide(WithAuthor) walks.
 // loadReadableGuide issues up to two queries — the guide lookup, then (for a
 // non-owner) the author's discoverability check. loadReadableGuideWithAuthor
 // adds a third, always-run author byline lookup. Each `.limit()` returns the
 // next queued response, shared by both describe blocks below.
-function fakeDbSequence(responses: Record<string, unknown>[][]): FakeDatabase {
+function fakeDbSequence(
+  responses: Record<string, unknown>[][],
+): FakeDatabaseWithSpy {
   let call = 0;
+  const limitMock = vi.fn(() => Promise.resolve(responses[call++] ?? []));
   const chain = {
     from: () => chain,
     innerJoin: () => chain,
     where: () => chain,
-    limit: () => Promise.resolve(responses[call++] ?? []),
+    limit: limitMock,
   };
-  return { select: () => chain } as unknown as FakeDatabase;
+  return {
+    select: () => chain,
+    _limit: limitMock,
+  } as unknown as FakeDatabaseWithSpy;
 }
 
 const OWNER_ID = "user-owner";
@@ -173,13 +183,15 @@ describe("loadReadableGuideWithAuthor", () => {
 
   it("still throws 404 for a private guide requested by a non-owner (visibility check runs first)", async () => {
     const guide = guideRow({ visibility: "private", userId: OWNER_ID });
+    const database = fakeDbSequence([[guide]]);
 
     await expect(
-      loadReadableGuideWithAuthor(
-        fakeDbSequence([[guide]]),
-        "guide-1",
-        OTHER_ID,
-      ),
+      loadReadableGuideWithAuthor(database, "guide-1", OTHER_ID),
     ).rejects.toEqual(expect.objectContaining({ statusCode: 404 }));
+    // Only the guide lookup ran — the visibility rejection short-circuits
+    // before the author byline lookup ever queries, so a single queued
+    // response ([[guide]], with none for a discoverability or author check)
+    // suffices and the rest of the queue stays untouched.
+    expect(database._limit).toHaveBeenCalledTimes(1);
   });
 });
