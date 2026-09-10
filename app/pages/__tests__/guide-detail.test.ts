@@ -79,6 +79,12 @@ const alertStub = {
   template: '<div class="alert-stub" :data-message="message" />',
 };
 
+// Shared by the auth-aware-refetch tests below, which each need to assert on
+// the call count of the store's spy without re-deriving the cast.
+function getFetchGuideByIdSpy(): ReturnType<typeof vi.fn> {
+  return useGuidesStore().fetchGuideById as unknown as ReturnType<typeof vi.fn>;
+}
+
 function buildGlobalConfig(pinia: ReturnType<typeof createPinia>) {
   return {
     global: {
@@ -283,10 +289,7 @@ describe("Guide Detail page (/guides/[id])", () => {
     // Start anonymous with Clerk still loading.
     clerkLoadedRef.value = false;
     clerkSignedInRef.value = false;
-    const guidesStore = useGuidesStore();
-    const fetchSpy = guidesStore.fetchGuideById as unknown as ReturnType<
-      typeof vi.fn
-    >;
+    const fetchSpy = getFetchGuideByIdSpy();
 
     mount(GuideDetailPage, buildGlobalConfig(pinia));
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -312,10 +315,7 @@ describe("Guide Detail page (/guides/[id])", () => {
     // must not cause a second call.
     clerkLoadedRef.value = true;
     clerkSignedInRef.value = true;
-    const guidesStore = useGuidesStore();
-    const fetchSpy = guidesStore.fetchGuideById as unknown as ReturnType<
-      typeof vi.fn
-    >;
+    const fetchSpy = getFetchGuideByIdSpy();
 
     mount(GuideDetailPage, buildGlobalConfig(pinia));
 
@@ -326,16 +326,24 @@ describe("Guide Detail page (/guides/[id])", () => {
     clerkLoadedRef.value = true;
     clerkSignedInRef.value = true;
     const guidesStore = useGuidesStore();
-    const fetchSpy = guidesStore.fetchGuideById as unknown as ReturnType<
-      typeof vi.fn
-    >;
+    const fetchSpy = getFetchGuideByIdSpy();
 
-    mount(GuideDetailPage, buildGlobalConfig(pinia));
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("Tokyo on foot");
 
+    // Simulate the sign-out retry actually 404ing on the now-private guide, the
+    // way the real store would, so this test proves the guide leaves the
+    // screen rather than only counting fetch calls.
+    fetchSpy.mockImplementationOnce(async () => {
+      guidesStore.currentGuide = null;
+      guidesStore.guideNotFound = true;
+    });
     clerkSignedInRef.value = false;
     await nextTick();
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(wrapper.text()).not.toContain("Tokyo on foot");
+    expect(wrapper.text()).toContain("Guide not found.");
   });
 });
