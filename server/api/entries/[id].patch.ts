@@ -5,7 +5,7 @@ import {
   optionalString,
   requireRouterParam,
 } from "../../utils/db-helpers";
-import { getDb } from "../../db/index";
+import { getDb, runBatch } from "../../db/index";
 import { entries, entryPhotos, entryTags } from "../../db/schema";
 import { deleteMediaIfUnreferenced } from "../../utils/coverImageCleanup";
 import { assertPhotoMediaOwned } from "../../utils/media-helpers";
@@ -307,12 +307,7 @@ async function applyEntryWrites(
     photoMediaIds,
   });
 
-  const batchResults =
-    statements.length > 0
-      ? ((await database.batch(
-          statements as [BatchItem<"pg">, ...BatchItem<"pg">[]],
-        )) as unknown[])
-      : [];
+  const batchResults = await runBatch(database, statements);
 
   const removedMediaIds =
     photoMediaIds !== undefined

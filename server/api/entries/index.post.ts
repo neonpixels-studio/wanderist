@@ -1,6 +1,6 @@
 import type { BatchItem } from "drizzle-orm/batch";
 import { ensureUser } from "../../utils/auth";
-import { getDb } from "../../db/index";
+import { getDb, runBatch } from "../../db/index";
 import { entries, entryPhotos, entryTags } from "../../db/schema";
 import { requireString, optionalString } from "../../utils/db-helpers";
 import { assertPhotoMediaOwned } from "../../utils/media-helpers";
@@ -66,9 +66,7 @@ async function insertEntryWithRelations(
     );
   }
 
-  const [insertedRows] = (await database.batch(
-    statements as [BatchItem<"pg">, ...BatchItem<"pg">[]],
-  )) as [Entry[]];
+  const [insertedRows] = (await runBatch(database, statements)) as [Entry[]];
 
   const insertedEntry = insertedRows[0];
   if (!insertedEntry) {

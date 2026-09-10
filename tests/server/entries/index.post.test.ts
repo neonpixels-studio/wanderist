@@ -14,6 +14,13 @@ vi.mock("../../../server/utils/auth", () => ({
 
 vi.mock("../../../server/db/index", () => ({
   getDb: vi.fn(),
+  // Mirrors the real runBatch (server/db/index.ts): empty-array short
+  // circuit, otherwise delegate to the test's mocked database.batch().
+  runBatch: (
+    database: { batch: (statements: unknown[]) => unknown },
+    statements: unknown[],
+  ) =>
+    statements.length === 0 ? Promise.resolve([]) : database.batch(statements),
 }));
 
 vi.mock("../../../server/utils/media-helpers", () => ({

@@ -1,6 +1,5 @@
 import { asc, eq, inArray } from "drizzle-orm";
-import type { BatchItem } from "drizzle-orm/batch";
-import { getDb } from "../db/index";
+import { getDb, runBatch } from "../db/index";
 import {
   entries,
   entryPhotos,
@@ -121,9 +120,9 @@ export async function upsertTags(
       .returning({ id: tags.id }),
   );
 
-  const results = (await database.batch(
-    statements as [BatchItem<"pg">, ...BatchItem<"pg">[]],
-  )) as { id: string }[][];
+  const results = (await runBatch(database, statements)) as {
+    id: string;
+  }[][];
 
   const idByName = new Map(
     lockOrderedNames.map((name, index) => [name, results[index][0].id]),

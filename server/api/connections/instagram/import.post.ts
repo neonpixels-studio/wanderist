@@ -26,9 +26,8 @@
  */
 
 import { eq, and, inArray } from "drizzle-orm";
-import type { BatchItem } from "drizzle-orm/batch";
 import { ensureUser } from "../../../utils/auth";
-import { getDb } from "../../../db/index";
+import { getDb, runBatch } from "../../../db/index";
 import {
   connectedAccounts,
   media,
@@ -341,7 +340,7 @@ async function persistImportedPhotoRows(
 
     const placeId = await resolveOrCreatePlace(database, userId, item);
 
-    await database.batch([
+    await runBatch(database, [
       database.insert(entries).values({
         id: entryId,
         userId,
@@ -357,7 +356,7 @@ async function persistImportedPhotoRows(
         mediaId: mediaInput.mediaId,
         sortOrder: 0,
       }),
-    ] as [BatchItem<"pg">, BatchItem<"pg">]);
+    ]);
   } catch (error) {
     // rollbackOrThrow always throws; `throw await` keeps that a compile-time
     // guarantee so `return { entryId }` is unreachable after a failure.

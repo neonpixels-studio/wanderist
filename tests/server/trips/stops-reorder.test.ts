@@ -82,6 +82,10 @@ vi.mock("../../../server/db/index", () => ({
     update: mockUpdate,
     batch: mockBatch,
   }),
+  // Mirrors the real runBatch (server/db/index.ts): empty-array short circuit,
+  // otherwise delegate to database.batch().
+  runBatch: (database: { batch: typeof mockBatch }, statements: unknown[]) =>
+    statements.length === 0 ? Promise.resolve([]) : database.batch(statements),
 }));
 
 vi.mock("drizzle-orm", async (importOriginal) => {
@@ -164,6 +168,22 @@ describe("PUT /api/trips/[id]/stops/reorder", () => {
     // non-atomic round trips.
     expect(mockBatch).toHaveBeenCalledTimes(1);
     expect(mockBatch.mock.calls[0][0]).toHaveLength(3);
+  });
+
+  it("acquires row locks in a fixed, sorted order regardless of the caller's stopIds order", async () => {
+    // Each UPDATE now holds its row lock for the life of the batch's one
+    // transaction, so two concurrent reorders of the same trip in different
+    // orders would deadlock unless every caller locks the same rows in the
+    // same order — see the comment in reorder.put.ts. The default body is
+    // stopIds: ["stop-c", "stop-a", "stop-b"], mapping to sortOrder 0/1/2
+    // respectively; if updates were issued in that caller-supplied order the
+    // .set() calls would arrive as [0, 1, 2]. Locking by sorted id instead
+    // ("stop-a", "stop-b", "stop-c") reorders the same values to [1, 2, 0].
+    await callHandler(handler, buildEvent());
+
+    expect(mockSet.mock.calls.map((call) => call[0].sortOrder)).toEqual([
+      1, 2, 0,
+    ]);
   });
 
   it("throws 400 when stopIds is not an array", async () => {

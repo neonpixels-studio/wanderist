@@ -1,6 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import type { BatchItem } from "drizzle-orm/batch";
-import { getDb } from "../../../../db/index";
+import { getDb, runBatch } from "../../../../db/index";
 import { tripStops } from "../../../../db/schema";
 import { requireTripId, loadOwnedTrip } from "../../../../utils/trip-helpers";
 
@@ -103,16 +102,26 @@ export default defineEventHandler(async (event) => {
   // ONE atomic database.batch() call, the neon-http driver's real BEGIN/COMMIT
   // unit (see server/db/index.ts), instead of the previous Promise.all of
   // independent HTTP calls where a mid-sequence failure could leave the trip's
-  // stops in a half-reordered state.
-  const updateStatements = stopIds.map((stopId, index) =>
+  // stops in a half-reordered state. Each UPDATE holds its row lock for the
+  // life of that one transaction (unlike the old Promise.all, where every
+  // update auto-committed and released its lock immediately), so two
+  // concurrent reorders of the same trip in different orders would deadlock if
+  // each locked rows in the caller's order. Locking in a fixed, sorted-by-id
+  // order (same fix as upsertTags in server/utils/entry-helpers.ts) makes any
+  // two callers acquire the same rows in the same order; sortOrder still comes
+  // from each stop's index in the caller's original list, so the result is
+  // unaffected — only lock acquisition order changes.
+  const sortOrderByStopId = new Map(
+    stopIds.map((stopId, index) => [stopId, index]),
+  );
+  const lockOrderedStopIds = [...stopIds].sort();
+  const updateStatements = lockOrderedStopIds.map((stopId) =>
     database
       .update(tripStops)
-      .set({ sortOrder: index })
+      .set({ sortOrder: sortOrderByStopId.get(stopId)! })
       .where(and(eq(tripStops.id, stopId), eq(tripStops.tripId, tripId))),
   );
-  await database.batch(
-    updateStatements as [BatchItem<"pg">, ...BatchItem<"pg">[]],
-  );
+  await runBatch(database, updateStatements);
 
   const reorderedStops = await database
     .select()

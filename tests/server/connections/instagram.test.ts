@@ -178,6 +178,13 @@ vi.mock("../../../server/utils/auth", () => ({
 
 vi.mock("../../../server/db/index", () => ({
   getDb: mockGetDb,
+  // Mirrors the real runBatch (server/db/index.ts): empty-array short
+  // circuit, otherwise delegate to the test's mocked database.batch().
+  runBatch: (
+    database: { batch: (statements: unknown[]) => unknown },
+    statements: unknown[],
+  ) =>
+    statements.length === 0 ? Promise.resolve([]) : database.batch(statements),
 }));
 
 vi.mock("../../../server/utils/instagramClient", () => ({
@@ -1263,6 +1270,68 @@ describe("POST /api/connections/instagram/import", () => {
     expect(mockDbDelete).toHaveBeenNthCalledWith(2, media);
     // Blobs are only written after the batch commits, so a failed import
     // never reaches the blob store.
+    expect(mockPutMediaBlob).not.toHaveBeenCalled();
+  });
+
+  it("rolls back defensively with id-scoped deletes when the standalone media insert fails", async () => {
+    // The media insert runs alone, first — before resolveOrCreatePlace and
+    // before the entries/entryPhotos batch — specifically so a concurrent
+    // import racing the same Instagram item loses here (see the comment on
+    // persistImportedPhotoRows). This is the only test that drives a failure
+    // through that standalone insert rather than through the later batch or
+    // the post-commit blob write.
+    mockFilterGeotaggedMedia.mockReturnValue([geotaggedPhoto]);
+    mockFetchInstagramImage.mockResolvedValue(Buffer.from("img"));
+    // The media insert is the first values() call in the flow and is no
+    // longer awaited via .returning(), so reject the values() call itself.
+    mockDbInsertValues.mockImplementationOnce(() =>
+      Promise.reject(new Error("duplicate key value")),
+    );
+    const importDb = makeImportDb();
+    mockGetDb.mockReturnValue(importDb);
+
+    const result = (await call(importHandler, makeEvent())) as {
+      imported: number;
+      errors: string[];
+    };
+
+    expect(result.imported).toBe(0);
+    expect(result.errors[0]).toContain("ig-media-thumb");
+    expect(result.errors[0]).not.toContain("leaked");
+    // resolveOrCreatePlace and the entries/entryPhotos batch never ran.
+    expect(mockDbBatch).not.toHaveBeenCalled();
+    expect(mockDbDelete).toHaveBeenNthCalledWith(1, entries);
+    expect(mockDbDelete).toHaveBeenNthCalledWith(2, media);
+    expect(mockPutMediaBlob).not.toHaveBeenCalled();
+  });
+
+  it("rolls back defensively with id-scoped deletes when resolveOrCreatePlace fails", async () => {
+    // The other in-guard path between the media insert and the batch: a place
+    // lookup/insert failure must roll back the media row that already
+    // committed, the same as any other failure in this sequence.
+    mockFilterGeotaggedMedia.mockReturnValue([geotaggedPhoto]);
+    mockFetchInstagramImage.mockResolvedValue(Buffer.from("img"));
+    // First .limit() call is the connection lookup (resolves the connected
+    // account); the second is resolveOrCreatePlace's existing-place select,
+    // which here rejects instead of resolving.
+    mockDbSelectLimit
+      .mockReset()
+      .mockResolvedValueOnce([CONNECTED_ACCOUNT_ROW])
+      .mockRejectedValueOnce(new Error("place lookup failed"));
+    const importDb = makeImportDb();
+    mockGetDb.mockReturnValue(importDb);
+
+    const result = (await call(importHandler, makeEvent())) as {
+      imported: number;
+      errors: string[];
+    };
+
+    expect(result.imported).toBe(0);
+    expect(result.errors[0]).toContain("ig-media-thumb");
+    expect(result.errors[0]).not.toContain("leaked");
+    expect(mockDbBatch).not.toHaveBeenCalled();
+    expect(mockDbDelete).toHaveBeenNthCalledWith(1, entries);
+    expect(mockDbDelete).toHaveBeenNthCalledWith(2, media);
     expect(mockPutMediaBlob).not.toHaveBeenCalled();
   });
 
