@@ -21,10 +21,13 @@ export interface Guide {
   createdAt: string;
   updatedAt: string;
   // Author byline fields. Only the single-guide read (GET /api/guides/:id,
-  // see loadReadableGuideWithAuthor) populates these — the list endpoint
-  // (GET /api/guides) is always the current user's own guides, where a
-  // byline would be redundant, so it omits them and callers should treat
-  // their absence as "not applicable here" rather than "anonymous".
+  // see loadReadableGuideWithAuthor) populates these as strings or explicit
+  // nulls — the list endpoint (GET /api/guides) is always the current user's
+  // own guides, where a byline would be redundant, so it omits the keys
+  // entirely. The detail page (guides/[id].vue) does not distinguish the two
+  // shapes: both "key omitted" and "key present but null" render the generic
+  // formatAuthorByline fallback, since in practice only fetchGuideById ever
+  // populates currentGuide from scratch and it always sends both keys.
   ownerDisplayName?: string | null;
   ownerHandle?: string | null;
 }

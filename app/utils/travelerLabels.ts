@@ -6,6 +6,11 @@
 // Fallback shown when a traveler has neither a display name nor a handle.
 export const DEFAULT_TRAVELER_NAME = "Wanderist traveler";
 
+// Fallback byline for content (a guide, ...) whose author has set neither a
+// handle nor a display name. Distinct from DEFAULT_TRAVELER_NAME — that's a
+// standalone name shown in place of one; this is a full "by ..." phrase.
+export const DEFAULT_AUTHOR_BYLINE = "by a traveler";
+
 /**
  * Normalises a handle for display, ensuring exactly one leading "@" and never
  * doubling it up. Returns an empty string for a null/empty handle so callers
@@ -36,5 +41,5 @@ export function formatAuthorByline(
   if (displayName) {
     return `by ${displayName}`;
   }
-  return "by a traveler";
+  return DEFAULT_AUTHOR_BYLINE;
 }

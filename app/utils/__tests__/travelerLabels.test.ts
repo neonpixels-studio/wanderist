@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  DEFAULT_AUTHOR_BYLINE,
   DEFAULT_TRAVELER_NAME,
   formatAuthorByline,
   formatHandle,
@@ -28,6 +29,12 @@ describe("formatHandle", () => {
 describe("DEFAULT_TRAVELER_NAME", () => {
   it("is the shared fallback label", () => {
     expect(DEFAULT_TRAVELER_NAME).toBe("Wanderist traveler");
+  });
+});
+
+describe("DEFAULT_AUTHOR_BYLINE", () => {
+  it("is the shared fallback byline", () => {
+    expect(DEFAULT_AUTHOR_BYLINE).toBe("by a traveler");
   });
 });
 
