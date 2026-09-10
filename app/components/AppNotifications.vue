@@ -27,11 +27,6 @@
         :key="notification.id"
         class="notif__item"
         :class="{ 'is-unread': !notification.isRead }"
-        :tabindex="notification.isRead ? undefined : 0"
-        :role="notification.isRead ? undefined : 'button'"
-        @click="handleItemClick(notification)"
-        @keydown.enter.self="handleItemClick(notification)"
-        @keydown.space.self.prevent="handleItemClick(notification)"
       >
         <span
           class="notif__ico"
@@ -42,7 +37,19 @@
             :size="16"
           />
         </span>
-        <div class="notif__body">
+        <!-- The mark-as-read control, not the dismiss button below: role and
+             the click/keydown handlers live here (not on .notif__item) so the
+             dismiss button is this element's sibling rather than a button
+             nested inside a role="button" ancestor, which assistive tech
+             collapses into a single unlabelled control. -->
+        <div
+          class="notif__body"
+          :tabindex="notification.isRead ? undefined : 0"
+          :role="notification.isRead ? undefined : 'button'"
+          @click="handleItemClick(notification)"
+          @keydown.enter="handleItemClick(notification)"
+          @keydown.space.prevent="handleItemClick(notification)"
+        >
           <p class="notif__title">
             {{ resolveNotificationText(notification) }}
           </p>
@@ -51,15 +58,12 @@
           }}</span>
         </div>
         <span class="notif__dot" />
-        <!-- .stop keeps the click from also bubbling to the item's own
-             @click (mark-as-read); the item's @keydown.enter/space.self
-             guards the equivalent keyboard path. -->
         <button
           type="button"
           class="notif__dismiss"
-          aria-label="Dismiss notification"
+          :aria-label="`Dismiss notification: ${resolveNotificationText(notification)}`"
           :disabled="dismissingIds.has(notification.id)"
-          @click.stop="handleDismiss(notification)"
+          @click="handleDismiss(notification)"
         >
           <AppIcon name="x" :size="14" />
         </button>

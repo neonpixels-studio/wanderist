@@ -310,6 +310,59 @@ describe("useNotifications", () => {
     expect(dismissingIds.value.has("n-1")).toBe(false);
   });
 
+  it("a dismiss that completes before an in-flight fetch resolves is not undone by that fetch's stale response", async () => {
+    let resolveGet: (value: unknown) => void = () => {};
+    mockApiFetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveGet = resolve;
+        }),
+    );
+
+    const { notifications, fetchNotifications, dismissNotification } =
+      useNotifications();
+
+    // Start a fetch but don't let it resolve yet — mirrors the drawer opening
+    // (fetchNotifications) or /activity mounting (fetchAllNotifications)
+    // while the user is already looking at a previously-loaded list.
+    const fetchCall = fetchNotifications();
+
+    // The DELETE for n-1 resolves before that GET does.
+    mockApiFetch.mockResolvedValueOnce({ success: true });
+    await dismissNotification("n-1");
+
+    // The in-flight GET now resolves with a response captured before the
+    // delete — it still contains n-1. Applying it as-is would resurrect the
+    // row the user just removed.
+    resolveGet({
+      notifications: [makeSample("n-1")],
+      page: 1,
+      hasMore: false,
+    });
+    await fetchCall;
+
+    expect(notifications.value.map((notification) => notification.id)).toEqual(
+      [],
+    );
+  });
+
+  it("dismissNotification treats a 404 (already gone) as success, removing the row without setting error", async () => {
+    mockApiFetch.mockResolvedValueOnce({
+      notifications: [makeSample("n-1")],
+      page: 1,
+      hasMore: false,
+    });
+    const { notifications, error, fetchNotifications, dismissNotification } =
+      useNotifications();
+    await fetchNotifications();
+
+    mockApiFetch.mockRejectedValueOnce({ statusCode: 404 });
+    await dismissNotification("n-1");
+
+    expect(notifications.value).toEqual([]);
+    expect(error.value).toBeNull();
+  });
+
   it("isLoading is false initially", () => {
     const { isLoading } = useNotifications();
     expect(isLoading.value).toBe(false);

@@ -1222,11 +1222,16 @@ textarea.field__input {
 .notif__dismiss:focus-visible {
   opacity: 1;
 }
-.notif__dismiss:hover {
+.notif__dismiss:not(:disabled):hover {
   background: var(--surface-2);
   color: var(--ink-2);
 }
-.notif__dismiss:disabled {
+/* Selector specificity matches `.notif__item:hover .notif__dismiss` above (two
+   classes + one pseudo-class each) and is declared after it, so a disabled
+   button stays dimmed even while the row it belongs to is hovered — otherwise
+   the hover-visibility rule's opacity: 1 would win and an in-flight dismiss
+   would render as if it were still fully interactive. */
+.notif__item .notif__dismiss:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }

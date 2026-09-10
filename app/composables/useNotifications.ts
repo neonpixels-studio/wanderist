@@ -1,5 +1,6 @@
 import { useApiClient } from "~/composables/useApiClient";
 import { extractErrorMessage } from "~/utils/extractErrorMessage";
+import { isNotFoundError } from "~/utils/isNotFoundError";
 
 export interface AppNotificationActor {
   id: string;
@@ -28,6 +29,7 @@ interface NotificationsResponse {
 
 const NOTIFICATIONS_STATE_KEY = "notifications:list";
 const NOTIFICATIONS_DISMISSING_STATE_KEY = "notifications:dismissing";
+const NOTIFICATIONS_DISMISSED_STATE_KEY = "notifications:dismissed";
 
 const FIRST_PAGE = 1;
 
@@ -103,6 +105,15 @@ export function useNotifications() {
     NOTIFICATIONS_DISMISSING_STATE_KEY,
     () => new Set(),
   );
+  // Every id ever successfully dismissed in this session (shared, for the same
+  // reason as dismissingIds above). A GET already in flight when a dismiss
+  // completes resolves with a response captured before the delete — without
+  // this, applying that stale response would resurrect the just-removed row.
+  // Every fetch path filters its result through this set before committing it.
+  const dismissedIds = useState<Set<string>>(
+    NOTIFICATIONS_DISMISSED_STATE_KEY,
+    () => new Set(),
+  );
   const isLoading = ref(false);
   const error = ref<string | null>(null);
 
@@ -155,7 +166,13 @@ export function useNotifications() {
     isLoading.value = true;
     error.value = null;
     try {
-      notifications.value = await load();
+      const loaded = await load();
+      // Drop anything dismissed since this fetch started: a GET already in
+      // flight when a dismiss completes carries a response captured before
+      // the delete, and applying it as-is would resurrect the removed row.
+      notifications.value = loaded.filter(
+        (notification) => !dismissedIds.value.has(notification.id),
+      );
     } catch (fetchError: unknown) {
       error.value = extractErrorMessage(fetchError);
     } finally {
@@ -205,6 +222,17 @@ export function useNotifications() {
     }
   }
 
+  // Records `id` as dismissed and drops it from the visible list. Shared by
+  // the success path and the "already gone" 404 path below, since both reach
+  // the same end state: the row is gone and must stay gone through any fetch
+  // still in flight.
+  function removeDismissedNotification(id: string): void {
+    dismissedIds.value.add(id);
+    notifications.value = notifications.value.filter(
+      (notification) => notification.id !== id,
+    );
+  }
+
   // Hard-deletes the notification server-side and drops it from the shared
   // list so the drawer and /activity page reflect the dismissal immediately,
   // without a refetch. Guarded by dismissingIds so a double-click (or the
@@ -220,11 +248,16 @@ export function useNotifications() {
     error.value = null;
     try {
       await apiFetch(`/api/notifications/${id}`, { method: "DELETE" });
-      notifications.value = notifications.value.filter(
-        (notification) => notification.id !== id,
-      );
+      removeDismissedNotification(id);
     } catch (dismissError: unknown) {
-      error.value = extractErrorMessage(dismissError);
+      if (isNotFoundError(dismissError)) {
+        // Already gone — dismissed from another tab/device, or the losing
+        // side of a double-dismiss race. The caller wanted this row gone and
+        // it is, so this is success, not an error to surface.
+        removeDismissedNotification(id);
+      } else {
+        error.value = extractErrorMessage(dismissError);
+      }
     } finally {
       dismissingIds.value.delete(id);
     }

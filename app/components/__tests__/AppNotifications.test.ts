@@ -128,18 +128,20 @@ describe("AppNotifications", () => {
     expect(mockMarkAllRead).toHaveBeenCalledTimes(1);
   });
 
-  it("calls composable markRead when an unread notification item is clicked", async () => {
+  it("calls composable markRead when an unread notification's body is clicked", async () => {
     const wrapper = mount(AppNotifications, {
       props: { open: true },
       ...globalConfig,
     });
-    const unreadItem = wrapper.findAll(".notif__item.is-unread")[0];
-    await unreadItem?.trigger("click");
+    const unreadBody = wrapper
+      .findAll(".notif__item.is-unread")[0]
+      ?.find(".notif__body");
+    await unreadBody?.trigger("click");
     expect(mockMarkRead).toHaveBeenCalledTimes(1);
     expect(mockMarkRead).toHaveBeenCalledWith("n-1");
   });
 
-  it("does not call composable markRead when an already-read notification item is clicked", async () => {
+  it("does not call composable markRead when an already-read notification's body is clicked", async () => {
     const wrapper = mount(AppNotifications, {
       props: { open: true },
       ...globalConfig,
@@ -147,35 +149,52 @@ describe("AppNotifications", () => {
     const readItem = wrapper
       .findAll(".notif__item")
       .find((item) => !item.classes("is-unread"));
-    await readItem?.trigger("click");
+    await readItem?.find(".notif__body").trigger("click");
     expect(mockMarkRead).not.toHaveBeenCalled();
   });
 
-  it("calls composable markRead when Enter or Space is pressed on an unread item", async () => {
+  it("calls composable markRead when Enter or Space is pressed on an unread notification's body", async () => {
     const wrapper = mount(AppNotifications, {
       props: { open: true },
       ...globalConfig,
     });
-    const unreadItem = wrapper.findAll(".notif__item.is-unread")[0];
-    await unreadItem?.trigger("keydown.enter");
-    await unreadItem?.trigger("keydown.space");
+    const unreadBody = wrapper
+      .findAll(".notif__item.is-unread")[0]
+      ?.find(".notif__body");
+    await unreadBody?.trigger("keydown.enter");
+    await unreadBody?.trigger("keydown.space");
     expect(mockMarkRead).toHaveBeenCalledTimes(2);
     expect(mockMarkRead).toHaveBeenCalledWith("n-1");
   });
 
-  it("marks unread items as keyboard-focusable buttons and read items as neither", () => {
+  it("marks unread items' body as a keyboard-focusable button and read items' as neither", () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const unreadBody = wrapper
+      .findAll(".notif__item.is-unread")[0]
+      ?.find(".notif__body");
+    const readBody = wrapper
+      .findAll(".notif__item")
+      .find((item) => !item.classes("is-unread"))
+      ?.find(".notif__body");
+    expect(unreadBody?.attributes("tabindex")).toBe("0");
+    expect(unreadBody?.attributes("role")).toBe("button");
+    expect(readBody?.attributes("tabindex")).toBeUndefined();
+    expect(readBody?.attributes("role")).toBeUndefined();
+  });
+
+  it("does not nest the dismiss button inside the body's role=button (avoids nested-interactive controls)", () => {
     const wrapper = mount(AppNotifications, {
       props: { open: true },
       ...globalConfig,
     });
     const unreadItem = wrapper.findAll(".notif__item.is-unread")[0];
-    const readItem = wrapper
-      .findAll(".notif__item")
-      .find((item) => !item.classes("is-unread"));
-    expect(unreadItem?.attributes("tabindex")).toBe("0");
-    expect(unreadItem?.attributes("role")).toBe("button");
-    expect(readItem?.attributes("tabindex")).toBeUndefined();
-    expect(readItem?.attributes("role")).toBeUndefined();
+    expect(unreadItem?.find(".notif__body .notif__dismiss").exists()).toBe(
+      false,
+    );
+    expect(unreadItem?.find(".notif__dismiss").exists()).toBe(true);
   });
 
   it("renders the header with Notifications title", () => {

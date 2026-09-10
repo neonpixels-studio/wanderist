@@ -18,7 +18,7 @@
     <button
       type="button"
       class="activity__dismiss"
-      aria-label="Dismiss notification"
+      :aria-label="`Dismiss notification: ${resolveNotificationText(notification)}`"
       :disabled="dismissing"
       @click="$emit('dismiss', notification.id)"
     >
@@ -136,7 +136,7 @@ defineEmits<{ dismiss: [id: string] }>();
     color 0.12s;
 }
 
-.activity__dismiss:hover {
+.activity__dismiss:not(:disabled):hover {
   background: var(--surface-2);
   color: var(--ink);
 }
