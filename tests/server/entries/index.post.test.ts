@@ -315,12 +315,13 @@ describe("POST /api/entries", () => {
     expect(mockDb.insert).not.toHaveBeenCalled();
   });
 
-  it("does not attempt a manual rollback when the write batch fails (atomic by construction)", async () => {
+  it("no longer attempts a manual rollback delete when a write batch statement fails", async () => {
     // Previously a mid-sequence failure needed a hand-rolled delete of the
     // already-committed entry row. Now entries/entryPhotos/entryTags all
-    // travel in one database.batch() call, so a failure anywhere in it means
-    // nothing committed — there is no partial state to clean up, and the
-    // handler must not even try.
+    // travel in one database.batch() call — real atomicity is drizzle's
+    // neon-http batch() guarantee, not something this mocked unit test can
+    // prove — so the compensating delete this handler used to run is gone;
+    // this only asserts that removal, not the underlying atomicity.
     const createdEntry = { id: "generated-id", userId: "user-1" };
     mockEnsureUser.mockResolvedValue("user-1");
     mockReadBody.mockResolvedValue({

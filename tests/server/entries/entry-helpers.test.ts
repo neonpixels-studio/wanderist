@@ -70,23 +70,34 @@ function createFakeDatabase(photoRows: unknown[], tagRows: unknown[]) {
  * (falling back to the generated row's own id, mirroring onConflictDoUpdate
  * returning the existing row's real id). `batch` awaits every statement it's
  * given, matching drizzle's real "one HTTP call, every statement resolves
- * together" behaviour closely enough for these unit tests.
+ * together" behaviour closely enough for these unit tests. `insertedNames`
+ * records the name from every insert().values() call, in call order, so
+ * tests can assert the row-lock acquisition order regardless of the caller's
+ * input order (see the deadlock-avoidance comment on upsertTags).
  */
 function createFakeDatabaseForUpsertTags(idsByName: Record<string, string>) {
+  const insertedNames: string[] = [];
   const batch = vi.fn((statements: Promise<{ id: string }[]>[]) =>
     Promise.all(statements),
   );
   const insert = vi.fn(() => ({
-    values: vi.fn((row: { id: string; name: string }) => ({
-      onConflictDoUpdate: vi.fn(() => ({
-        returning: vi
-          .fn()
-          .mockResolvedValue([{ id: idsByName[row.name] ?? row.id }]),
-      })),
-    })),
+    values: vi.fn((row: { id: string; name: string }) => {
+      insertedNames.push(row.name);
+      return {
+        onConflictDoUpdate: vi.fn(() => ({
+          returning: vi
+            .fn()
+            .mockResolvedValue([{ id: idsByName[row.name] ?? row.id }]),
+        })),
+      };
+    }),
   }));
 
-  return { insert, batch } as unknown as ReturnType<typeof getDb>;
+  return {
+    insert,
+    batch,
+    insertedNames,
+  } as unknown as ReturnType<typeof getDb> & { insertedNames: string[] };
 }
 
 describe("upsertTags", () => {
@@ -100,7 +111,7 @@ describe("upsertTags", () => {
     expect(database.batch).not.toHaveBeenCalled();
   });
 
-  it("upserts every unique tag name in one atomic batch call, preserving order", async () => {
+  it("upserts every unique tag name in one atomic batch call, returning ids in the caller's order", async () => {
     const database = createFakeDatabaseForUpsertTags({
       Beach: "tag-beach",
       Hiking: "tag-hiking",
@@ -108,13 +119,31 @@ describe("upsertTags", () => {
 
     const result = await upsertTags(database, ["Beach", "Hiking", "Beach"]);
 
-    // "Beach" appears twice in the input but is deduped to one statement.
+    // "Beach" appears twice in the input but is deduped to one statement, and
+    // the result preserves the caller's (deduped) order even though the
+    // statements are issued in a different, lock-safe order (see below).
     expect(result).toEqual(["tag-beach", "tag-hiking"]);
     expect(database.batch).toHaveBeenCalledTimes(1);
     const batchedStatements = (database.batch as ReturnType<typeof vi.fn>).mock
       .calls[0][0] as unknown[];
     expect(batchedStatements).toHaveLength(2);
     expect(database.insert).toHaveBeenCalledTimes(2);
+  });
+
+  it("acquires row locks in a fixed, sorted order regardless of the caller's input order", async () => {
+    // onConflictDoUpdate holds a row-level lock for the life of the batch's
+    // transaction. Two concurrent calls upserting the same tag pair in
+    // opposite input orders would deadlock unless every caller locks them in
+    // the same order — so upsertTags must sort before issuing statements,
+    // not follow the caller's array order.
+    const database = createFakeDatabaseForUpsertTags({
+      Beach: "tag-beach",
+      Hiking: "tag-hiking",
+    });
+
+    await upsertTags(database, ["Hiking", "Beach"]);
+
+    expect(database.insertedNames).toEqual(["Beach", "Hiking"]);
   });
 });
 

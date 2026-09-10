@@ -200,8 +200,64 @@ async function cleanupReplacedPhotoMedia(
 interface EntryWritePlan {
   updates: EntryUpdates;
   hasScalarUpdates: boolean;
-  tagNames: string[] | undefined;
+  tagIds: string[] | undefined;
   photoMediaIds: string[] | undefined;
+}
+
+// Builds the full statement list for applyEntryWrites' atomic batch: the
+// scalar update (always first, when present) followed by the tag and photo
+// replace pairs. Every value here (`updates`, `tagIds`, `photoMediaIds`) is
+// already resolved in JS, so this is pure assembly — no query runs yet.
+function buildEntryWriteStatements(
+  database: DbClient,
+  id: string,
+  plan: EntryWritePlan,
+): BatchItem<"pg">[] {
+  const { updates, hasScalarUpdates, tagIds, photoMediaIds } = plan;
+  const statements: BatchItem<"pg">[] = [];
+
+  if (hasScalarUpdates) {
+    statements.push(
+      database
+        .update(entries)
+        .set(updates)
+        .where(eq(entries.id, id))
+        .returning(),
+    );
+  }
+  if (tagIds !== undefined) {
+    statements.push(...buildTagReplaceStatements(database, id, tagIds));
+  }
+  if (photoMediaIds !== undefined) {
+    statements.push(
+      ...buildPhotoReplaceStatements(database, id, photoMediaIds),
+    );
+  }
+
+  return statements;
+}
+
+// The scalar update is always statement index 0 when `hasScalarUpdates` is
+// true (see buildEntryWriteStatements), so its `.returning()` result is
+// always `batchResults[0]` — no positional-index bookkeeping needed. Falls
+// back to a plain read when there was no scalar update to return from (a
+// tags-only or photos-only patch).
+async function resolveUpdatedEntry(
+  database: DbClient,
+  id: string,
+  hasScalarUpdates: boolean,
+  batchResults: unknown[],
+): Promise<Entry | undefined> {
+  const updated = hasScalarUpdates
+    ? (batchResults[0] as Entry[])[0]
+    : undefined;
+
+  if (updated) {
+    return updated;
+  }
+
+  const rows = await database.select().from(entries).where(eq(entries.id, id));
+  return rows[0];
 }
 
 // Runs the entry's scalar update plus its tag/photo replaces as ONE atomic
@@ -220,7 +276,12 @@ interface EntryWritePlan {
 async function applyEntryWrites(
   database: DbClient,
   id: string,
-  plan: EntryWritePlan,
+  plan: {
+    updates: EntryUpdates;
+    hasScalarUpdates: boolean;
+    tagNames: string[] | undefined;
+    photoMediaIds: string[] | undefined;
+  },
 ): Promise<{ updated: Entry | undefined; removedMediaIds: string[] }> {
   const { updates, hasScalarUpdates, tagNames, photoMediaIds } = plan;
 
@@ -232,39 +293,33 @@ async function applyEntryWrites(
       ? await collectEntryPhotoMediaIds(database, id)
       : undefined;
 
-  const statements: BatchItem<"pg">[] = [];
-  if (hasScalarUpdates) {
-    statements.push(
-      database.update(entries).set(updates).where(eq(entries.id, id)),
-    );
-  }
-  if (tagIds !== undefined) {
-    statements.push(...buildTagReplaceStatements(database, id, tagIds));
-  }
-  if (photoMediaIds !== undefined) {
-    statements.push(
-      ...buildPhotoReplaceStatements(database, id, photoMediaIds),
-    );
-  }
+  const statements = buildEntryWriteStatements(database, id, {
+    updates,
+    hasScalarUpdates,
+    tagIds,
+    photoMediaIds,
+  });
 
-  if (statements.length > 0) {
-    await database.batch(statements as [BatchItem<"pg">, ...BatchItem<"pg">[]]);
-  }
+  const batchResults =
+    statements.length > 0
+      ? ((await database.batch(
+          statements as [BatchItem<"pg">, ...BatchItem<"pg">[]],
+        )) as unknown[])
+      : [];
 
   const removedMediaIds =
     photoMediaIds !== undefined
       ? mediaIdsNoLongerReferenced(previousMediaIds ?? [], photoMediaIds)
       : [];
 
-  // Always re-read rather than relying on the scalar update's own
-  // `.returning()`: keeping that statement's result out of the batch return
-  // value avoids threading a positional index through a variable-length
-  // statement list for what both handlers already needed as a fallback (see
-  // the previous `if (!updated)` branch this replaces) when there were no
-  // scalar updates to return from.
-  const rows = await database.select().from(entries).where(eq(entries.id, id));
+  const updated = await resolveUpdatedEntry(
+    database,
+    id,
+    hasScalarUpdates,
+    batchResults,
+  );
 
-  return { updated: rows[0], removedMediaIds };
+  return { updated, removedMediaIds };
 }
 
 export default defineEventHandler(async (event) => {

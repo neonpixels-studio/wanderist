@@ -402,15 +402,18 @@ describe("PATCH /api/entries/:id", () => {
     expect(mockDb.delete).toHaveBeenCalled();
     expect(mockDb.insert).toHaveBeenCalled();
     expect(mockDb.transaction).not.toHaveBeenCalled();
-    // The non-destructive scalar update runs before the destructive tag replace,
-    // so a failure in the replace never discards an already-applied scalar edit
-    // silently — and matches the documented ordering.
+    // The scalar update statement is built (and therefore batched) before the
+    // tag-replace statements, matching the documented, deterministic ordering
+    // — both now travel in the same atomic database.batch() call, so this is
+    // about statement order, not partial-failure blast radius (a failure
+    // anywhere in the batch rolls back the whole thing, scalar update included).
     expect(mockDb.update.mock.invocationCallOrder[0]).toBeLessThan(
       mockDb.delete.mock.invocationCallOrder[0],
     );
-    // upsertTags runs before the destructive entryTags delete, so a tag-upsert
-    // failure leaves the entry's existing tags intact instead of deleting them
-    // and then failing (there is no transaction to roll back).
+    // upsertTags is its own separate read/write round trip that must resolve
+    // tagIds before the entryTags delete/insert statements can even be built,
+    // so a tag-upsert failure never touches the entry's existing tags at all
+    // — the destructive delete/insert pair is never reached.
     expect(mockUpsertTags.mock.invocationCallOrder[0]).toBeLessThan(
       mockDb.delete.mock.invocationCallOrder[0],
     );
@@ -438,11 +441,13 @@ describe("PATCH /api/entries/:id", () => {
     expect(mockDb.batch.mock.calls[0][0]).toHaveLength(5);
   });
 
-  it("rolls the whole batch back atomically when one statement in it fails", async () => {
-    // Previously a mid-sequence failure could leave the entry's tags or
-    // photos half-replaced with no rollback (see the historical comment on
-    // applyEntryWrites). Now every statement is one atomic database.batch()
-    // call: a failure anywhere in it means nothing in the batch committed.
+  it("propagates a batch failure and skips post-commit media cleanup", async () => {
+    // The real atomicity guarantee (nothing partially commits) is enforced by
+    // drizzle's neon-http batch() implementation itself, not by this handler —
+    // that's out of reach for a mocked unit test. What the handler must get
+    // right, and what this asserts, is that a rejected batch propagates as a
+    // failure and that cleanupReplacedPhotoMedia — which assumes the photo
+    // replace already committed — never runs on that path.
     const updatedEntry = { id: "e-1", userId: "user-1", title: "Trip" };
     mockRequireRouterParam.mockReturnValue("e-1");
     mockReadBody.mockResolvedValue({ title: "Trip", tags: ["hiking"] });

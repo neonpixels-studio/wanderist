@@ -196,20 +196,21 @@ interface RollbackResult {
   mediaDeleted: boolean;
 }
 
-// Best-effort rollback for an import whose DB rows already committed but whose
-// blob write then failed (see importSinglePhoto). persistImportedPhotoRows
-// writes media/entries/entryPhotos as one atomic database.batch() call (a real
-// BEGIN/COMMIT on the neon-http driver — see server/db/index.ts), so a DB-only
-// failure there needs no manual rollback at all: the whole batch rolls back on
-// its own. This function only runs after that batch has already succeeded and
-// a *separate*, non-transactional write (the blob store) failed afterward:
-// deleting the entry cascades its entryPhotos, and deleting the media row
-// cascades any entryPhotos that hung off it (both FKs are ON DELETE CASCADE).
-// Deletes are id-scoped (and owner-scoped as defence in depth), so deleting a
-// row that was never written is a harmless no-op. A newly-created place row is
-// intentionally left: it is deduplicated (matched on name + coordinates) and
-// reused by the next import run for the same location, so deleting it risks
-// nulling a sibling entry's placeId. Returns which deletes succeeded.
+// Best-effort rollback for a partially-written import, called from two call
+// sites: persistImportedPhotoRows's database.batch() call failing (a genuine
+// SQL error there means the whole batch already rolled back on Neon's side,
+// making these deletes no-ops — but a batch that commits and then fails to
+// report success, e.g. a timeout, cannot be told apart from a real rollback
+// from the client, so this still has to run defensively) and importSinglePhoto's
+// post-commit blob write failing (here the DB rows are known-committed and
+// this rollback is load-bearing, not defensive). Deleting the entry cascades
+// its entryPhotos, and deleting the media row cascades any entryPhotos that
+// hung off it (both FKs are ON DELETE CASCADE). Deletes are id-scoped (and
+// owner-scoped as defence in depth), so deleting a row that was never written
+// is a harmless no-op. A newly-created place row is intentionally left: it is
+// deduplicated (matched on name + coordinates) and reused by the next import
+// run for the same location, so deleting it risks nulling a sibling entry's
+// placeId. Returns which deletes succeeded.
 async function rollbackPartialImport(
   database: DbClient,
   userId: string,
@@ -300,15 +301,20 @@ interface MediaInsertInput {
 // (see server/db/index.ts). Every value used below (mediaInput.mediaId,
 // entryId, placeId, the item's own fields) is already known in JS before the
 // batch is built, so none of these three statements needs to read another
-// statement's DB result. If any statement fails — e.g. a concurrent import
-// racing the same Instagram item into media's (user_id, source, source_id)
-// unique index — the whole batch rolls back on its own: nothing commits, so
-// there is nothing to clean up by hand (contrast with rollbackPartialImport
-// below, which only handles a failure *after* this batch has already
-// committed). placeId is resolved separately, before the batch:
-// resolveOrCreatePlace is a read that conditionally writes depending on its
-// own result, so it can't be folded into a batch whose statements must all be
-// buildable up front.
+// statement's DB result. A SQL-level failure (e.g. a concurrent import racing
+// the same Instagram item into media's (user_id, source, source_id) unique
+// index) rolls the whole batch back on Neon's side, so the id-scoped deletes
+// below are harmless no-ops for that case — but this is one HTTP round trip,
+// and a transaction that committed server-side can still surface as a client
+// error (timeout, dropped connection, 502) with no way to distinguish that
+// from a genuine rollback. So the batch stays wrapped in the same rollback
+// guard as the rest of this function: an id-scoped delete of a row that was
+// never written is always a safe no-op, and skipping it would risk leaving a
+// media row that actually did commit but nothing else does — permanently
+// un-retryable, since source_id would already be taken. placeId is resolved
+// separately, before the batch: resolveOrCreatePlace is a read that
+// conditionally writes depending on its own result, so it can't be folded
+// into a batch whose statements must all be buildable up front.
 async function persistImportedPhotoRows(
   database: DbClient,
   userId: string,
@@ -318,33 +324,45 @@ async function persistImportedPhotoRows(
   const entryId = crypto.randomUUID();
   const placeId = await resolveOrCreatePlace(database, userId, item);
 
-  await database.batch([
-    database.insert(media).values({
-      id: mediaInput.mediaId,
+  try {
+    await database.batch([
+      database.insert(media).values({
+        id: mediaInput.mediaId,
+        userId,
+        url: mediaInput.storageKey,
+        contentType: mediaInput.contentType,
+        width: mediaInput.dimensions?.width ?? null,
+        height: mediaInput.dimensions?.height ?? null,
+        source: MEDIA_SOURCE.INSTAGRAM,
+        sourceId: item.id,
+      }),
+      database.insert(entries).values({
+        id: entryId,
+        userId,
+        placeId,
+        title: buildEntryTitle(item),
+        body: item.caption ?? null,
+        occurredAt: new Date(item.timestamp),
+        visibility: VISIBILITY.PRIVATE,
+      }),
+      database.insert(entryPhotos).values({
+        id: crypto.randomUUID(),
+        entryId,
+        mediaId: mediaInput.mediaId,
+        sortOrder: 0,
+      }),
+    ] as [BatchItem<"pg">, BatchItem<"pg">, BatchItem<"pg">]);
+  } catch (error) {
+    // rollbackOrThrow always throws; `throw await` keeps that a compile-time
+    // guarantee so `return { entryId }` is unreachable after a failure.
+    throw await rollbackOrThrow(
+      database,
       userId,
-      url: mediaInput.storageKey,
-      contentType: mediaInput.contentType,
-      width: mediaInput.dimensions?.width ?? null,
-      height: mediaInput.dimensions?.height ?? null,
-      source: MEDIA_SOURCE.INSTAGRAM,
-      sourceId: item.id,
-    }),
-    database.insert(entries).values({
-      id: entryId,
-      userId,
-      placeId,
-      title: buildEntryTitle(item),
-      body: item.caption ?? null,
-      occurredAt: new Date(item.timestamp),
-      visibility: VISIBILITY.PRIVATE,
-    }),
-    database.insert(entryPhotos).values({
-      id: crypto.randomUUID(),
       entryId,
-      mediaId: mediaInput.mediaId,
-      sortOrder: 0,
-    }),
-  ] as [BatchItem<"pg">, BatchItem<"pg">, BatchItem<"pg">]);
+      mediaInput.mediaId,
+      error,
+    );
+  }
 
   return { entryId };
 }

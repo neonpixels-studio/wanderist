@@ -1232,13 +1232,14 @@ describe("POST /api/connections/instagram/import", () => {
     expect(mockDbBatch.mock.calls[0][0]).toHaveLength(3);
   });
 
-  it("does not attempt any rollback delete when the write batch fails (atomic by construction)", async () => {
-    // Previously a failure after the media row committed (e.g. the entry
-    // write failing next) had to be undone by hand with two separate deletes.
-    // Now media/entries/entryPhotos travel in one database.batch() call, so a
-    // failure anywhere in it — e.g. a concurrent import racing the same
-    // Instagram item into media's unique index — means nothing committed at
-    // all: there is nothing to roll back, and the handler must not try.
+  it("rolls back defensively with id-scoped deletes when the write batch fails", async () => {
+    // A SQL-level batch failure (e.g. a concurrent import racing the same
+    // Instagram item into media's unique index) already rolled back on Neon's
+    // side, so these id-scoped deletes are harmless no-ops for that case. But
+    // one HTTP round trip that commits server-side and then fails to report
+    // success (timeout, dropped connection) is indistinguishable from a client
+    // error, so the rollback guard still runs defensively either way — see the
+    // comment on persistImportedPhotoRows.
     mockFilterGeotaggedMedia.mockReturnValue([geotaggedPhoto]);
     mockFetchInstagramImage.mockResolvedValue(Buffer.from("img"));
     mockDbBatch.mockRejectedValueOnce(new Error("duplicate key value"));
@@ -1252,12 +1253,9 @@ describe("POST /api/connections/instagram/import", () => {
 
     expect(result.imported).toBe(0);
     expect(result.errors[0]).toContain("ig-media-thumb");
-    expect(result.errors[0]).toContain("duplicate key value");
-    // No "leaked"/"will duplicate" rollback-failure wording either — there is
-    // no rollback attempt at all for a batch that never committed.
     expect(result.errors[0]).not.toContain("leaked");
-    expect(result.errors[0]).not.toContain("will duplicate");
-    expect(mockDbDelete).not.toHaveBeenCalled();
+    expect(mockDbDelete).toHaveBeenNthCalledWith(1, entries);
+    expect(mockDbDelete).toHaveBeenNthCalledWith(2, media);
     // Blobs are only written after the batch commits, so a failed import
     // never reaches the blob store.
     expect(mockPutMediaBlob).not.toHaveBeenCalled();

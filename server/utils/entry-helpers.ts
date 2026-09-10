@@ -91,11 +91,15 @@ export function parseRequiredStringArray(
 
 // Upserts every unique tag name in ONE atomic database.batch() call — the
 // neon-http driver's real BEGIN/COMMIT unit (see server/db/index.ts) — rather
-// than one round trip per name. Each name's upsert is independent of every
-// other name's result (onConflictDoUpdate needs only the name itself, not
-// another name's returned id), so batching them introduces no ordering
-// dependency: this is a straight round-trip reduction, N calls to 1, with the
-// side benefit that all-or-nothing failure is now atomic across the set too.
+// than one round trip per name. `onConflictDoUpdate` takes a row-level lock on
+// the conflicting row and holds it for the life of the transaction (unlike the
+// old one-upsert-per-HTTP-call loop, where each upsert was its own implicit
+// transaction and released its lock immediately). Two concurrent calls
+// upserting the same tag pair in opposite orders (e.g. ["beach","hiking"] vs
+// ["hiking","beach"]) would deadlock if each locked in the caller's order, so
+// the statements are built in a fixed, deterministic order (sorted) — any two
+// callers acquire the same tags in the same order — and the results are
+// re-projected back onto the caller's original (deduped) order before returning.
 export async function upsertTags(
   database: ReturnType<typeof getDb>,
   tagNames: string[],
@@ -108,7 +112,8 @@ export async function upsertTags(
     return [];
   }
 
-  const statements = uniqueNames.map((name) =>
+  const lockOrderedNames = [...uniqueNames].sort();
+  const statements = lockOrderedNames.map((name) =>
     database
       .insert(tags)
       .values({ id: generateId(), name })
@@ -120,7 +125,11 @@ export async function upsertTags(
     statements as [BatchItem<"pg">, ...BatchItem<"pg">[]],
   )) as { id: string }[][];
 
-  return results.map((rows) => rows[0].id);
+  const idByName = new Map(
+    lockOrderedNames.map((name, index) => [name, results[index][0].id]),
+  );
+
+  return uniqueNames.map((name) => idByName.get(name)!);
 }
 
 export interface EntryRelations {
