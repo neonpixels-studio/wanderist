@@ -8,17 +8,17 @@ exports[`AppNotifications > renders the panel when open and matches snapshot 1`]
     <div class="notif__item is-unread" tabindex="0" role="button"><span class="notif__ico notif__ico--info"><svg data-icon="" name="instagram" size="16"></svg></span>
       <div class="notif__body">
         <p class="notif__title">12 geotagged photos from Lisbon are ready to import</p><span class="notif__time">2h</span>
-      </div><span class="notif__dot"></span>
+      </div><span class="notif__dot"></span><button type="button" class="notif__dismiss" aria-label="Dismiss notification"><svg data-icon="" name="x" size="14"></svg></button>
     </div>
     <div class="notif__item is-unread" tabindex="0" role="button"><span class="notif__ico notif__ico--accent"><svg data-icon="" name="heart" size="16"></svg></span>
       <div class="notif__body">
         <p class="notif__title">elsa_far liked your entry</p><span class="notif__time">5h</span>
-      </div><span class="notif__dot"></span>
+      </div><span class="notif__dot"></span><button type="button" class="notif__dismiss" aria-label="Dismiss notification"><svg data-icon="" name="x" size="14"></svg></button>
     </div>
     <div class="notif__item"><span class="notif__ico notif__ico--accent"><svg data-icon="" name="users" size="16"></svg></span>
       <div class="notif__body">
         <p class="notif__title">Elsa Farsdottir started following you</p><span class="notif__time">4d</span>
-      </div><span class="notif__dot"></span>
+      </div><span class="notif__dot"></span><button type="button" class="notif__dismiss" aria-label="Dismiss notification"><svg data-icon="" name="x" size="14"></svg></button>
     </div>
   </div><a class="notif__foot"> View all activity <svg data-icon="" name="arrow-right" size="14"></svg></a>
 </div>"

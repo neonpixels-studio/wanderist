@@ -197,6 +197,21 @@ export function useNotifications() {
     }
   }
 
+  // Hard-deletes the notification server-side and drops it from the shared
+  // list so the drawer and /activity page reflect the dismissal immediately,
+  // without a refetch.
+  async function dismissNotification(id: string): Promise<void> {
+    error.value = null;
+    try {
+      await apiFetch(`/api/notifications/${id}`, { method: "DELETE" });
+      notifications.value = notifications.value.filter(
+        (notification) => notification.id !== id,
+      );
+    } catch (dismissError: unknown) {
+      error.value = extractErrorMessage(dismissError);
+    }
+  }
+
   return {
     notifications,
     isLoading: readonly(isLoading),
@@ -206,5 +221,6 @@ export function useNotifications() {
     fetchAllNotifications,
     markAllRead,
     markRead,
+    dismissNotification,
   };
 }

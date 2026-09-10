@@ -51,6 +51,14 @@
           }}</span>
         </div>
         <span class="notif__dot" />
+        <button
+          type="button"
+          class="notif__dismiss"
+          aria-label="Dismiss notification"
+          @click.stop="handleDismiss(notification)"
+        >
+          <AppIcon name="x" :size="14" />
+        </button>
       </div>
     </div>
     <NuxtLink class="notif__foot" to="/activity">
@@ -80,6 +88,7 @@ const {
   fetchNotifications,
   markAllRead,
   markRead,
+  dismissNotification,
 } = useNotifications();
 
 // The drawer is a quick preview; the full list lives on /activity (linked in
@@ -113,5 +122,11 @@ async function handleItemClick(notification: AppNotification): Promise<void> {
     return;
   }
   await markRead(notification.id);
+}
+
+// @click.stop on the dismiss button keeps this from also triggering
+// handleItemClick's mark-as-read behavior on the parent item.
+async function handleDismiss(notification: AppNotification): Promise<void> {
+  await dismissNotification(notification.id);
 }
 </script>

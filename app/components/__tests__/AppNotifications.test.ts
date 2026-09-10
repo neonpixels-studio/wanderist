@@ -12,6 +12,7 @@ const isLoadingRef = ref(false);
 const errorRef = ref<string | null>(null);
 const mockMarkAllRead = vi.fn();
 const mockMarkRead = vi.fn();
+const mockDismissNotification = vi.fn();
 const mockFetchNotifications = vi.fn().mockResolvedValue(undefined);
 
 vi.stubGlobal("useNotifications", () => ({
@@ -22,6 +23,7 @@ vi.stubGlobal("useNotifications", () => ({
   fetchNotifications: mockFetchNotifications,
   markAllRead: mockMarkAllRead,
   markRead: mockMarkRead,
+  dismissNotification: mockDismissNotification,
 }));
 
 const SAMPLE_NOTIFICATIONS: AppNotification[] = [
@@ -75,6 +77,7 @@ describe("AppNotifications", () => {
     vi.clearAllMocks();
     mockMarkAllRead.mockResolvedValue(undefined);
     mockMarkRead.mockResolvedValue(undefined);
+    mockDismissNotification.mockResolvedValue(undefined);
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
@@ -248,5 +251,34 @@ describe("AppNotifications", () => {
     expect(wrapper.find('[role="alert"]').text()).toContain(
       "Could not load notifications",
     );
+  });
+
+  it("renders a dismiss button on every notification item", () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    expect(wrapper.findAll(".notif__dismiss")).toHaveLength(3);
+  });
+
+  it("calls composable dismissNotification when the dismiss button is clicked", async () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const dismissButton = wrapper.findAll(".notif__dismiss")[0];
+    await dismissButton?.trigger("click");
+    expect(mockDismissNotification).toHaveBeenCalledTimes(1);
+    expect(mockDismissNotification).toHaveBeenCalledWith("n-1");
+  });
+
+  it("does not call composable markRead when the dismiss button on an unread item is clicked", async () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const dismissButton = wrapper.findAll(".notif__dismiss")[0];
+    await dismissButton?.trigger("click");
+    expect(mockMarkRead).not.toHaveBeenCalled();
   });
 });

@@ -44,6 +44,14 @@
             }}</span>
           </div>
           <span v-if="!notification.isRead" class="activity__dot" />
+          <button
+            type="button"
+            class="activity__dismiss"
+            aria-label="Dismiss notification"
+            @click="handleDismiss(notification.id)"
+          >
+            <AppIcon name="x" :size="14" />
+          </button>
         </div>
       </div>
     </template>
@@ -62,14 +70,23 @@ useHead({ title: "Wanderist — Activity" });
 
 // /activity walks every page (fetchAllNotifications) so notifications older
 // than the drawer's first-page preview are reachable here.
-const { notifications, isLoading, error, fetchAllNotifications } =
-  useNotifications();
+const {
+  notifications,
+  isLoading,
+  error,
+  fetchAllNotifications,
+  dismissNotification,
+} = useNotifications();
 
 onMounted(() => {
   fetchAllNotifications().catch((fetchError: unknown) => {
     console.error("[activity] fetchAllNotifications failed", fetchError);
   });
 });
+
+async function handleDismiss(id: string): Promise<void> {
+  await dismissNotification(id);
+}
 </script>
 
 <style scoped>
@@ -166,5 +183,25 @@ onMounted(() => {
   border-radius: 50%;
   background: var(--accent);
   flex: none;
+}
+
+.activity__dismiss {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+
+.activity__dismiss:hover {
+  background: var(--surface-2);
+  color: var(--ink);
 }
 </style>

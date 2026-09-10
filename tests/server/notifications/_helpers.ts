@@ -136,3 +136,9 @@ export function makeUpdateChain() {
   const update = vi.fn().mockReturnValue({ set });
   return { update };
 }
+
+export function makeDeleteChain() {
+  const where = vi.fn().mockResolvedValue(undefined);
+  const del = vi.fn().mockReturnValue({ where });
+  return { delete: del };
+}

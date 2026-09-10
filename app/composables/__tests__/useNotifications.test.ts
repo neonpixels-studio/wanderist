@@ -227,6 +227,50 @@ describe("useNotifications", () => {
     expect(error.value).toBeTruthy();
   });
 
+  it("dismissNotification calls DELETE /api/notifications/:id and removes only that notification", async () => {
+    mockApiFetch
+      .mockResolvedValueOnce({
+        notifications: [makeSample("n-1"), makeSample("n-2")],
+        page: 1,
+        hasMore: false,
+      })
+      .mockResolvedValueOnce({ success: true });
+
+    const { notifications, fetchNotifications, dismissNotification } =
+      useNotifications();
+    await fetchNotifications();
+
+    await dismissNotification("n-1");
+
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/notifications/n-1", {
+      method: "DELETE",
+    });
+    expect(notifications.value.map((notification) => notification.id)).toEqual([
+      "n-2",
+    ]);
+  });
+
+  it("dismissNotification sets error state and leaves the list intact when the API call fails", async () => {
+    mockApiFetch
+      .mockResolvedValueOnce({
+        notifications: [makeSample("n-1")],
+        page: 1,
+        hasMore: false,
+      })
+      .mockRejectedValueOnce(new Error("Server error"));
+
+    const { notifications, error, fetchNotifications, dismissNotification } =
+      useNotifications();
+    await fetchNotifications();
+
+    await expect(dismissNotification("n-1")).resolves.toBeUndefined();
+
+    expect(error.value).toBeTruthy();
+    expect(notifications.value.map((notification) => notification.id)).toEqual([
+      "n-1",
+    ]);
+  });
+
   it("isLoading is false initially", () => {
     const { isLoading } = useNotifications();
     expect(isLoading.value).toBe(false);

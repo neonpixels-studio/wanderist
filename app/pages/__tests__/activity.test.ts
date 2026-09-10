@@ -12,6 +12,7 @@ const notificationsRef = ref<AppNotification[]>([]);
 const isLoadingRef = ref(false);
 const errorRef = ref<string | null>(null);
 const mockFetchAllNotifications = vi.fn().mockResolvedValue(undefined);
+const mockDismissNotification = vi.fn().mockResolvedValue(undefined);
 
 vi.stubGlobal("useNotifications", () => ({
   notifications: notificationsRef,
@@ -20,6 +21,7 @@ vi.stubGlobal("useNotifications", () => ({
   unreadCount: 0,
   fetchAllNotifications: mockFetchAllNotifications,
   markAllRead: vi.fn().mockResolvedValue(undefined),
+  dismissNotification: mockDismissNotification,
 }));
 
 const SAMPLE_NOTIFICATIONS: AppNotification[] = [
@@ -47,6 +49,7 @@ describe("Activity page (/activity)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetchAllNotifications.mockResolvedValue(undefined);
+    mockDismissNotification.mockResolvedValue(undefined);
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
@@ -133,5 +136,18 @@ describe("Activity page (/activity)", () => {
     expect(wrapper.find(".activity__state").text()).toContain(
       "No activity yet",
     );
+  });
+
+  it("renders a dismiss button on every notification item", () => {
+    const wrapper = mount(ActivityPage, globalConfig);
+    expect(wrapper.findAll(".activity__dismiss")).toHaveLength(2);
+  });
+
+  it("calls composable dismissNotification when the dismiss button is clicked", async () => {
+    const wrapper = mount(ActivityPage, globalConfig);
+    const dismissButton = wrapper.findAll(".activity__dismiss")[0];
+    await dismissButton?.trigger("click");
+    expect(mockDismissNotification).toHaveBeenCalledTimes(1);
+    expect(mockDismissNotification).toHaveBeenCalledWith("n-1");
   });
 });

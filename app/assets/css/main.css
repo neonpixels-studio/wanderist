@@ -1192,6 +1192,34 @@ textarea.field__input {
 .notif__item.is-unread .notif__dot {
   opacity: 1;
 }
+.notif__dismiss {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--faint);
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    background 0.12s,
+    color 0.12s;
+}
+.notif__item:hover .notif__dismiss,
+.notif__dismiss:focus-visible {
+  opacity: 1;
+}
+.notif__dismiss:hover {
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+.notif__dismiss .ico {
+  width: 14px;
+  height: 14px;
+}
 .notif__foot {
   display: flex;
   align-items: center;
