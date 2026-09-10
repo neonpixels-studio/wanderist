@@ -305,4 +305,37 @@ describe("Guide Detail page (/guides/[id])", () => {
 
     expect(lastAsyncDataOptions?.watch).toHaveLength(2);
   });
+
+  it("fetches exactly once when the viewer is already signed in at mount", () => {
+    // canRetryAuthenticated is already true on the first render (Clerk resolved
+    // before the component mounted), so no transition fires and the watcher
+    // must not cause a second call.
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = true;
+    const guidesStore = useGuidesStore();
+    const fetchSpy = guidesStore.fetchGuideById as unknown as ReturnType<
+      typeof vi.fn
+    >;
+
+    mount(GuideDetailPage, buildGlobalConfig(pinia));
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("refetches when a signed-in owner signs out, so a private guide clears from the screen", async () => {
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = true;
+    const guidesStore = useGuidesStore();
+    const fetchSpy = guidesStore.fetchGuideById as unknown as ReturnType<
+      typeof vi.fn
+    >;
+
+    mount(GuideDetailPage, buildGlobalConfig(pinia));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    clerkSignedInRef.value = false;
+    await nextTick();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
 });
