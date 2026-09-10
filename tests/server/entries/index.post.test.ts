@@ -315,13 +315,17 @@ describe("POST /api/entries", () => {
     expect(mockDb.insert).not.toHaveBeenCalled();
   });
 
-  it("no longer attempts a manual rollback delete when a write batch statement fails", async () => {
+  it("no longer attempts a manual rollback delete when the write batch fails", async () => {
     // Previously a mid-sequence failure needed a hand-rolled delete of the
     // already-committed entry row. Now entries/entryPhotos/entryTags all
     // travel in one database.batch() call — real atomicity is drizzle's
     // neon-http batch() guarantee, not something this mocked unit test can
     // prove — so the compensating delete this handler used to run is gone;
-    // this only asserts that removal, not the underlying atomicity.
+    // this only asserts that removal, not the underlying atomicity. Rejecting
+    // `batch` itself (rather than one of the individual insert chains, which
+    // in the mock would already be a rejected promise before batch() is ever
+    // called) is what actually exercises the handler awaiting the batch call
+    // instead of each statement separately.
     const createdEntry = { id: "generated-id", userId: "user-1" };
     mockEnsureUser.mockResolvedValue("user-1");
     mockReadBody.mockResolvedValue({
@@ -332,21 +336,8 @@ describe("POST /api/entries", () => {
       ...makeDbForCreate(createdEntry),
       ...makeDbForDelete(),
     };
-    const returningMock = vi.fn().mockResolvedValue([createdEntry]);
-    const photoInsertError = new Error("photo insert failed");
-    let insertCallCount = 0;
-    mockDb.insert = vi.fn().mockImplementation(() => ({
-      values: vi.fn().mockImplementation(() => {
-        insertCallCount += 1;
-        // First insert() call is the entries row (needs .returning()); the
-        // second is entryPhotos, whose write batch.batch() fails.
-        if (insertCallCount === 1) {
-          const thenable = Promise.resolve(undefined);
-          return Object.assign(thenable, { returning: returningMock });
-        }
-        return Promise.reject(photoInsertError);
-      }),
-    }));
+    const batchError = new Error("write batch failed");
+    mockDb.batch = vi.fn().mockRejectedValue(batchError);
 
     mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
 
@@ -354,8 +345,10 @@ describe("POST /api/entries", () => {
 
     await expect(
       (defaultHandler as (event: unknown) => unknown)({}),
-    ).rejects.toThrow(photoInsertError);
+    ).rejects.toThrow(batchError);
 
+    expect(mockDb.batch).toHaveBeenCalledTimes(1);
+    expect(mockDb.batch.mock.calls[0][0]).toHaveLength(2);
     expect(mockDb.delete).not.toHaveBeenCalled();
   });
 });

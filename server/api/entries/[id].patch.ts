@@ -197,7 +197,19 @@ async function cleanupReplacedPhotoMedia(
   }
 }
 
+// The handler-facing plan: what the PATCH body asked for, before upsertTags
+// has resolved tagNames into tagIds.
 interface EntryWritePlan {
+  updates: EntryUpdates;
+  hasScalarUpdates: boolean;
+  tagNames: string[] | undefined;
+  photoMediaIds: string[] | undefined;
+}
+
+// The fully-resolved plan buildEntryWriteStatements assembles from: tagNames
+// has already become tagIds (upsertTags's own read/write round trip has to
+// finish first, since its result feeds the entryTags insert values).
+interface EntryWriteStatementPlan {
   updates: EntryUpdates;
   hasScalarUpdates: boolean;
   tagIds: string[] | undefined;
@@ -211,7 +223,7 @@ interface EntryWritePlan {
 function buildEntryWriteStatements(
   database: DbClient,
   id: string,
-  plan: EntryWritePlan,
+  plan: EntryWriteStatementPlan,
 ): BatchItem<"pg">[] {
   const { updates, hasScalarUpdates, tagIds, photoMediaIds } = plan;
   const statements: BatchItem<"pg">[] = [];
@@ -276,12 +288,7 @@ async function resolveUpdatedEntry(
 async function applyEntryWrites(
   database: DbClient,
   id: string,
-  plan: {
-    updates: EntryUpdates;
-    hasScalarUpdates: boolean;
-    tagNames: string[] | undefined;
-    photoMediaIds: string[] | undefined;
-  },
+  plan: EntryWritePlan,
 ): Promise<{ updated: Entry | undefined; removedMediaIds: string[] }> {
   const { updates, hasScalarUpdates, tagNames, photoMediaIds } = plan;
 

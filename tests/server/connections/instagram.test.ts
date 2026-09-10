@@ -1217,7 +1217,7 @@ describe("POST /api/connections/instagram/import", () => {
     expect(mockDbInsert).toHaveBeenCalled();
   });
 
-  it("writes media, entry, and entryPhotos as one atomic batch call (issue #226)", async () => {
+  it("writes the entry and entryPhotos as one atomic batch call after the media row commits (issue #226)", async () => {
     mockFilterGeotaggedMedia.mockReturnValue([geotaggedPhoto]);
     mockFetchInstagramImage.mockResolvedValue(Buffer.from("img"));
     const importDb = makeImportDb();
@@ -1225,24 +1225,29 @@ describe("POST /api/connections/instagram/import", () => {
 
     await call(importHandler, makeEvent());
 
-    // One batch call per imported photo, carrying all 3 row writes — the
-    // neon-http driver's real BEGIN/COMMIT unit — instead of 3 independent,
-    // non-atomic insert round trips.
+    // The media row commits alone first (its unique index is the concurrency
+    // guard — see persistImportedPhotoRows), then entries + entryPhotos travel
+    // in one database.batch() call, the neon-http driver's real BEGIN/COMMIT
+    // unit, instead of two independent, non-atomic insert round trips.
     expect(mockDbBatch).toHaveBeenCalledTimes(1);
-    expect(mockDbBatch.mock.calls[0][0]).toHaveLength(3);
+    expect(mockDbBatch.mock.calls[0][0]).toHaveLength(2);
   });
 
-  it("rolls back defensively with id-scoped deletes when the write batch fails", async () => {
-    // A SQL-level batch failure (e.g. a concurrent import racing the same
-    // Instagram item into media's unique index) already rolled back on Neon's
-    // side, so these id-scoped deletes are harmless no-ops for that case. But
-    // one HTTP round trip that commits server-side and then fails to report
-    // success (timeout, dropped connection) is indistinguishable from a client
-    // error, so the rollback guard still runs defensively either way — see the
-    // comment on persistImportedPhotoRows.
+  it("rolls back defensively with id-scoped deletes when the entries/entryPhotos batch fails", async () => {
+    // By this point the media row has already committed on its own (its
+    // unique index is the concurrency guard, checked before this batch even
+    // starts). A SQL-level failure in the entries/entryPhotos batch already
+    // rolled that pair back on Neon's side, so these id-scoped deletes are
+    // harmless no-ops for that case. But one HTTP round trip that commits
+    // server-side and then fails to report success (timeout, dropped
+    // connection) is indistinguishable from a client error, so the rollback
+    // guard still runs defensively either way — see the comment on
+    // persistImportedPhotoRows. Either way the already-committed media row
+    // must not be left behind, since its source_id would block every future
+    // retry of this item.
     mockFilterGeotaggedMedia.mockReturnValue([geotaggedPhoto]);
     mockFetchInstagramImage.mockResolvedValue(Buffer.from("img"));
-    mockDbBatch.mockRejectedValueOnce(new Error("duplicate key value"));
+    mockDbBatch.mockRejectedValueOnce(new Error("constraint violation"));
     const importDb = makeImportDb();
     mockGetDb.mockReturnValue(importDb);
 

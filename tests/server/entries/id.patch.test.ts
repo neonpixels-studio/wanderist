@@ -447,13 +447,17 @@ describe("PATCH /api/entries/:id", () => {
     // that's out of reach for a mocked unit test. What the handler must get
     // right, and what this asserts, is that a rejected batch propagates as a
     // failure and that cleanupReplacedPhotoMedia — which assumes the photo
-    // replace already committed — never runs on that path.
-    const updatedEntry = { id: "e-1", userId: "user-1", title: "Trip" };
+    // replace already committed — never runs on that path. Same setup as
+    // "cleans up removed media and returns the entry on a photos-only patch"
+    // below, which is this test's positive control: with the batch resolving
+    // instead of rejecting, that test proves media-1 *would* be cleaned up —
+    // so a batch failure suppressing the same cleanup call is a real assertion,
+    // not a vacuous one.
+    const updatedEntry = { id: "e-1", userId: "user-1", title: "Keep" };
     mockRequireRouterParam.mockReturnValue("e-1");
-    mockReadBody.mockResolvedValue({ title: "Trip", tags: ["hiking"] });
-    const mockDb = makeDbForPatch(updatedEntry);
+    mockReadBody.mockResolvedValue({ title: "Keep", photoMediaIds: [] });
+    const mockDb = makeDbForPhotoPatch(updatedEntry, [{ mediaId: "media-1" }]);
     mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
-    mockUpsertTags.mockResolvedValueOnce(["tag-1"]);
     const batchError = new Error("batch failed");
     mockDb.batch = vi.fn().mockRejectedValue(batchError);
 
