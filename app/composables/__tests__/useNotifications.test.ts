@@ -227,6 +227,151 @@ describe("useNotifications", () => {
     expect(error.value).toBeTruthy();
   });
 
+  it("dismissNotification calls DELETE /api/notifications/:id and removes only that notification", async () => {
+    mockApiFetch
+      .mockResolvedValueOnce({
+        notifications: [makeSample("n-1"), makeSample("n-2")],
+        page: 1,
+        hasMore: false,
+      })
+      .mockResolvedValueOnce({ success: true });
+
+    const { notifications, fetchNotifications, dismissNotification } =
+      useNotifications();
+    await fetchNotifications();
+
+    await dismissNotification("n-1");
+
+    expect(mockApiFetch).toHaveBeenCalledWith("/api/notifications/n-1", {
+      method: "DELETE",
+    });
+    expect(notifications.value.map((notification) => notification.id)).toEqual([
+      "n-2",
+    ]);
+  });
+
+  it("dismissNotification sets error state and leaves the list intact when the API call fails", async () => {
+    mockApiFetch
+      .mockResolvedValueOnce({
+        notifications: [makeSample("n-1")],
+        page: 1,
+        hasMore: false,
+      })
+      .mockRejectedValueOnce(new Error("Server error"));
+
+    const {
+      notifications,
+      error,
+      dismissingIds,
+      fetchNotifications,
+      dismissNotification,
+    } = useNotifications();
+    await fetchNotifications();
+
+    await expect(dismissNotification("n-1")).resolves.toBeUndefined();
+
+    expect(error.value).toBeTruthy();
+    expect(notifications.value.map((notification) => notification.id)).toEqual([
+      "n-1",
+    ]);
+    // The `finally` cleanup must run even on failure, or the row's dismiss
+    // button would stay disabled forever after one failed attempt with no
+    // way to retry.
+    expect(dismissingIds.value.has("n-1")).toBe(false);
+  });
+
+  it("dismissNotification guards against overlapping calls for the same id (e.g. a double-click)", async () => {
+    mockApiFetch.mockResolvedValueOnce({
+      notifications: [makeSample("n-1")],
+      page: 1,
+      hasMore: false,
+    });
+    const {
+      notifications,
+      fetchNotifications,
+      dismissNotification,
+      dismissingIds,
+    } = useNotifications();
+    await fetchNotifications();
+
+    let resolveDelete: (value: unknown) => void = () => {};
+    mockApiFetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveDelete = resolve;
+        }),
+    );
+
+    const firstCall = dismissNotification("n-1");
+    expect(dismissingIds.value.has("n-1")).toBe(true);
+
+    // Fires while the first DELETE is still in flight — must be a no-op, not
+    // a second DELETE that would 404 against the row the first call already
+    // removed.
+    const secondCall = dismissNotification("n-1");
+
+    resolveDelete({ success: true });
+    await Promise.all([firstCall, secondCall]);
+
+    // 1 call for fetchNotifications' page fetch + 1 for the single DELETE.
+    expect(mockApiFetch).toHaveBeenCalledTimes(2);
+    expect(notifications.value).toEqual([]);
+    expect(dismissingIds.value.has("n-1")).toBe(false);
+  });
+
+  it("a dismiss that completes before an in-flight fetch resolves is not undone by that fetch's stale response", async () => {
+    let resolveGet: (value: unknown) => void = () => {};
+    mockApiFetch.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveGet = resolve;
+        }),
+    );
+
+    const { notifications, fetchNotifications, dismissNotification } =
+      useNotifications();
+
+    // Start a fetch but don't let it resolve yet — mirrors the drawer opening
+    // (fetchNotifications) or /activity mounting (fetchAllNotifications)
+    // while the user is already looking at a previously-loaded list.
+    const fetchCall = fetchNotifications();
+
+    // The DELETE for n-1 resolves before that GET does.
+    mockApiFetch.mockResolvedValueOnce({ success: true });
+    await dismissNotification("n-1");
+
+    // The in-flight GET now resolves with a response captured before the
+    // delete — it still contains n-1. Applying it as-is would resurrect the
+    // row the user just removed.
+    resolveGet({
+      notifications: [makeSample("n-1")],
+      page: 1,
+      hasMore: false,
+    });
+    await fetchCall;
+
+    expect(notifications.value.map((notification) => notification.id)).toEqual(
+      [],
+    );
+  });
+
+  it("dismissNotification treats a 404 (already gone) as success, removing the row without setting error", async () => {
+    mockApiFetch.mockResolvedValueOnce({
+      notifications: [makeSample("n-1")],
+      page: 1,
+      hasMore: false,
+    });
+    const { notifications, error, fetchNotifications, dismissNotification } =
+      useNotifications();
+    await fetchNotifications();
+
+    mockApiFetch.mockRejectedValueOnce({ statusCode: 404 });
+    await dismissNotification("n-1");
+
+    expect(notifications.value).toEqual([]);
+    expect(error.value).toBeNull();
+  });
+
   it("isLoading is false initially", () => {
     const { isLoading } = useNotifications();
     expect(isLoading.value).toBe(false);
