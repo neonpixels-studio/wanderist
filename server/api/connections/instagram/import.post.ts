@@ -27,7 +27,7 @@
 
 import { eq, and, inArray } from "drizzle-orm";
 import { ensureUser } from "../../../utils/auth";
-import { getDb } from "../../../db/index";
+import { getDb, runBatch } from "../../../db/index";
 import {
   connectedAccounts,
   media,
@@ -195,17 +195,21 @@ interface RollbackResult {
   mediaDeleted: boolean;
 }
 
-// Best-effort rollback for a partially-written import. The app's drizzle client
-// uses the neon-http driver (see server/db/index.ts), which has no interactive
-// transactions, so a failed import is undone by hand: deleting the entry cascades
-// its entryPhotos, and deleting the media row cascades any entryPhotos that hung
-// off it (both FKs are ON DELETE CASCADE). Deletes are id-scoped (and owner-scoped
-// as defence in depth), so deleting a row that was never written — or a race
-// loser's row that lost the unique-index insert — is a harmless no-op that cannot
-// touch the race winner's differently-keyed row. A newly-created place row is
-// intentionally left: it is deduplicated (matched on name + coordinates) and
-// reused by the next import run for the same location, so deleting it risks
-// nulling a sibling entry's placeId. Returns which deletes succeeded.
+// Best-effort rollback for a partially-written import, called from two call
+// sites: persistImportedPhotoRows's database.batch() call failing (a genuine
+// SQL error there means the whole batch already rolled back on Neon's side,
+// making these deletes no-ops — but a batch that commits and then fails to
+// report success, e.g. a timeout, cannot be told apart from a real rollback
+// from the client, so this still has to run defensively) and importSinglePhoto's
+// post-commit blob write failing (here the DB rows are known-committed and
+// this rollback is load-bearing, not defensive). Deleting the entry cascades
+// its entryPhotos, and deleting the media row cascades any entryPhotos that
+// hung off it (both FKs are ON DELETE CASCADE). Deletes are id-scoped (and
+// owner-scoped as defence in depth), so deleting a row that was never written
+// is a harmless no-op. A newly-created place row is intentionally left: it is
+// deduplicated (matched on name + coordinates) and reused by the next import
+// run for the same location, so deleting it risks nulling a sibling entry's
+// placeId. Returns which deletes succeeded.
 async function rollbackPartialImport(
   database: DbClient,
   userId: string,
@@ -291,18 +295,29 @@ interface MediaInsertInput {
   dimensions: { width: number; height: number } | null;
 }
 
-// Writes the media, place, entry, and entryPhotos rows for one imported photo.
-// The neon-http driver has no interactive transactions (see server/db/index.ts),
-// so the rows are written sequentially and undone by hand on failure rather than
-// rolled back. The media row is inserted FIRST because it carries the
-// (user_id, source, source_id) unique index: a concurrent race for the same item
-// loses at that insert, and rollbackOrThrow's id-scoped delete of the loser's own
-// (never-committed or self-owned) row is a no-op that never touches the winner.
-// Wrapping the whole sequence means even a media insert that commits but then
-// fails on the HTTP response (timeout/502) is rolled back rather than left as an
-// unreferenced, permanently-skipped row. A place created before a later failure
-// is deliberately left behind: it is deduplicated by name + coordinates and
-// reused by the next run, so it is harmless (see rollbackPartialImport).
+// Writes the media, entry, and entryPhotos rows for one imported photo. The
+// media insert runs ALONE, first — not folded into the batch below — because
+// its (user_id, source, source_id) unique index is the concurrency guard: a
+// second import racing the same Instagram item must lose *here*, before ever
+// calling resolveOrCreatePlace. resolveOrCreatePlace is select-then-maybe-insert
+// on (name, coordinates) with no unique index behind it, so two racing callers
+// that both reached it could both miss the select and both insert a duplicate
+// place row; keeping the media insert as the sole first write preserves the
+// original "only the race winner ever resolves a place" invariant. Once media
+// commits and placeId is resolved, entries + entryPhotos ARE result-independent
+// of each other (entryId and mediaInput.mediaId are already known), so they run
+// as one atomic database.batch() call — the neon-http driver's real
+// BEGIN/COMMIT unit (see server/db/index.ts) — instead of two separate writes.
+// A SQL-level failure there (e.g. an unrelated constraint violation) rolls that
+// pair back on Neon's side, so the id-scoped deletes below are harmless no-ops
+// for that case — but this is still one HTTP round trip, and a transaction that
+// committed server-side can still surface as a client error (timeout, dropped
+// connection, 502) with no way to distinguish that from a genuine rollback. So
+// the whole sequence, media insert included, stays wrapped in the rollback
+// guard: an id-scoped delete of a row that was never written is always a safe
+// no-op, and skipping it would risk leaving a media row that actually did
+// commit but nothing else does — permanently un-retryable, since source_id
+// would already be taken.
 async function persistImportedPhotoRows(
   database: DbClient,
   userId: string,
@@ -312,31 +327,21 @@ async function persistImportedPhotoRows(
   const entryId = crypto.randomUUID();
 
   try {
-    const [mediaRow] = await database
-      .insert(media)
-      .values({
-        id: mediaInput.mediaId,
-        userId,
-        url: mediaInput.storageKey,
-        contentType: mediaInput.contentType,
-        width: mediaInput.dimensions?.width ?? null,
-        height: mediaInput.dimensions?.height ?? null,
-        source: MEDIA_SOURCE.INSTAGRAM,
-        sourceId: item.id,
-      })
-      .returning({ id: media.id });
-
-    if (!mediaRow) {
-      throw new Error(
-        `Failed to insert media record for Instagram item ${item.id}`,
-      );
-    }
+    await database.insert(media).values({
+      id: mediaInput.mediaId,
+      userId,
+      url: mediaInput.storageKey,
+      contentType: mediaInput.contentType,
+      width: mediaInput.dimensions?.width ?? null,
+      height: mediaInput.dimensions?.height ?? null,
+      source: MEDIA_SOURCE.INSTAGRAM,
+      sourceId: item.id,
+    });
 
     const placeId = await resolveOrCreatePlace(database, userId, item);
 
-    const [entryRow] = await database
-      .insert(entries)
-      .values({
+    await runBatch(database, [
+      database.insert(entries).values({
         id: entryId,
         userId,
         placeId,
@@ -344,19 +349,14 @@ async function persistImportedPhotoRows(
         body: item.caption ?? null,
         occurredAt: new Date(item.timestamp),
         visibility: VISIBILITY.PRIVATE,
-      })
-      .returning({ id: entries.id });
-
-    if (!entryRow) {
-      throw new Error(`Failed to insert entry for Instagram item ${item.id}`);
-    }
-
-    await database.insert(entryPhotos).values({
-      id: crypto.randomUUID(),
-      entryId: entryRow.id,
-      mediaId: mediaRow.id,
-      sortOrder: 0,
-    });
+      }),
+      database.insert(entryPhotos).values({
+        id: crypto.randomUUID(),
+        entryId,
+        mediaId: mediaInput.mediaId,
+        sortOrder: 0,
+      }),
+    ]);
   } catch (error) {
     // rollbackOrThrow always throws; `throw await` keeps that a compile-time
     // guarantee so `return { entryId }` is unreachable after a failure.

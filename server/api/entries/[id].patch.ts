@@ -1,10 +1,11 @@
 import { eq } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import {
   loadOwnedOrThrow,
   optionalString,
   requireRouterParam,
 } from "../../utils/db-helpers";
-import { getDb } from "../../db/index";
+import { getDb, runBatch } from "../../db/index";
 import { entries, entryPhotos, entryTags } from "../../db/schema";
 import { deleteMediaIfUnreferenced } from "../../utils/coverImageCleanup";
 import { assertPhotoMediaOwned } from "../../utils/media-helpers";
@@ -69,50 +70,61 @@ function applyOccurredAt(
   updates.occurredAt = parseOccurredAt(body.occurredAt);
 }
 
-async function replaceEntryTags(
+// Builds (but does not run) the delete-then-insert pair that replaces an
+// entry's tag links. tagIds is already resolved (upsertTags is a separate
+// read/write round trip whose result these statements need), so the delete
+// and insert values are both fully known up front and can run together in the
+// caller's atomic database.batch() — a real BEGIN/COMMIT on the neon-http
+// driver (see server/db/index.ts) — instead of as two independent HTTP calls
+// with a partial-replace gap between them.
+function buildTagReplaceStatements(
   database: DbClient,
   entryId: string,
-  tagNames: string[],
-): Promise<void> {
-  // Upsert the tag rows before touching the entry's links so a failure here (a
-  // separate HTTP round trip, no transaction to roll it back) leaves the entry's
-  // existing tags intact rather than deleting them and then failing.
-  const tagIds = await upsertTags(database, tagNames);
+  tagIds: string[],
+): BatchItem<"pg">[] {
+  const statements: BatchItem<"pg">[] = [
+    database.delete(entryTags).where(eq(entryTags.entryId, entryId)),
+  ];
 
-  await database.delete(entryTags).where(eq(entryTags.entryId, entryId));
-
-  if (tagIds.length === 0) {
-    return;
+  if (tagIds.length > 0) {
+    statements.push(
+      database
+        .insert(entryTags)
+        .values(tagIds.map((tagId) => ({ entryId, tagId }))),
+    );
   }
 
-  await database
-    .insert(entryTags)
-    .values(tagIds.map((tagId) => ({ entryId, tagId })));
+  return statements;
 }
 
-async function replaceEntryPhotos(
+// Same shape as buildTagReplaceStatements, for the entry's photo links.
+function buildPhotoReplaceStatements(
   database: DbClient,
   entryId: string,
   mediaIds: string[],
-): Promise<void> {
-  await database.delete(entryPhotos).where(eq(entryPhotos.entryId, entryId));
+): BatchItem<"pg">[] {
+  const statements: BatchItem<"pg">[] = [
+    database.delete(entryPhotos).where(eq(entryPhotos.entryId, entryId)),
+  ];
 
-  if (mediaIds.length === 0) {
-    return;
+  if (mediaIds.length > 0) {
+    statements.push(
+      database.insert(entryPhotos).values(
+        mediaIds.map((mediaId, index) => ({
+          id: generateId(),
+          entryId,
+          mediaId,
+          sortOrder: index,
+        })),
+      ),
+    );
   }
 
-  await database.insert(entryPhotos).values(
-    mediaIds.map((mediaId, index) => ({
-      id: generateId(),
-      entryId,
-      mediaId,
-      sortOrder: index,
-    })),
-  );
+  return statements;
 }
 
-// Captured BEFORE the replace: once replaceEntryPhotos deletes the old rows
-// there is nothing left to tell us which media they pointed at.
+// Captured BEFORE the replace: once the photo-replace batch deletes the old
+// rows there is nothing left to tell us which media they pointed at.
 async function collectEntryPhotoMediaIds(
   database: DbClient,
   entryId: string,
@@ -185,6 +197,8 @@ async function cleanupReplacedPhotoMedia(
   }
 }
 
+// The handler-facing plan: what the PATCH body asked for, before upsertTags
+// has resolved tagNames into tagIds.
 interface EntryWritePlan {
   updates: EntryUpdates;
   hasScalarUpdates: boolean;
@@ -192,53 +206,120 @@ interface EntryWritePlan {
   photoMediaIds: string[] | undefined;
 }
 
-// Runs the entry's multi-statement update sequentially on the base client. The
-// neon-http driver has no interactive transactions (see server/db/index.ts), so
-// there is no transaction to wrap this in. The non-destructive scalar update
-// goes first and the destructive tag/photo replaces (delete-then-insert) go
-// last, so a mid-sequence failure leaves the least-bad state. Tradeoff: without
-// a rollback, a failure between a replace's delete and its re-insert can leave
-// that entry's tags or photos partially replaced; this ordering minimises the
-// blast radius. Returns the updated entry plus the photo media the patch released
-// so the caller can clean it up after the writes commit.
+// The fully-resolved plan buildEntryWriteStatements assembles from: tagNames
+// has already become tagIds (upsertTags's own read/write round trip has to
+// finish first, since its result feeds the entryTags insert values).
+interface EntryWriteStatementPlan {
+  updates: EntryUpdates;
+  hasScalarUpdates: boolean;
+  tagIds: string[] | undefined;
+  photoMediaIds: string[] | undefined;
+}
+
+// Builds the full statement list for applyEntryWrites' atomic batch: the
+// scalar update (always first, when present) followed by the tag and photo
+// replace pairs. Every value here (`updates`, `tagIds`, `photoMediaIds`) is
+// already resolved in JS, so this is pure assembly — no query runs yet.
+function buildEntryWriteStatements(
+  database: DbClient,
+  id: string,
+  plan: EntryWriteStatementPlan,
+): BatchItem<"pg">[] {
+  const { updates, hasScalarUpdates, tagIds, photoMediaIds } = plan;
+  const statements: BatchItem<"pg">[] = [];
+
+  if (hasScalarUpdates) {
+    statements.push(
+      database
+        .update(entries)
+        .set(updates)
+        .where(eq(entries.id, id))
+        .returning(),
+    );
+  }
+  if (tagIds !== undefined) {
+    statements.push(...buildTagReplaceStatements(database, id, tagIds));
+  }
+  if (photoMediaIds !== undefined) {
+    statements.push(
+      ...buildPhotoReplaceStatements(database, id, photoMediaIds),
+    );
+  }
+
+  return statements;
+}
+
+// The scalar update is always statement index 0 when `hasScalarUpdates` is
+// true (see buildEntryWriteStatements), so its `.returning()` result is
+// always `batchResults[0]` — no positional-index bookkeeping needed. Falls
+// back to a plain read when there was no scalar update to return from (a
+// tags-only or photos-only patch).
+async function resolveUpdatedEntry(
+  database: DbClient,
+  id: string,
+  hasScalarUpdates: boolean,
+  batchResults: unknown[],
+): Promise<Entry | undefined> {
+  const updated = hasScalarUpdates
+    ? (batchResults[0] as Entry[])[0]
+    : undefined;
+
+  if (updated) {
+    return updated;
+  }
+
+  const rows = await database.select().from(entries).where(eq(entries.id, id));
+  return rows[0];
+}
+
+// Runs the entry's scalar update plus its tag/photo replaces as ONE atomic
+// database.batch() call — the neon-http driver's real BEGIN/COMMIT unit (see
+// server/db/index.ts). `updates`, `tagIds` (resolved via upsertTags — a
+// separate read/write round trip whose result the entryTags insert needs),
+// and `photoMediaIds` are all known in JS before the batch is built, so none
+// of these statements needs to read another statement's result within the
+// batch. This closes the gap the old sequential-writes comment used to
+// describe: a failure used to be able to leave that entry's tags or photos
+// half-replaced with no rollback; now the whole batch rolls back atomically.
+// `previousMediaIds` is a read, not a write, and must run before the photo
+// replace's delete or there would be nothing left to report on. Returns the
+// updated entry plus the photo media the patch released so the caller can
+// clean it up after the batch commits.
 async function applyEntryWrites(
   database: DbClient,
   id: string,
   plan: EntryWritePlan,
 ): Promise<{ updated: Entry | undefined; removedMediaIds: string[] }> {
   const { updates, hasScalarUpdates, tagNames, photoMediaIds } = plan;
-  let updated: Entry | undefined;
 
-  if (hasScalarUpdates) {
-    const rows = await database
-      .update(entries)
-      .set(updates)
-      .where(eq(entries.id, id))
-      .returning();
-    updated = rows[0];
-  }
+  const tagIds =
+    tagNames !== undefined ? await upsertTags(database, tagNames) : undefined;
 
-  if (tagNames !== undefined) {
-    await replaceEntryTags(database, id, tagNames);
-  }
+  const previousMediaIds =
+    photoMediaIds !== undefined
+      ? await collectEntryPhotoMediaIds(database, id)
+      : undefined;
 
-  let removedMediaIds: string[] = [];
-  if (photoMediaIds !== undefined) {
-    const previousMediaIds = await collectEntryPhotoMediaIds(database, id);
-    await replaceEntryPhotos(database, id, photoMediaIds);
-    removedMediaIds = mediaIdsNoLongerReferenced(
-      previousMediaIds,
-      photoMediaIds,
-    );
-  }
+  const statements = buildEntryWriteStatements(database, id, {
+    updates,
+    hasScalarUpdates,
+    tagIds,
+    photoMediaIds,
+  });
 
-  if (!updated) {
-    const rows = await database
-      .select()
-      .from(entries)
-      .where(eq(entries.id, id));
-    updated = rows[0];
-  }
+  const batchResults = await runBatch(database, statements);
+
+  const removedMediaIds =
+    photoMediaIds !== undefined
+      ? mediaIdsNoLongerReferenced(previousMediaIds ?? [], photoMediaIds)
+      : [];
+
+  const updated = await resolveUpdatedEntry(
+    database,
+    id,
+    hasScalarUpdates,
+    batchResults,
+  );
 
   return { updated, removedMediaIds };
 }
