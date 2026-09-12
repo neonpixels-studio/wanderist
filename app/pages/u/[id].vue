@@ -31,7 +31,7 @@
         :handle-label="handleLabel"
         :home-base="profile.homeBase"
         :is-self="profile.isSelf"
-        :following="following"
+        :following="viewerIsFollowingTarget"
         :pending="pending"
         @toggle="onToggleFollow"
       />
@@ -72,6 +72,21 @@
           :loading="followersLoading"
           :error-message="followersError"
           :has-more="hasMoreFollowers"
+        />
+      </section>
+
+      <section class="psec">
+        <div class="sec-head">
+          <div>
+            <div class="label">// following</div>
+            <h2>Who {{ displayName }} follows</h2>
+          </div>
+        </div>
+        <ProfileFollowingList
+          :following="following"
+          :loading="followingLoading"
+          :error-message="followingError"
+          :has-more="hasMoreFollowing"
         />
       </section>
 
@@ -126,21 +141,26 @@ const {
   profile,
   followers,
   hasMoreFollowers,
+  following,
+  hasMoreFollowing,
   trips,
   hasMoreTrips,
   guides,
   hasMoreGuides,
   isLoading,
   followersLoading,
+  followingLoading,
   tripsLoading,
   guidesLoading,
   notFound,
   error,
   followersError,
+  followingError,
   tripsError,
   guidesError,
   fetchProfile,
   fetchFollowers,
+  fetchFollowingList,
   fetchTrips,
   fetchGuides,
 } = useProfile();
@@ -162,7 +182,9 @@ const displayName = computed(
 
 const handleLabel = computed(() => formatHandle(profile.value?.handle));
 
-const following = computed(() => isFollowing(userId.value));
+// Whether the viewer (not the profile owner) follows this profile — distinct
+// from `following`, the profile owner's own list of who they follow.
+const viewerIsFollowingTarget = computed(() => isFollowing(userId.value));
 const pending = computed(() => isPending(userId.value));
 
 useHead(
@@ -211,6 +233,7 @@ useAsyncData(
     Promise.all([
       fetchProfile(userId.value),
       fetchFollowers(userId.value),
+      fetchFollowingList(userId.value),
       fetchTrips(userId.value),
       fetchGuides(userId.value),
     ]),

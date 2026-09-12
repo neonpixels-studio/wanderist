@@ -37,8 +37,18 @@ export type Database = ReturnType<typeof getDb>;
 // is fetched internally to detect (and signal via `hasMore`) that more exist.
 export const FOLLOWERS_PAGE_SIZE = 50;
 
+// Maximum followees returned by a single following-list request. Mirrors
+// FOLLOWERS_PAGE_SIZE: one extra row is fetched internally to detect
+// `hasMore` without a separate COUNT query.
+export const FOLLOWING_PAGE_SIZE = 50;
+
 export interface FollowersPage {
   followers: PublicPerson[];
+  hasMore: boolean;
+}
+
+export interface FollowingPage {
+  following: PublicPerson[];
   hasMore: boolean;
 }
 
@@ -267,12 +277,58 @@ export async function fetchFollowers(
     .where(
       and(eq(follows.followeeId, userId), publiclyVisibleAuthorCondition()),
     )
-    .orderBy(desc(follows.createdAt))
+    // A secondary key on follower_id keeps the LIMIT cut deterministic when
+    // multiple follows share the same createdAt (e.g. bulk-seeded rows),
+    // matching the tiebreaker fetchPublicTrips/fetchPublicGuides use on id.
+    .orderBy(desc(follows.createdAt), desc(follows.followerId))
     .limit(FOLLOWERS_PAGE_SIZE + 1);
 
   return {
     followers: rows.slice(0, FOLLOWERS_PAGE_SIZE),
     hasMore: rows.length > FOLLOWERS_PAGE_SIZE,
+  };
+}
+
+/**
+ * Returns one page of public-profile accounts that `userId` follows, most
+ * recently followed first, capped at FOLLOWING_PAGE_SIZE, plus a `hasMore`
+ * flag. The mirror image of `fetchFollowers`: same shape, same privacy rule,
+ * but keyed off `follows.followerId` (the viewer's own following list joined
+ * against the followee's account) instead of `follows.followeeId`. Served by
+ * the `(follower_id, followee_id)` primary key via its leftmost prefix — no
+ * dedicated index needed, unlike `fetchFollowers`, which relies on the
+ * separate `follows_followee_id_idx`.
+ *
+ * As with `fetchFollowers`, this list is narrower than
+ * `ProfileRow.followingCount` (every non-deleted follow, public or private) —
+ * the count reflects true reach, the list respects each followee's privacy.
+ */
+export async function fetchFollowing(
+  database: Database,
+  userId: string,
+): Promise<FollowingPage> {
+  // Fetch one extra row so `hasMore` is known without a separate COUNT query.
+  const rows = await database
+    .select({
+      userId: users.id,
+      displayName: userPreferences.displayName,
+      handle: userPreferences.handle,
+    })
+    .from(follows)
+    .innerJoin(users, eq(follows.followeeId, users.id))
+    .innerJoin(userPreferences, eq(follows.followeeId, userPreferences.userId))
+    .where(
+      and(eq(follows.followerId, userId), publiclyVisibleAuthorCondition()),
+    )
+    // A secondary key on followee_id keeps the LIMIT cut deterministic when
+    // multiple follows share the same createdAt (e.g. bulk-seeded rows),
+    // matching the tiebreaker fetchPublicTrips/fetchPublicGuides use on id.
+    .orderBy(desc(follows.createdAt), desc(follows.followeeId))
+    .limit(FOLLOWING_PAGE_SIZE + 1);
+
+  return {
+    following: rows.slice(0, FOLLOWING_PAGE_SIZE),
+    hasMore: rows.length > FOLLOWING_PAGE_SIZE,
   };
 }
 
