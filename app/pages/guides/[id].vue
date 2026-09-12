@@ -39,6 +39,7 @@
 
     <header class="gdetail__head">
       <h1>{{ guide.title }}</h1>
+      <div class="gdetail__by">{{ authorLabel }}</div>
       <div class="gdetail__meta">
         <span class="m">
           <AppIcon name="clock" :size="12" />
@@ -63,6 +64,7 @@
 import { computed } from "vue";
 import { useGuidesStore } from "~/stores/guides";
 import type { GuideVisibility } from "~/stores/guides";
+import { formatAuthorByline } from "~/utils/travelerLabels";
 
 // No auth middleware: a public guide must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private or
@@ -140,6 +142,16 @@ const visibilityTagClass = computed(() =>
   guide.value ? VISIBILITY_TAG_CLASS[guide.value.visibility] : "",
 );
 
+// Falls back to "by a traveler" when the author has set neither a handle nor
+// a display name — a public guide always has an author (userId is never
+// null), so this covers "anonymous" in the sense of "hasn't set a name", not
+// "no author at all".
+const authorLabel = computed(() =>
+  guide.value
+    ? formatAuthorByline(guide.value.ownerHandle, guide.value.ownerDisplayName)
+    : "",
+);
+
 useHead(
   computed(() => ({
     title: guide.value
@@ -171,6 +183,11 @@ useHead(
   font-size: 28px;
   font-weight: 700;
   letter-spacing: -0.02em;
+}
+.gdetail__by {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
 }
 .gdetail__meta {
   display: flex;

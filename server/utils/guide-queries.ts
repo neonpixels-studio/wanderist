@@ -89,3 +89,55 @@ export async function loadReadableGuide(
 
   return guide;
 }
+
+export interface GuideWithAuthor extends Guide {
+  ownerDisplayName: string | null;
+  ownerHandle: string | null;
+}
+
+/**
+ * Looks up the byline fields for a guide's author. Called only after the
+ * caller already knows the guide is readable (see loadReadableGuideWithAuthor)
+ * — by that point the author is either the requester themselves (always safe
+ * to show their own name) or has already cleared discoverableAuthorCondition
+ * (public, live, entitled, on explore), so this never needs to repeat that
+ * gate. A missing preferences row (unexpected, since every user gets one on
+ * signup) degrades to nulls rather than throwing, so a byline glitch can't
+ * take down the guide read path.
+ */
+async function fetchGuideAuthor(
+  database: Database,
+  userId: string,
+): Promise<{ displayName: string | null; handle: string | null }> {
+  const rows = await database
+    .select({
+      displayName: userPreferences.displayName,
+      handle: userPreferences.handle,
+    })
+    .from(userPreferences)
+    .where(eq(userPreferences.userId, userId))
+    .limit(1);
+
+  return rows[0] ?? { displayName: null, handle: null };
+}
+
+/**
+ * Same visibility rule as loadReadableGuide, with the author's byline fields
+ * (displayName/handle from user_preferences) merged in for display — the
+ * detail page and any card showing a public guide need to say who wrote it
+ * (see the guides/[id] read-only page).
+ */
+export async function loadReadableGuideWithAuthor(
+  database: Database,
+  id: string,
+  userId: string | null,
+): Promise<GuideWithAuthor> {
+  const guide = await loadReadableGuide(database, id, userId);
+  const author = await fetchGuideAuthor(database, guide.userId);
+
+  return {
+    ...guide,
+    ownerDisplayName: author.displayName,
+    ownerHandle: author.handle,
+  };
+}

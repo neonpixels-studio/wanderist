@@ -140,6 +140,42 @@ describe("Guide Detail page (/guides/[id])", () => {
     expect(wrapper.text()).toContain("8 min read");
   });
 
+  it("renders the author's handle in the byline when present", () => {
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = {
+      ...SAMPLE_GUIDE,
+      ownerHandle: "elsa_far",
+      ownerDisplayName: "Elsa",
+    };
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+    expect(wrapper.find(".gdetail__by").text()).toBe("by @elsa_far");
+  });
+
+  it("falls back to the display name in the byline when there is no handle", () => {
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = {
+      ...SAMPLE_GUIDE,
+      ownerHandle: null,
+      ownerDisplayName: "Elsa",
+    };
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+    expect(wrapper.find(".gdetail__by").text()).toBe("by Elsa");
+  });
+
+  it("falls back to a generic byline for a guide with no handle or display name (anonymous author)", () => {
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = {
+      ...SAMPLE_GUIDE,
+      ownerHandle: null,
+      ownerDisplayName: null,
+    };
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+    expect(wrapper.find(".gdetail__by").text()).toBe("by a traveler");
+  });
+
   it("requests the guide named by the route param", () => {
     const guidesStore = useGuidesStore();
     mount(GuideDetailPage, buildGlobalConfig(pinia));

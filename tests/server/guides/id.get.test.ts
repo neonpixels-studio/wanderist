@@ -41,16 +41,17 @@ import { eq } from "drizzle-orm";
 import { requireRouterParam } from "../../../server/utils/db-helpers";
 import { optionalUser } from "../../../server/utils/auth";
 import { getDb } from "../../../server/db/index";
-import { guides } from "../../../server/db/schema";
+import { guides, userPreferences } from "../../../server/db/schema";
 
 const mockEq = vi.mocked(eq);
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
 const mockOptionalUser = vi.mocked(optionalUser);
 const mockGetDb = vi.mocked(getDb);
 
-// The handler may issue up to two queries (the guide lookup, then a non-owner
-// author-discoverability check that uses innerJoin), so each `.limit()` returns
-// the next queued response.
+// The handler may issue up to three queries — the guide lookup, then (for a
+// non-owner) the author-discoverability check that uses innerJoin, then
+// always the author byline lookup (displayName/handle) — so each `.limit()`
+// returns the next queued response.
 function makeDb(responses: Record<string, unknown>[][]) {
   let call = 0;
   const limitMock = vi.fn(() => Promise.resolve(responses[call++] ?? []));
@@ -94,15 +95,22 @@ describe("GET /api/guides/:id", () => {
     mockRequireRouterParam.mockReturnValue("guide-1");
   });
 
-  it("returns a private guide to its owner, including the body", async () => {
+  it("returns a private guide to its owner, including the body and byline", async () => {
     const guide = makeGuide({ visibility: "private", userId: OWNER_ID });
     mockOptionalUser.mockReturnValue(OWNER_ID);
-    const mockDb = makeDb([[guide]]);
+    const mockDb = makeDb([
+      [guide],
+      [{ displayName: "Elsa", handle: "elsa_far" }],
+    ]);
     mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
 
     const result = await runHandler();
 
-    expect(result).toEqual(guide);
+    expect(result).toEqual({
+      ...guide,
+      ownerDisplayName: "Elsa",
+      ownerHandle: "elsa_far",
+    });
     expect((result as { body: string }).body).toBe(
       "Start in Yanaka at sunrise.",
     );
@@ -110,23 +118,36 @@ describe("GET /api/guides/:id", () => {
     // regression to the wrong column or a dropped limit fails here rather
     // than silently returning someone else's guide.
     expect(mockEq).toHaveBeenCalledWith(guides.id, "guide-1");
-    expect(mockDb._where).toHaveBeenCalledTimes(1);
+    // One `where` for the guide lookup, one for the author byline lookup —
+    // the owner path never runs the discoverability check.
+    expect(mockDb._where).toHaveBeenCalledTimes(2);
     expect(mockDb._limit).toHaveBeenCalledWith(1);
   });
 
-  it("returns a public guide to a non-owner when the author is discoverable", async () => {
+  it("returns a public guide to a non-owner when the author is discoverable, including the byline", async () => {
     const guide = makeGuide({ visibility: "public", userId: OWNER_ID });
     mockOptionalUser.mockReturnValue(OTHER_ID);
-    // Second response is non-empty: the author passes the discoverability check.
+    // Second response is non-empty: the author passes the discoverability
+    // check. Third response is the author byline lookup.
     mockGetDb.mockReturnValue(
-      makeDb([[guide], [{ userId: OWNER_ID }]]) as unknown as ReturnType<
-        typeof getDb
-      >,
+      makeDb([
+        [guide],
+        [{ userId: OWNER_ID }],
+        [{ displayName: "Elsa", handle: "elsa_far" }],
+      ]) as unknown as ReturnType<typeof getDb>,
     );
 
     const result = await runHandler();
 
-    expect(result).toEqual(guide);
+    expect(result).toEqual({
+      ...guide,
+      ownerDisplayName: "Elsa",
+      ownerHandle: "elsa_far",
+    });
+    // The byline must be looked up for the guide's owner, not the requesting
+    // viewer (OTHER_ID) — a regression here would show the viewer's own name
+    // on someone else's guide instead of 404ing or showing the real author.
+    expect(mockEq).toHaveBeenCalledWith(userPreferences.userId, OWNER_ID);
   });
 
   it("hides a private guide from a non-owner with a 404", async () => {
@@ -159,19 +180,45 @@ describe("GET /api/guides/:id", () => {
     await expect(runHandler()).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it("returns a public guide to an anonymous visitor when the author is discoverable", async () => {
+  it("returns a public guide to an anonymous visitor when the author is discoverable, including the byline", async () => {
     const guide = makeGuide({ visibility: "public", userId: OWNER_ID });
     // Anonymous visitor: no session, so optionalUser resolves to null.
     mockOptionalUser.mockReturnValue(null);
     mockGetDb.mockReturnValue(
-      makeDb([[guide], [{ userId: OWNER_ID }]]) as unknown as ReturnType<
-        typeof getDb
-      >,
+      makeDb([
+        [guide],
+        [{ userId: OWNER_ID }],
+        [{ displayName: "Elsa", handle: "elsa_far" }],
+      ]) as unknown as ReturnType<typeof getDb>,
     );
 
     const result = await runHandler();
 
-    expect(result).toEqual(guide);
+    expect(result).toEqual({
+      ...guide,
+      ownerDisplayName: "Elsa",
+      ownerHandle: "elsa_far",
+    });
+    // Same guard as the non-owner test above: an anonymous viewer has no id
+    // of their own to leak, but a regression that swapped in a hardcoded or
+    // wrong id here would slip past a plain result-shape assertion.
+    expect(mockEq).toHaveBeenCalledWith(userPreferences.userId, OWNER_ID);
+  });
+
+  it("falls back to a null byline when the author has no preferences row", async () => {
+    const guide = makeGuide({ visibility: "private", userId: OWNER_ID });
+    mockOptionalUser.mockReturnValue(OWNER_ID);
+    mockGetDb.mockReturnValue(
+      makeDb([[guide], []]) as unknown as ReturnType<typeof getDb>,
+    );
+
+    const result = await runHandler();
+
+    expect(result).toEqual({
+      ...guide,
+      ownerDisplayName: null,
+      ownerHandle: null,
+    });
   });
 
   it("hides a private guide from an anonymous visitor with a 404", async () => {
@@ -188,9 +235,11 @@ describe("GET /api/guides/:id", () => {
     const guide = makeGuide({ visibility: "public", userId: OWNER_ID });
     mockOptionalUser.mockReturnValue(null);
     mockGetDb.mockReturnValue(
-      makeDb([[guide], [{ userId: OWNER_ID }]]) as unknown as ReturnType<
-        typeof getDb
-      >,
+      makeDb([
+        [guide],
+        [{ userId: OWNER_ID }],
+        [{ displayName: "Elsa", handle: "elsa_far" }],
+      ]) as unknown as ReturnType<typeof getDb>,
     );
 
     await runHandler();
