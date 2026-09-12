@@ -19,17 +19,14 @@ set -euo pipefail
 
 # High/critical advisories accepted because no patched version exists upstream.
 # Remove an entry the moment its package ships a fix and bump via `overrides`.
-ALLOWLISTED_ADVISORIES=(
-  # image-size <=2.0.2: crafted ICNS/JXL/HEIF inputs cause an infinite-loop DoS.
-  # No patched version exists (GHSA firstPatchedVersion is null as of Aug 2026);
-  # 2.0.2 is the latest published release. Reaches the tree only through
-  # @netlify/dev-utils' image transform, pulled by @netlify/blobs (pinned to
-  # dev-utils 4.4.7) and used by server/utils/mediaStore.ts for blob storage —
-  # wanderist never feeds untrusted bytes to that image path. Drop both ids once
-  # image-size publishes a fix and bump it through `overrides`.
-  "GHSA-w3rx-r6r6-pgpr" # image-size: ICNS parser DoS
-  "GHSA-5p2g-fcmc-qvqq" # image-size: JXL/HEIF parser DoS
-)
+# Currently empty: the image-size advisories previously allowlisted here
+# (GHSA-w3rx-r6r6-pgpr, GHSA-5p2g-fcmc-qvqq) dropped out of `npm audit`'s
+# report as of Sep 2026 — image-size is no longer reachable in the dependency
+# tree (verified via `npm ls image-size`, which now resolves nothing), most
+# likely because an updated @netlify/blobs/@netlify/dev-utils release stopped
+# pulling it transitively. Re-add an entry here only if a high/critical
+# advisory resurfaces with no upstream fix available.
+ALLOWLISTED_ADVISORIES=()
 
 report="$(npm audit --json || true)"
 
