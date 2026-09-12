@@ -7,8 +7,19 @@ import { defineStore } from "pinia";
 // regardless of the CI runner's system timezone.
 process.env.TZ = "UTC";
 
-// Expose Vue composition API as globals to match Nuxt's auto-import behavior
-Object.assign(globalThis, vue);
+// Expose Vue composition API as globals to match Nuxt's auto-import behavior.
+// Vue also exports internal VNode-type markers (Comment, Text, Fragment, ...)
+// that happen to share names with real DOM globals. As of Vitest 5, writing to
+// a happy-dom-backed global now propagates to the underlying DOM
+// implementation (see https://vitest.dev/guide/migration/), so assigning these
+// unfiltered would silently replace happy-dom's native Comment/Text
+// constructors with Vue's symbols and break anything that calls
+// document.createComment()/createTextNode() — including Vue's own renderer.
+// Skip any Vue export whose name already exists as a global.
+const vueGlobals = Object.fromEntries(
+  Object.entries(vue).filter(([key]) => !(key in globalThis)),
+);
+Object.assign(globalThis, vueGlobals);
 
 // Stub Nuxt-only composables that are unavailable in plain Vitest
 Object.assign(globalThis, {
