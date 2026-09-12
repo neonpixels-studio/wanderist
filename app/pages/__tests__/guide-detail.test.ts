@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { ref, reactive, nextTick, unref } from "vue";
+import { ref, reactive, nextTick, unref, watch } from "vue";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import GuideDetailPage from "../guides/[id].vue";
@@ -11,6 +11,17 @@ import type { Guide } from "~/stores/guides";
 // change the guide id and assert the page's watched ref tracks it.
 const routeParams = reactive({ id: "guide-1" });
 vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
+
+// The fetch's canRetryAuthenticated watch reads useClerkAuth; drive it from
+// refs so a test can simulate the Clerk bootstrap window and a signed-in
+// owner's session resolving after the anonymous first pass.
+const clerkLoadedRef = ref(true);
+const clerkSignedInRef = ref(false);
+vi.stubGlobal("useClerkAuth", () => ({
+  isLoaded: clerkLoadedRef,
+  isSignedIn: clerkSignedInRef,
+  getToken: vi.fn().mockResolvedValue(null),
+}));
 
 // The global useAsyncData stub never invokes its handler, so by default the
 // page's fetch wiring is dead under test. Override it to run the handler once
@@ -32,6 +43,15 @@ vi.stubGlobal(
   ) => {
     lastAsyncDataOptions = options;
     handler();
+    // Honour the real refetch-on-watch contract so a test can assert an
+    // anonymous visitor fetches once while the owner's request re-runs when the
+    // session resolves — asserting the watch array alone would pass even if the
+    // page dropped the watcher entirely.
+    if (options?.watch) {
+      watch(options.watch as Parameters<typeof watch>[0], () => {
+        handler();
+      });
+    }
     return {
       data: ref(null),
       pending: ref(false),
@@ -59,6 +79,12 @@ const alertStub = {
   template: '<div class="alert-stub" :data-message="message" />',
 };
 
+// Shared by the auth-aware-refetch tests below, which each need to assert on
+// the call count of the store's spy without re-deriving the cast.
+function getFetchGuideByIdSpy(): ReturnType<typeof vi.fn> {
+  return useGuidesStore().fetchGuideById as unknown as ReturnType<typeof vi.fn>;
+}
+
 function buildGlobalConfig(pinia: ReturnType<typeof createPinia>) {
   return {
     global: {
@@ -79,6 +105,10 @@ describe("Guide Detail page (/guides/[id])", () => {
     routeParams.id = "guide-1";
     asyncDataStatus.value = "success";
     mockRefresh.mockClear();
+    // Default: Clerk resolved and signed in, matching most existing assertions
+    // (which don't exercise the auth-aware refetch itself).
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = true;
     pinia = createPinia();
     setActivePinia(pinia);
 
@@ -253,5 +283,83 @@ describe("Guide Detail page (/guides/[id])", () => {
 
     const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
     expect(wrapper.text()).toContain("This guide has no content yet.");
+  });
+
+  it("fetches once for an anonymous visitor and retries once the owner's session resolves, replacing the not-found guide with the owner's guide", async () => {
+    // Start anonymous with Clerk still loading. The store starts as a real
+    // anonymous-first-pass 404 would leave it: no guide, not-found set.
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = null;
+    guidesStore.guideNotFound = true;
+    const fetchSpy = getFetchGuideByIdSpy();
+    fetchSpy.mockResolvedValue(undefined);
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // Clerk finishing its load for an anonymous visitor must NOT retry: they
+    // never gain a token, so a second identical request is wasted.
+    clerkLoadedRef.value = true;
+    await nextTick();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // A resolved, signed-in session triggers exactly one authenticated retry so
+    // the owner's own private guide loads after the anonymous first pass 404'd.
+    // Simulate that retry actually succeeding, the way the real store would, so
+    // this test proves the guide replaces "not found" rather than only
+    // counting fetch calls.
+    fetchSpy.mockImplementationOnce(async () => {
+      guidesStore.currentGuide = { ...SAMPLE_GUIDE };
+      guidesStore.guideNotFound = false;
+    });
+    clerkSignedInRef.value = true;
+    await nextTick();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    expect(wrapper.text()).not.toContain("Guide not found.");
+    expect(wrapper.text()).toContain("Tokyo on foot");
+  });
+
+  it("fetches exactly once when the viewer is already signed in at mount", async () => {
+    // canRetryAuthenticated is already true on the first render (Clerk resolved
+    // before the component mounted), so no transition fires and the watcher
+    // must not cause a second call. Await a tick after mount so a stray fetch
+    // fired by the watcher (which flushes asynchronously) can't slip past a
+    // synchronous assertion.
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = true;
+    const fetchSpy = getFetchGuideByIdSpy();
+
+    mount(GuideDetailPage, buildGlobalConfig(pinia));
+    await nextTick();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("refetches when a signed-in owner signs out, so a private guide clears from the screen", async () => {
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = true;
+    const guidesStore = useGuidesStore();
+    const fetchSpy = getFetchGuideByIdSpy();
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("Tokyo on foot");
+
+    // Simulate the sign-out retry actually 404ing on the now-private guide, the
+    // way the real store would, so this test proves the guide leaves the
+    // screen rather than only counting fetch calls.
+    fetchSpy.mockImplementationOnce(async () => {
+      guidesStore.currentGuide = null;
+      guidesStore.guideNotFound = true;
+    });
+    clerkSignedInRef.value = false;
+    await nextTick();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(wrapper.text()).not.toContain("Tokyo on foot");
+    expect(wrapper.text()).toContain("Guide not found.");
   });
 });
