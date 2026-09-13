@@ -503,6 +503,59 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(reorderSpy).not.toHaveBeenCalled();
   });
 
+  it("marks the dragged row and the current drop target while a drag is in progress", async () => {
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const stops = wrapper.findAll(".stop");
+
+    await stops[0]!.trigger("dragstart");
+    expect(stops[0]!.classes()).toContain("stop--dragging");
+
+    await stops[2]!.trigger("dragover");
+    expect(stops[2]!.classes()).toContain("stop--drag-over");
+    // The dragged row itself is never also marked as a drop target.
+    expect(stops[0]!.classes()).not.toContain("stop--drag-over");
+  });
+
+  it("keeps the drop-target outline while the pointer moves within the same row's children", async () => {
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const stops = wrapper.findAll(".stop");
+
+    await stops[0]!.trigger("dragstart");
+    await stops[2]!.trigger("dragover");
+    expect(stops[2]!.classes()).toContain("stop--drag-over");
+
+    // dragleave fires when the pointer crosses into a descendant (e.g. the
+    // card); relatedTarget still points inside stops[2], so the outline must
+    // survive rather than flicker off.
+    const childElement = stops[2]!.find(".stop__card").element;
+    await stops[2]!.trigger("dragleave", { relatedTarget: childElement });
+    expect(stops[2]!.classes()).toContain("stop--drag-over");
+  });
+
+  it("clears the drag-over outline once the pointer truly leaves the row", async () => {
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const stops = wrapper.findAll(".stop");
+
+    await stops[0]!.trigger("dragstart");
+    await stops[2]!.trigger("dragover");
+    expect(stops[2]!.classes()).toContain("stop--drag-over");
+
+    await stops[2]!.trigger("dragleave", { relatedTarget: document.body });
+    expect(stops[2]!.classes()).not.toContain("stop--drag-over");
+  });
+
+  it("clears both drag classes when the drag ends without a drop", async () => {
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const stops = wrapper.findAll(".stop");
+
+    await stops[0]!.trigger("dragstart");
+    await stops[2]!.trigger("dragover");
+    await stops[0]!.trigger("dragend");
+
+    expect(stops[0]!.classes()).not.toContain("stop--dragging");
+    expect(stops[2]!.classes()).not.toContain("stop--drag-over");
+  });
+
   it("surfaces an error and leaves the order unchanged when reordering fails", async () => {
     const tripsStore = useTripsStore();
     vi.spyOn(tripsStore, "reorderStops").mockRejectedValue(

@@ -214,8 +214,8 @@
                       type="button"
                       class="stop__move-btn"
                       :aria-label="`Move ${stop.name} up`"
-                      :disabled="isReordering || isFirstStop(stop)"
-                      @click="onMoveStopUp(stop)"
+                      :disabled="isFirstStop(stop)"
+                      @click="onMoveStopUp(stop, $event)"
                     >
                       <AppIcon name="arrow-up" :size="14" />
                     </button>
@@ -223,8 +223,8 @@
                       type="button"
                       class="stop__move-btn"
                       :aria-label="`Move ${stop.name} down`"
-                      :disabled="isReordering || isLastStop(stop)"
-                      @click="onMoveStopDown(stop)"
+                      :disabled="isLastStop(stop)"
+                      @click="onMoveStopDown(stop, $event)"
                     >
                       <AppIcon name="arrow-down" :size="14" />
                     </button>
@@ -382,6 +382,7 @@ import { useTripsStore } from "~/stores/trips";
 import type { Trip, TripStop } from "~/stores/trips";
 import { useMediaUpload } from "~/composables/useMediaUpload";
 import { moveIdUp, moveIdDown, moveIdToDropTarget } from "~/utils/stopOrder";
+import type { StopOrderMutator } from "~/utils/stopOrder";
 
 // No auth middleware: a public trip must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private trip returns
@@ -516,6 +517,12 @@ const sortedStops = computed<TripStop[]>(() => {
 // move-button reorder is in flight, otherwise the store's committed order.
 // Falling back to sortedStops keeps every other computed/template reference
 // correct without threading isReordering through them individually.
+//
+// A pending order can go stale mid-flight if the user navigates to a
+// different trip before the PUT resolves (pendingStopOrder is only cleared in
+// persistStopOrder's finally). Rather than silently dropping the ids that no
+// longer resolve — which would render a partial/empty itinerary — fall back
+// to the committed order whenever any id can't be resolved.
 const displayedStops = computed<TripStop[]>(() => {
   if (!pendingStopOrder.value || !tripDetail.value) {
     return sortedStops.value;
@@ -524,9 +531,22 @@ const displayedStops = computed<TripStop[]>(() => {
   const stopsById = new Map(
     tripDetail.value.stops.map((stop) => [stop.id, stop]),
   );
-  return pendingStopOrder.value
-    .map((stopId) => stopsById.get(stopId))
-    .filter((stop): stop is TripStop => stop != null);
+  const resolvedStops = pendingStopOrder.value.map((stopId) =>
+    stopsById.get(stopId),
+  );
+  const hasUnresolvedStop = resolvedStops.some((stop) => stop == null);
+  if (hasUnresolvedStop) {
+    return sortedStops.value;
+  }
+
+  return resolvedStops as TripStop[];
+});
+
+// A pending optimistic order belongs to the trip it was computed for; discard
+// it on navigation so it can never be misapplied to a different trip's stops
+// (see the displayedStops fallback above for what happens if it lingers).
+watch(tripId, () => {
+  pendingStopOrder.value = null;
 });
 
 // Cap at 6 stops to fit the mini-map without overlapping pins
@@ -661,6 +681,16 @@ async function onAddStop(): Promise<void> {
   }
 }
 
+// aria-live only announces on an actual text mutation, so writing the same
+// message twice in a row (e.g. the same stop failing to move on two
+// consecutive attempts) would announce nothing the second time. Clearing the
+// region first, on its own tick, guarantees every call is a real mutation.
+async function announceMove(message: string): Promise<void> {
+  moveAnnouncement.value = "";
+  await nextTick();
+  moveAnnouncement.value = message;
+}
+
 // Shared by drag-and-drop and the move-up/move-down buttons: applies the new
 // order optimistically, then persists it via the existing reorder endpoint.
 // On success the store's own order already matches newOrder (verified by
@@ -668,7 +698,9 @@ async function onAddStop(): Promise<void> {
 // causes no flicker; on failure the store was never touched, so clearing it
 // reverts the view to the last-committed (pre-reorder) order. Guarded on
 // isReordering so a second move started before the first settles is dropped
-// rather than interleaving two in-flight requests.
+// rather than interleaving two in-flight requests — the move buttons stay
+// enabled throughout (see onMoveStopUp/Down) so this guard, not a disabled
+// attribute, is what makes that safe.
 async function persistStopOrder(
   newOrder: string[],
   movedStopId: string,
@@ -685,15 +717,55 @@ async function persistStopOrder(
   try {
     await tripsStore.reorderStops(tripId.value, newOrder);
     const newPosition = newOrder.indexOf(movedStopId);
-    moveAnnouncement.value = `Moved ${movedStopName} to position ${newPosition + 1} of ${newOrder.length}`;
+    await announceMove(
+      `Moved ${movedStopName} to position ${newPosition + 1} of ${newOrder.length}`,
+    );
   } catch (error) {
     reorderError.value =
       error instanceof Error ? error.message : "Failed to reorder stops";
-    moveAnnouncement.value = `Could not move ${movedStopName}. The order was not changed.`;
+    await announceMove(
+      `Could not move ${movedStopName}. The order was not changed.`,
+    );
   } finally {
     pendingStopOrder.value = null;
     isReordering.value = false;
   }
+}
+
+// Shared by the drop handler and both move buttons: compute the candidate
+// order, bail (no-op) if the mover didn't actually produce a new order, else
+// persist it.
+async function applyStopOrder(
+  computeOrder: StopOrderMutator,
+  movedStopId: string,
+  movedStopName: string,
+): Promise<void> {
+  const currentOrder = displayedStops.value.map((stop) => stop.id);
+  const newOrder = computeOrder(currentOrder);
+  if (newOrder === currentOrder) {
+    return;
+  }
+  await persistStopOrder(newOrder, movedStopId, movedStopName);
+}
+
+// The move buttons are deliberately never disabled while a reorder is in
+// flight (persistStopOrder's isReordering guard makes that safe — see its
+// comment) because a disabled button loses focus to <body>, forcing a
+// keyboard/screen-reader user to re-tab through the whole itinerary after
+// every single move. Instead, focus is restored here once the order settles:
+// back onto the same button if it's still usable, otherwise onto its sibling
+// (the button crossed a boundary, e.g. move-up from the second-to-first slot).
+async function refocusMoveButton(
+  clickedButton: HTMLButtonElement,
+): Promise<void> {
+  await nextTick();
+  if (!clickedButton.disabled) {
+    clickedButton.focus();
+    return;
+  }
+  clickedButton.parentElement
+    ?.querySelector<HTMLButtonElement>(".stop__move-btn:not(:disabled)")
+    ?.focus();
 }
 
 function onStopDragStart(stop: TripStop, event: DragEvent): void {
@@ -750,34 +822,41 @@ async function onStopDrop(targetStop: TripStop): Promise<void> {
     return;
   }
 
-  const currentOrder = displayedStops.value.map((stop) => stop.id);
-  const newOrder = moveIdToDropTarget(currentOrder, draggedId, targetStop.id);
-  if (newOrder === currentOrder) {
-    return;
-  }
-
   const draggedStop = displayedStops.value.find(
     (stop) => stop.id === draggedId,
   );
-  await persistStopOrder(newOrder, draggedId, draggedStop?.name ?? "stop");
+  await applyStopOrder(
+    (currentOrder) =>
+      moveIdToDropTarget(currentOrder, draggedId, targetStop.id),
+    draggedId,
+    draggedStop?.name ?? "stop",
+  );
 }
 
-async function onMoveStopUp(stop: TripStop): Promise<void> {
-  const currentOrder = displayedStops.value.map((candidate) => candidate.id);
-  const newOrder = moveIdUp(currentOrder, stop.id);
-  if (newOrder === currentOrder) {
-    return;
-  }
-  await persistStopOrder(newOrder, stop.id, stop.name);
+async function onMoveStopUp(stop: TripStop, event: MouseEvent): Promise<void> {
+  // Captured before the first await: DOM event objects reset currentTarget
+  // to null once dispatch finishes, which happens well before the async work
+  // below completes.
+  const clickedButton = event.currentTarget as HTMLButtonElement;
+  await applyStopOrder(
+    (currentOrder) => moveIdUp(currentOrder, stop.id),
+    stop.id,
+    stop.name,
+  );
+  await refocusMoveButton(clickedButton);
 }
 
-async function onMoveStopDown(stop: TripStop): Promise<void> {
-  const currentOrder = displayedStops.value.map((candidate) => candidate.id);
-  const newOrder = moveIdDown(currentOrder, stop.id);
-  if (newOrder === currentOrder) {
-    return;
-  }
-  await persistStopOrder(newOrder, stop.id, stop.name);
+async function onMoveStopDown(
+  stop: TripStop,
+  event: MouseEvent,
+): Promise<void> {
+  const clickedButton = event.currentTarget as HTMLButtonElement;
+  await applyStopOrder(
+    (currentOrder) => moveIdDown(currentOrder, stop.id),
+    stop.id,
+    stop.name,
+  );
+  await refocusMoveButton(clickedButton);
 }
 
 function onEditCover(): void {
@@ -1104,6 +1183,7 @@ function onInvite(): void {
   margin: -1px;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
 }
