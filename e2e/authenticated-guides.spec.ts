@@ -11,7 +11,13 @@
  * real running server, Clerk testing helper for sign-in, tests skipped when
  * Clerk credentials are absent so a CI run without them degrades gracefully.
  */
-import { test, expect, type TestInfo } from "@playwright/test";
+import {
+  test,
+  expect,
+  type Locator,
+  type Page,
+  type TestInfo,
+} from "@playwright/test";
 import { clerk, clerkSetup } from "@clerk/testing/playwright";
 
 // Fixed Clerk test identifier — no env var needed. The +clerk_test suffix marks
@@ -61,7 +67,7 @@ test.beforeEach(async ({}, testInfo) => {
 // The +clerk_test suffix lets @clerk/testing auto-fill the OTP in dev mode.
 // ---------------------------------------------------------------------------
 
-async function signIn(page: Parameters<typeof clerk.signIn>[0]["page"]) {
+async function signIn(page: Page) {
   await page.goto("/");
   await clerk.signIn({
     page,
@@ -89,13 +95,23 @@ function runTag(testInfo: TestInfo): string {
 // so a click before hydration attaches listeners is silently dropped).
 // ---------------------------------------------------------------------------
 
-async function waitForAppReady(
-  page: Parameters<typeof clerk.signIn>[0]["page"],
-) {
+async function waitForAppReady(page: Page) {
   await page.locator('.shell[data-auth-ready="true"]').waitFor({
     state: "attached",
     timeout: 15_000,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Helper: locate a guide card by its title. Shared by createGuide() and the
+// post-reload assertions below, so a guide's card is always found the same
+// way whether it was just created or re-fetched from a fresh page load.
+// ---------------------------------------------------------------------------
+
+function locateGuideCard(page: Page, guideTitle: string): Locator {
+  return page
+    .locator(".gcard")
+    .filter({ has: page.locator(".gcard__name", { hasText: guideTitle }) });
 }
 
 // ---------------------------------------------------------------------------
@@ -104,10 +120,7 @@ async function waitForAppReady(
 // liking it) without re-deriving the selector.
 // ---------------------------------------------------------------------------
 
-async function createGuide(
-  page: Parameters<typeof clerk.signIn>[0]["page"],
-  guideTitle: string,
-) {
+async function createGuide(page: Page, guideTitle: string): Promise<Locator> {
   await page.goto("/guides");
   await expect(page.locator("h1", { hasText: "Your guides" })).toBeVisible({
     timeout: 15_000,
@@ -126,12 +139,35 @@ async function createGuide(
     .locator(".guide-form button", { hasText: "publish guide" })
     .click();
 
-  const guideCard = page
-    .locator(".gcard")
-    .filter({ has: page.locator(".gcard__name", { hasText: guideTitle }) });
+  const guideCard = locateGuideCard(page, guideTitle);
   await expect(guideCard).toBeVisible({ timeout: 10_000 });
 
   return guideCard;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: click a guide card's like button and wait for its like/unlike
+// request to resolve before returning. Without this, a second click (e.g.
+// the unlike half of a like-then-unlike test) can fire while the first
+// request is still in flight — the server sees two toggles racing, and a
+// late response can overwrite the second optimistic UI flip, flaking the
+// final assertion. Matches on the like endpoint path (not a guide id, which
+// callers here don't have handy) plus HTTP method, since it is the only
+// endpoint either click can trigger.
+// ---------------------------------------------------------------------------
+
+async function clickLikeButtonAndAwaitRequest(
+  page: Page,
+  likeButton: Locator,
+  method: "POST" | "DELETE",
+): Promise<void> {
+  const likeRequest = page.waitForResponse(
+    (response) =>
+      /\/api\/guides\/[^/]+\/like$/.test(new URL(response.url()).pathname) &&
+      response.request().method() === method,
+  );
+  await likeButton.click();
+  await likeRequest;
 }
 
 // ---------------------------------------------------------------------------
@@ -144,9 +180,18 @@ test("user can create a new guide", async ({ page }, testInfo) => {
 
   await signIn(page);
   const guideCard = await createGuide(page, guideTitle);
+  await expect(guideCard.locator(".gcard__meta .tag")).toHaveText("private");
 
-  // Read: the guide is on the page in the default (private) visibility.
-  await expect(guideCard.locator(".tag")).toHaveText("private");
+  // Reload to prove the guide was actually persisted server-side (fetched
+  // back via GET /api/guides), not just held in the store's optimistic
+  // post-create state.
+  await page.reload();
+  await waitForAppReady(page);
+  const guideCardAfterReload = locateGuideCard(page, guideTitle);
+  await expect(guideCardAfterReload).toBeVisible({ timeout: 10_000 });
+  await expect(guideCardAfterReload.locator(".gcard__meta .tag")).toHaveText(
+    "private",
+  );
 });
 
 test("user can like and unlike their own guide", async ({ page }, testInfo) => {
@@ -157,17 +202,30 @@ test("user can like and unlike their own guide", async ({ page }, testInfo) => {
   const guideCard = await createGuide(page, guideTitle);
 
   const likeButton = guideCard.locator(".gcard__like");
+  await expect(likeButton).toHaveAttribute("aria-label", "Like guide");
   await expect(likeButton).toHaveText("0");
-  await expect(likeButton).not.toHaveClass(/liked/);
 
-  await likeButton.click();
+  await clickLikeButtonAndAwaitRequest(page, likeButton, "POST");
+  await expect(likeButton).toHaveAttribute("aria-label", "Unlike guide");
+  await expect(likeButton).toHaveText("1");
 
-  // Optimistic update flips immediately; the server round-trip confirms it.
-  await expect(likeButton).toHaveClass(/liked/, { timeout: 10_000 });
-  await expect(likeButton).toHaveText("1", { timeout: 10_000 });
+  // Reload to prove the like was actually persisted server-side — the heart
+  // re-seeds from the server's likedByCurrentUser flag on every fetch (see
+  // seedLikedGuides in pages/guides/index.vue) — not just held optimistically.
+  await page.reload();
+  await waitForAppReady(page);
+  const guideCardAfterReload = locateGuideCard(page, guideTitle);
+  const likeButtonAfterReload = guideCardAfterReload.locator(".gcard__like");
+  await expect(likeButtonAfterReload).toHaveAttribute(
+    "aria-label",
+    "Unlike guide",
+  );
+  await expect(likeButtonAfterReload).toHaveText("1");
 
-  await likeButton.click();
-
-  await expect(likeButton).not.toHaveClass(/liked/, { timeout: 10_000 });
-  await expect(likeButton).toHaveText("0", { timeout: 10_000 });
+  await clickLikeButtonAndAwaitRequest(page, likeButtonAfterReload, "DELETE");
+  await expect(likeButtonAfterReload).toHaveAttribute(
+    "aria-label",
+    "Like guide",
+  );
+  await expect(likeButtonAfterReload).toHaveText("0");
 });
