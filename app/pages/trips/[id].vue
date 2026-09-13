@@ -151,70 +151,98 @@
               Route &amp; stops
             </h2>
           </div>
-          <button
-            v-if="isOwner"
-            class="btn btn--ghost btn--sm"
-            :disabled="sortedStops.length < 2"
-            @click="onReorder"
-          >
-            <AppIcon name="sliders" :size="14" />
-            reorder
-          </button>
         </div>
 
         <div class="iti">
-          <div
-            v-for="stop in sortedStops"
-            :key="stop.id"
-            class="stop"
-            :class="stopStateClass(stop.status)"
-          >
-            <div class="stop__node">
-              <div class="stop__pin">
-                <AppIcon
-                  v-if="stop.status === 'done'"
-                  name="check"
-                  :size="18"
-                />
-                <AppIcon
-                  v-else-if="stop.status === 'next'"
-                  name="pin"
-                  :size="18"
-                />
-                <span v-else>{{ stopDisplayNumber(stop) }}</span>
+          <ul class="iti__list">
+            <li
+              v-for="stop in displayedStops"
+              :key="stop.id"
+              class="stop"
+              :class="[
+                stopStateClass(stop.status),
+                {
+                  'stop--dragging': draggedStopId === stop.id,
+                  'stop--drag-over':
+                    dragOverStopId === stop.id && draggedStopId !== stop.id,
+                },
+              ]"
+              :draggable="isOwner && !isReordering"
+              @dragstart="onStopDragStart(stop)"
+              @dragover.prevent="onStopDragOver(stop)"
+              @dragleave="onStopDragLeave(stop)"
+              @drop.prevent="onStopDrop(stop)"
+              @dragend="onStopDragEnd"
+            >
+              <div class="stop__node">
+                <div class="stop__pin">
+                  <AppIcon
+                    v-if="stop.status === 'done'"
+                    name="check"
+                    :size="18"
+                  />
+                  <AppIcon
+                    v-else-if="stop.status === 'next'"
+                    name="pin"
+                    :size="18"
+                  />
+                  <span v-else>{{ stopDisplayNumber(stop) }}</span>
+                </div>
               </div>
-            </div>
-            <div class="stop__card">
-              <div class="stop__top">
-                <div>
-                  <div class="stop__name">{{ stop.name }}</div>
-                  <div class="stop__sub">
-                    <template v-if="stop.arriveDate">
-                      <AppIcon name="calendar" :size="12" />
-                      {{ formatStopDate(stop.arriveDate) }}
-                      <template v-if="stop.nights != null">
-                        · {{ stop.nights }}
-                        {{ stop.nights === 1 ? "night" : "nights" }}
+              <div class="stop__card">
+                <div class="stop__top">
+                  <div>
+                    <div class="stop__name">{{ stop.name }}</div>
+                    <div class="stop__sub">
+                      <template v-if="stop.arriveDate">
+                        <AppIcon name="calendar" :size="12" />
+                        {{ formatStopDate(stop.arriveDate) }}
+                        <template v-if="stop.nights != null">
+                          · {{ stop.nights }}
+                          {{ stop.nights === 1 ? "night" : "nights" }}
+                        </template>
                       </template>
-                    </template>
-                    <span v-if="stop.status === 'next'" class="tag tag--accent"
-                      >next</span
+                      <span
+                        v-if="stop.status === 'next'"
+                        class="tag tag--accent"
+                        >next</span
+                      >
+                    </div>
+                  </div>
+                  <div v-if="isOwner" class="stop__reorder">
+                    <button
+                      type="button"
+                      class="stop__move-btn"
+                      :aria-label="`Move ${stop.name} up`"
+                      :disabled="isReordering || isFirstStop(stop)"
+                      @click="onMoveStopUp(stop)"
                     >
+                      <AppIcon name="arrow-up" :size="14" />
+                    </button>
+                    <button
+                      type="button"
+                      class="stop__move-btn"
+                      :aria-label="`Move ${stop.name} down`"
+                      :disabled="isReordering || isLastStop(stop)"
+                      @click="onMoveStopDown(stop)"
+                    >
+                      <AppIcon name="arrow-down" :size="14" />
+                    </button>
+                    <span class="stop__grip" aria-hidden="true">
+                      <AppIcon name="grip" :size="16" />
+                    </span>
                   </div>
                 </div>
-                <span v-if="isOwner" class="stop__grip">
-                  <AppIcon name="grip" :size="16" />
-                </span>
+                <p v-if="stop.note" class="stop__note">{{ stop.note }}</p>
+                <div class="stop__foot">
+                  <span v-if="stop.distanceKm != null" class="m">
+                    <AppIcon name="ruler" :size="12" />
+                    {{ formatKm(stop.distanceKm) }}
+                  </span>
+                </div>
               </div>
-              <p v-if="stop.note" class="stop__note">{{ stop.note }}</p>
-              <div class="stop__foot">
-                <span v-if="stop.distanceKm != null" class="m">
-                  <AppIcon name="ruler" :size="12" />
-                  {{ formatKm(stop.distanceKm) }}
-                </span>
-              </div>
-            </div>
-          </div>
+            </li>
+          </ul>
 
           <div v-if="isOwner" class="stop__add">
             <div />
@@ -223,6 +251,10 @@
               {{ isAddingStop ? "adding…" : "add a stop" }}
             </button>
           </div>
+
+          <p class="visually-hidden" role="status" aria-live="polite">
+            {{ moveAnnouncement }}
+          </p>
         </div>
 
         <div
@@ -349,6 +381,7 @@
 import { useTripsStore } from "~/stores/trips";
 import type { Trip, TripStop } from "~/stores/trips";
 import { useMediaUpload } from "~/composables/useMediaUpload";
+import { moveIdUp, moveIdDown, moveIdBefore } from "~/utils/stopOrder";
 
 // No auth middleware: a public trip must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private trip returns
@@ -380,6 +413,19 @@ const reorderError = ref<string | null>(null);
 const uploadError = ref<string | null>(null);
 const shareError = ref<string | null>(null);
 const coverInputRef = ref<HTMLInputElement | null>(null);
+
+// Drag-and-drop + keyboard reorder state. isReordering guards against
+// overlapping requests (a second drag/click while one is still persisting).
+const draggedStopId = ref<string | null>(null);
+const dragOverStopId = ref<string | null>(null);
+const isReordering = ref(false);
+const moveAnnouncement = ref("");
+
+// While a reorder is in flight (or has just landed), the visual order can
+// differ from the store's last-committed order (tripDetail.stops) — this is
+// the optimistic override. Null once nothing is pending, at which point the
+// list falls back to the store's own order.
+const pendingStopOrder = ref<string[] | null>(null);
 
 // Guard against the render window during in-page navigation (trip-1 -> trip-2):
 // the route id updates reactively before the refetch flips isLoadingDetail, so
@@ -466,8 +512,25 @@ const sortedStops = computed<TripStop[]>(() => {
   );
 });
 
+// The order actually rendered: the optimistic pending order while a drag or
+// move-button reorder is in flight, otherwise the store's committed order.
+// Falling back to sortedStops keeps every other computed/template reference
+// correct without threading isReordering through them individually.
+const displayedStops = computed<TripStop[]>(() => {
+  if (!pendingStopOrder.value || !tripDetail.value) {
+    return sortedStops.value;
+  }
+
+  const stopsById = new Map(
+    tripDetail.value.stops.map((stop) => [stop.id, stop]),
+  );
+  return pendingStopOrder.value
+    .map((stopId) => stopsById.get(stopId))
+    .filter((stop): stop is TripStop => stop != null);
+});
+
 // Cap at 6 stops to fit the mini-map without overlapping pins
-const mapPins = computed<TripStop[]>(() => sortedStops.value.slice(0, 6));
+const mapPins = computed<TripStop[]>(() => displayedStops.value.slice(0, 6));
 
 // pendingCoverUrl holds the optimistically cached URL after a successful cover
 // upload so the hero displays immediately without a round-trip to re-fetch the trip.
@@ -519,10 +582,18 @@ function stopStateClass(status: TripStop["status"]): string {
 }
 
 function stopDisplayNumber(stop: TripStop): number {
-  const index = sortedStops.value.findIndex(
+  const index = displayedStops.value.findIndex(
     (candidateStop) => candidateStop.id === stop.id,
   );
   return index + 1;
+}
+
+function isFirstStop(stop: TripStop): boolean {
+  return displayedStops.value[0]?.id === stop.id;
+}
+
+function isLastStop(stop: TripStop): boolean {
+  return displayedStops.value.at(-1)?.id === stop.id;
 }
 
 const UTC_DATE_FORMAT = {
@@ -590,23 +661,99 @@ async function onAddStop(): Promise<void> {
   }
 }
 
-async function onReorder(): Promise<void> {
-  if (!tripId.value || sortedStops.value.length < 2) {
+// Shared by drag-and-drop and the move-up/move-down buttons: applies the new
+// order optimistically, then persists it via the existing reorder endpoint.
+// On success the store's own order already matches newOrder, so clearing the
+// override causes no flicker; on failure the store was never touched, so
+// clearing it reverts the view to the last-committed (pre-reorder) order.
+async function persistStopOrder(
+  newOrder: string[],
+  movedStopId: string,
+  movedStopName: string,
+): Promise<void> {
+  if (!tripId.value) {
     return;
   }
 
+  pendingStopOrder.value = newOrder;
+  isReordering.value = true;
   reorderError.value = null;
 
   try {
-    // Reorder is a drag operation in the full UI; for now the button persists
-    // the current visual order to the server (no-op if already ordered,
-    // but wires the endpoint so drag-and-drop can call reorderStops directly).
-    const stopIds = sortedStops.value.map((stop) => stop.id);
-    await tripsStore.reorderStops(tripId.value, stopIds);
+    await tripsStore.reorderStops(tripId.value, newOrder);
+    const newPosition = newOrder.indexOf(movedStopId);
+    moveAnnouncement.value = `Moved ${movedStopName} to position ${newPosition + 1} of ${newOrder.length}`;
   } catch (error) {
     reorderError.value =
       error instanceof Error ? error.message : "Failed to reorder stops";
+  } finally {
+    pendingStopOrder.value = null;
+    isReordering.value = false;
   }
+}
+
+function onStopDragStart(stop: TripStop): void {
+  if (!isOwner.value || isReordering.value) {
+    return;
+  }
+  draggedStopId.value = stop.id;
+}
+
+function onStopDragOver(stop: TripStop): void {
+  if (!draggedStopId.value) {
+    return;
+  }
+  dragOverStopId.value = stop.id;
+}
+
+function onStopDragLeave(stop: TripStop): void {
+  if (dragOverStopId.value === stop.id) {
+    dragOverStopId.value = null;
+  }
+}
+
+function onStopDragEnd(): void {
+  draggedStopId.value = null;
+  dragOverStopId.value = null;
+}
+
+async function onStopDrop(targetStop: TripStop): Promise<void> {
+  const draggedId = draggedStopId.value;
+  draggedStopId.value = null;
+  dragOverStopId.value = null;
+
+  if (!draggedId || draggedId === targetStop.id) {
+    return;
+  }
+
+  const currentOrder = displayedStops.value.map((stop) => stop.id);
+  const newOrder = moveIdBefore(currentOrder, draggedId, targetStop.id);
+  if (newOrder === currentOrder) {
+    return;
+  }
+
+  const draggedStop = displayedStops.value.find(
+    (stop) => stop.id === draggedId,
+  );
+  await persistStopOrder(newOrder, draggedId, draggedStop?.name ?? "stop");
+}
+
+async function onMoveStopUp(stop: TripStop): Promise<void> {
+  const currentOrder = displayedStops.value.map((candidate) => candidate.id);
+  const newOrder = moveIdUp(currentOrder, stop.id);
+  if (newOrder === currentOrder) {
+    return;
+  }
+  await persistStopOrder(newOrder, stop.id, stop.name);
+}
+
+async function onMoveStopDown(stop: TripStop): Promise<void> {
+  const currentOrder = displayedStops.value.map((candidate) => candidate.id);
+  const newOrder = moveIdDown(currentOrder, stop.id);
+  if (newOrder === currentOrder) {
+    return;
+  }
+  await persistStopOrder(newOrder, stop.id, stop.name);
 }
 
 function onEditCover(): void {
@@ -816,12 +963,28 @@ function onInvite(): void {
   width: 2px;
   background: var(--line);
 }
+.iti__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
 .stop {
   position: relative;
   display: grid;
   grid-template-columns: 40px 1fr;
   gap: 14px;
   margin-bottom: 16px;
+}
+.stop[draggable="true"] {
+  cursor: grab;
+}
+.stop--dragging {
+  opacity: 0.5;
+}
+.stop--drag-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius);
 }
 .stop__node {
   width: 40px;
@@ -881,10 +1044,44 @@ function onInvite(): void {
   gap: 6px;
   flex-wrap: wrap;
 }
-.stop__grip {
+.stop__reorder {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.stop__move-btn {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.stop__move-btn:hover:not(:disabled) {
+  background: var(--bg-tint);
+  color: var(--accent-ink);
+}
+.stop__move-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.stop__grip {
   color: var(--faint);
-  cursor: grab;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 .stop__note {
   font-size: 12.5px;

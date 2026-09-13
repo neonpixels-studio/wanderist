@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ref, reactive, nextTick, unref, watch } from "vue";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TripDetailPage from "../trips/[id].vue";
 import { useTripsStore } from "~/stores/trips";
-import type { TripDetail } from "~/stores/trips";
+import type { TripDetail, TripStop } from "~/stores/trips";
 
 // Override the global useRoute stub with a REACTIVE params object so a test can
 // change the trip id and assert the page's watched ref tracks it.
@@ -134,6 +134,34 @@ const alertStub = {
   props: ["intent", "message"],
   template: '<div class="alert-stub" :data-message="message" />',
 };
+
+// Stands in for the real store action: mirrors the actual reorderStops
+// behavior (recompute sortOrder from index in the caller's list, write the
+// result back onto currentTripDetail.stops, return it) so drag/keyboard
+// reorder tests can assert on the resulting render without hitting the network.
+function mockReorderStops(
+  tripsStore: ReturnType<typeof useTripsStore>,
+): ReturnType<typeof vi.fn> {
+  return vi
+    .spyOn(tripsStore, "reorderStops")
+    .mockImplementation(async (tripId: string, stopIds: string[]) => {
+      const currentDetail = tripsStore.currentTripDetail;
+      if (!currentDetail || currentDetail.trip.id !== tripId) {
+        return [];
+      }
+
+      const stopsById = new Map(
+        currentDetail.stops.map((stop) => [stop.id, stop]),
+      );
+      const reordered: TripStop[] = stopIds.map((stopId, index) => ({
+        ...stopsById.get(stopId)!,
+        sortOrder: index,
+      }));
+
+      tripsStore.currentTripDetail = { ...currentDetail, stops: reordered };
+      return reordered;
+    }) as unknown as ReturnType<typeof vi.fn>;
+}
 
 function buildGlobalConfig(pinia: ReturnType<typeof createPinia>) {
   return {
@@ -391,6 +419,108 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(stopNames[2]).toBe("Third");
   });
 
+  it("renders a move up/down button per owned stop, disabled at the list boundaries", () => {
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const moveButtons = wrapper.findAll(".stop__move-btn");
+
+    expect(moveButtons).toHaveLength(6);
+    expect(moveButtons[0]?.attributes("disabled")).toBeDefined(); // first stop, move up
+    expect(moveButtons[1]?.attributes("disabled")).toBeUndefined(); // first stop, move down
+    expect(moveButtons[4]?.attributes("disabled")).toBeUndefined(); // last stop, move up
+    expect(moveButtons[5]?.attributes("disabled")).toBeDefined(); // last stop, move down
+  });
+
+  it("moves a stop down via the keyboard-accessible button and persists via reorderStops", async () => {
+    const tripsStore = useTripsStore();
+    const reorderSpy = mockReorderStops(tripsStore);
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const moveButtons = wrapper.findAll(".stop__move-btn");
+    await moveButtons[1]!.trigger("click"); // stop-1's move-down button
+    await flushPromises();
+
+    expect(reorderSpy).toHaveBeenCalledWith("trip-1", [
+      "stop-2",
+      "stop-1",
+      "stop-3",
+    ]);
+    const stopNames = wrapper
+      .findAll(".stop__name")
+      .map((element) => element.text());
+    expect(stopNames).toEqual(["Jökulsárlón", "Reykjavík", "Höfn"]);
+  });
+
+  it("moves a stop up via the keyboard-accessible button and persists via reorderStops", async () => {
+    const tripsStore = useTripsStore();
+    const reorderSpy = mockReorderStops(tripsStore);
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const moveButtons = wrapper.findAll(".stop__move-btn");
+    await moveButtons[2]!.trigger("click"); // stop-2's move-up button
+    await flushPromises();
+
+    expect(reorderSpy).toHaveBeenCalledWith("trip-1", [
+      "stop-2",
+      "stop-1",
+      "stop-3",
+    ]);
+  });
+
+  it("reorders via drag-and-drop, dropping the dragged stop just before the target", async () => {
+    // Dropping stop-3 onto stop-1 inserts it immediately before stop-1 (the
+    // same semantics as moveIdBefore), producing [stop-3, stop-1, stop-2].
+    const tripsStore = useTripsStore();
+    const reorderSpy = mockReorderStops(tripsStore);
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const stops = wrapper.findAll(".stop");
+    await stops[2]!.trigger("dragstart");
+    await stops[0]!.trigger("dragover");
+    await stops[0]!.trigger("drop");
+    await flushPromises();
+
+    expect(reorderSpy).toHaveBeenCalledWith("trip-1", [
+      "stop-3",
+      "stop-1",
+      "stop-2",
+    ]);
+    const stopNames = wrapper
+      .findAll(".stop__name")
+      .map((element) => element.text());
+    expect(stopNames).toEqual(["Höfn", "Reykjavík", "Jökulsárlón"]);
+  });
+
+  it("is a no-op when a stop is dropped on itself", async () => {
+    const tripsStore = useTripsStore();
+    const reorderSpy = mockReorderStops(tripsStore);
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const stops = wrapper.findAll(".stop");
+    await stops[0]!.trigger("dragstart");
+    await stops[0]!.trigger("drop");
+    await flushPromises();
+
+    expect(reorderSpy).not.toHaveBeenCalled();
+  });
+
+  it("surfaces an error and leaves the order unchanged when reordering fails", async () => {
+    const tripsStore = useTripsStore();
+    vi.spyOn(tripsStore, "reorderStops").mockRejectedValue(
+      new Error("Failed to save the new stop order"),
+    );
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const moveButtons = wrapper.findAll(".stop__move-btn");
+    await moveButtons[1]!.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Failed to save the new stop order");
+    const stopNames = wrapper
+      .findAll(".stop__name")
+      .map((element) => element.text());
+    expect(stopNames).toEqual(["Reykjavík", "Jökulsárlón", "Höfn"]);
+  });
+
   it("requests the trip named by the route param", () => {
     const tripsStore = useTripsStore();
     mount(TripDetailPage, buildGlobalConfig(pinia));
@@ -464,6 +594,8 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(wrapper.find(".iti-head button").exists()).toBe(false);
     expect(wrapper.find('input[type="file"]').exists()).toBe(false);
     expect(wrapper.find(".stop__grip").exists()).toBe(false);
+    expect(wrapper.find(".stop__move-btn").exists()).toBe(false);
+    expect(wrapper.find(".stop").attributes("draggable")).toBe("false");
     expect(wrapper.find(".companions").exists()).toBe(false);
   });
 
