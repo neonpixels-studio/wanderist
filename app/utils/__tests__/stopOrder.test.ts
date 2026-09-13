@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { moveIdUp, moveIdDown, moveIdBefore } from "../stopOrder";
+import { moveIdUp, moveIdDown, moveIdToDropTarget } from "../stopOrder";
 
 describe("moveIdUp", () => {
   it("swaps the id with its predecessor", () => {
@@ -45,43 +45,62 @@ describe("moveIdDown", () => {
   });
 });
 
-describe("moveIdBefore", () => {
-  it("moves the dragged id to just before the target id (dragging forward)", () => {
-    expect(moveIdBefore(["a", "b", "c", "d"], "a", "c")).toEqual([
+describe("moveIdToDropTarget", () => {
+  it("moves the dragged id to just after the target id (dragging forward/down)", () => {
+    expect(moveIdToDropTarget(["a", "b", "c", "d"], "a", "c")).toEqual([
       "b",
-      "a",
       "c",
+      "a",
       "d",
     ]);
   });
 
-  it("moves the dragged id to just before the target id (dragging backward)", () => {
-    expect(moveIdBefore(["a", "b", "c", "d"], "d", "b")).toEqual([
+  it("moves the dragged id to just before the target id (dragging backward/up)", () => {
+    expect(moveIdToDropTarget(["a", "b", "c", "d"], "d", "b")).toEqual([
       "a",
       "d",
       "b",
+      "c",
+    ]);
+  });
+
+  it("moves the dragged id after the target when dropped on its immediate successor (dragging down)", () => {
+    // Regression guard: inserting "before" the target here would reproduce
+    // the original order, so a naive before-only implementation would treat
+    // this drop as a no-op and fire a network request that changes nothing.
+    expect(moveIdToDropTarget(["a", "b", "c"], "a", "b")).toEqual([
+      "b",
+      "a",
+      "c",
+    ]);
+  });
+
+  it("moves the dragged id before the target when dropped on its immediate predecessor (dragging up)", () => {
+    expect(moveIdToDropTarget(["a", "b", "c"], "b", "a")).toEqual([
+      "b",
+      "a",
       "c",
     ]);
   });
 
   it("is a no-op (same array instance) when dropped on itself", () => {
     const orderedIds = ["a", "b", "c"];
-    expect(moveIdBefore(orderedIds, "b", "b")).toBe(orderedIds);
+    expect(moveIdToDropTarget(orderedIds, "b", "b")).toBe(orderedIds);
   });
 
   it("is a no-op (same array instance) when the dragged id is unknown", () => {
     const orderedIds = ["a", "b", "c"];
-    expect(moveIdBefore(orderedIds, "missing", "b")).toBe(orderedIds);
+    expect(moveIdToDropTarget(orderedIds, "missing", "b")).toBe(orderedIds);
   });
 
   it("is a no-op (same array instance) when the target id is unknown", () => {
     const orderedIds = ["a", "b", "c"];
-    expect(moveIdBefore(orderedIds, "a", "missing")).toBe(orderedIds);
+    expect(moveIdToDropTarget(orderedIds, "a", "missing")).toBe(orderedIds);
   });
 
   it("does not mutate the input array", () => {
     const orderedIds = ["a", "b", "c", "d"];
-    moveIdBefore(orderedIds, "a", "c");
+    moveIdToDropTarget(orderedIds, "a", "c");
     expect(orderedIds).toEqual(["a", "b", "c", "d"]);
   });
 });

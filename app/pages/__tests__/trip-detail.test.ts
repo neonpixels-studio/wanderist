@@ -468,7 +468,7 @@ describe("Trip Detail page (/trips/[id])", () => {
 
   it("reorders via drag-and-drop, dropping the dragged stop just before the target", async () => {
     // Dropping stop-3 onto stop-1 inserts it immediately before stop-1 (the
-    // same semantics as moveIdBefore), producing [stop-3, stop-1, stop-2].
+    // same semantics as moveIdToDropTarget), producing [stop-3, stop-1, stop-2].
     const tripsStore = useTripsStore();
     const reorderSpy = mockReorderStops(tripsStore);
 
@@ -519,6 +519,55 @@ describe("Trip Detail page (/trips/[id])", () => {
       .findAll(".stop__name")
       .map((element) => element.text());
     expect(stopNames).toEqual(["Reykjavík", "Jökulsárlón", "Höfn"]);
+  });
+
+  it("announces a failed reorder in the live region (not just the visual error banner)", async () => {
+    const tripsStore = useTripsStore();
+    vi.spyOn(tripsStore, "reorderStops").mockRejectedValue(
+      new Error("Failed to save the new stop order"),
+    );
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const moveButtons = wrapper.findAll(".stop__move-btn");
+    await moveButtons[1]!.trigger("click");
+    await flushPromises();
+
+    const liveRegion = wrapper.find('[role="status"]');
+    expect(liveRegion.text()).toContain("Reykjavík");
+    expect(liveRegion.text().toLowerCase()).toContain("not changed");
+  });
+
+  it("announces the new position in the live region on a successful reorder", async () => {
+    const tripsStore = useTripsStore();
+    mockReorderStops(tripsStore);
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const moveButtons = wrapper.findAll(".stop__move-btn");
+    await moveButtons[1]!.trigger("click"); // stop-1's move-down button
+    await flushPromises();
+
+    const liveRegion = wrapper.find('[role="status"]');
+    expect(liveRegion.text()).toBe("Moved Reykjavík to position 2 of 3");
+  });
+
+  it("ignores a second move while the first reorder is still in flight", async () => {
+    const tripsStore = useTripsStore();
+    let resolveReorder: ((stops: TripStop[]) => void) | undefined;
+    vi.spyOn(tripsStore, "reorderStops").mockReturnValue(
+      new Promise((resolve) => {
+        resolveReorder = resolve;
+      }),
+    );
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const moveButtons = wrapper.findAll(".stop__move-btn");
+    await moveButtons[1]!.trigger("click"); // stop-1 down: request 1 in flight
+    await moveButtons[3]!.trigger("click"); // stop-2 down: should be dropped
+
+    expect(tripsStore.reorderStops).toHaveBeenCalledTimes(1);
+
+    resolveReorder?.(SAMPLE_DETAIL.stops);
+    await flushPromises();
   });
 
   it("requests the trip named by the route param", () => {

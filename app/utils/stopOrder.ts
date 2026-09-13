@@ -34,25 +34,36 @@ export function moveIdDown(orderedIds: string[], id: string): string[] {
   return swapAt(orderedIds, index, index + 1);
 }
 
-// Moves draggedId to sit immediately before targetId, used when a drag ends
-// over another stop. Returns the same array instance when the drop is a no-op
-// (dropped on itself, or either id is unknown).
-export function moveIdBefore(
+// Moves draggedId to sit next to targetId, used when a drag ends over another
+// stop. Direction-aware: dragging downward (toward a later index) drops AFTER
+// the target, dragging upward drops BEFORE it — matching how a dragged card
+// visually settles relative to the row it was released on. Returns the same
+// array instance when the drop is a no-op (dropped on itself, on the row it
+// already sits next to, or either id is unknown).
+export function moveIdToDropTarget(
   orderedIds: string[],
   draggedId: string,
   targetId: string,
 ): string[] {
+  const draggedIndex = orderedIds.indexOf(draggedId);
+  const targetIndex = orderedIds.indexOf(targetId);
   const isNoOp =
-    draggedId === targetId ||
-    !orderedIds.includes(draggedId) ||
-    !orderedIds.includes(targetId);
+    draggedId === targetId || draggedIndex === -1 || targetIndex === -1;
   if (isNoOp) {
     return orderedIds;
   }
 
   const withoutDragged = orderedIds.filter((id) => id !== draggedId);
-  const targetIndex = withoutDragged.indexOf(targetId);
+  const isDraggingDown = draggedIndex < targetIndex;
+  const insertAt = withoutDragged.indexOf(targetId) + (isDraggingDown ? 1 : 0);
   const result = [...withoutDragged];
-  result.splice(targetIndex, 0, draggedId);
-  return result;
+  result.splice(insertAt, 0, draggedId);
+  return isArraysEqual(result, orderedIds) ? orderedIds : result;
+}
+
+function isArraysEqual(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((id, index) => id === right[index])
+  );
 }

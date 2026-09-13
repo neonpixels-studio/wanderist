@@ -168,9 +168,9 @@
                 },
               ]"
               :draggable="isOwner && !isReordering"
-              @dragstart="onStopDragStart(stop)"
-              @dragover.prevent="onStopDragOver(stop)"
-              @dragleave="onStopDragLeave(stop)"
+              @dragstart="onStopDragStart(stop, $event)"
+              @dragover.prevent="onStopDragOver(stop, $event)"
+              @dragleave="onStopDragLeave(stop, $event)"
               @drop.prevent="onStopDrop(stop)"
               @dragend="onStopDragEnd"
             >
@@ -381,7 +381,7 @@
 import { useTripsStore } from "~/stores/trips";
 import type { Trip, TripStop } from "~/stores/trips";
 import { useMediaUpload } from "~/composables/useMediaUpload";
-import { moveIdUp, moveIdDown, moveIdBefore } from "~/utils/stopOrder";
+import { moveIdUp, moveIdDown, moveIdToDropTarget } from "~/utils/stopOrder";
 
 // No auth middleware: a public trip must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private trip returns
@@ -663,15 +663,18 @@ async function onAddStop(): Promise<void> {
 
 // Shared by drag-and-drop and the move-up/move-down buttons: applies the new
 // order optimistically, then persists it via the existing reorder endpoint.
-// On success the store's own order already matches newOrder, so clearing the
-// override causes no flicker; on failure the store was never touched, so
-// clearing it reverts the view to the last-committed (pre-reorder) order.
+// On success the store's own order already matches newOrder (verified by
+// tests/trips-store.test.ts's reorderStops coverage), so clearing the override
+// causes no flicker; on failure the store was never touched, so clearing it
+// reverts the view to the last-committed (pre-reorder) order. Guarded on
+// isReordering so a second move started before the first settles is dropped
+// rather than interleaving two in-flight requests.
 async function persistStopOrder(
   newOrder: string[],
   movedStopId: string,
   movedStopName: string,
 ): Promise<void> {
-  if (!tripId.value) {
+  if (!tripId.value || isReordering.value) {
     return;
   }
 
@@ -686,27 +689,48 @@ async function persistStopOrder(
   } catch (error) {
     reorderError.value =
       error instanceof Error ? error.message : "Failed to reorder stops";
+    moveAnnouncement.value = `Could not move ${movedStopName}. The order was not changed.`;
   } finally {
     pendingStopOrder.value = null;
     isReordering.value = false;
   }
 }
 
-function onStopDragStart(stop: TripStop): void {
+function onStopDragStart(stop: TripStop, event: DragEvent): void {
   if (!isOwner.value || isReordering.value) {
+    event.preventDefault();
     return;
+  }
+  // Firefox cancels a drag outright unless dataTransfer carries data set
+  // during dragstart; Chrome/Safari are lenient, which is why this was easy
+  // to miss without cross-browser testing.
+  event.dataTransfer?.setData("text/plain", stop.id);
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
   }
   draggedStopId.value = stop.id;
 }
 
-function onStopDragOver(stop: TripStop): void {
+function onStopDragOver(stop: TripStop, event: DragEvent): void {
   if (!draggedStopId.value) {
     return;
+  }
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
   }
   dragOverStopId.value = stop.id;
 }
 
-function onStopDragLeave(stop: TripStop): void {
+// dragleave fires whenever the pointer crosses into a descendant (the card,
+// its icons, etc.), not just when it truly leaves the row — ignore leaves
+// that land on a node still inside the current row so the drop-target outline
+// doesn't flicker while dragging across a card's contents.
+function onStopDragLeave(stop: TripStop, event: DragEvent): void {
+  const nextTarget = event.relatedTarget as Node | null;
+  const row = event.currentTarget as HTMLElement | null;
+  if (nextTarget && row?.contains(nextTarget)) {
+    return;
+  }
   if (dragOverStopId.value === stop.id) {
     dragOverStopId.value = null;
   }
@@ -727,7 +751,7 @@ async function onStopDrop(targetStop: TripStop): Promise<void> {
   }
 
   const currentOrder = displayedStops.value.map((stop) => stop.id);
-  const newOrder = moveIdBefore(currentOrder, draggedId, targetStop.id);
+  const newOrder = moveIdToDropTarget(currentOrder, draggedId, targetStop.id);
   if (newOrder === currentOrder) {
     return;
   }
