@@ -169,9 +169,9 @@
               ]"
               :draggable="isOwner && !isReordering"
               @dragstart="onStopDragStart(stop, $event)"
-              @dragover.prevent="onStopDragOver(stop, $event)"
+              @dragover="onStopDragOver(stop, $event)"
               @dragleave="onStopDragLeave(stop, $event)"
-              @drop.prevent="onStopDrop(stop)"
+              @drop="onStopDrop(stop, $event)"
               @dragend="onStopDragEnd"
             >
               <div class="stop__node">
@@ -518,11 +518,12 @@ const sortedStops = computed<TripStop[]>(() => {
 // Falling back to sortedStops keeps every other computed/template reference
 // correct without threading isReordering through them individually.
 //
-// A pending order can go stale mid-flight if the user navigates to a
-// different trip before the PUT resolves (pendingStopOrder is only cleared in
-// persistStopOrder's finally). Rather than silently dropping the ids that no
-// longer resolve — which would render a partial/empty itinerary — fall back
-// to the committed order whenever any id can't be resolved.
+// pendingStopOrder can reference a stop id the current tripDetail no longer
+// has — e.g. a concurrent deleteStop resolving mid-flight, or (despite the
+// requestTripId guard in persistStopOrder and the tripId watcher below) a
+// navigation landing between renders. Rather than silently dropping the ids
+// that no longer resolve — which would render a partial/empty itinerary —
+// fall back to the committed order whenever any id can't be resolved.
 const displayedStops = computed<TripStop[]>(() => {
   if (!pendingStopOrder.value || !tripDetail.value) {
     return sortedStops.value;
@@ -542,11 +543,16 @@ const displayedStops = computed<TripStop[]>(() => {
   return resolvedStops as TripStop[];
 });
 
-// A pending optimistic order belongs to the trip it was computed for; discard
-// it on navigation so it can never be misapplied to a different trip's stops
-// (see the displayedStops fallback above for what happens if it lingers).
+// A pending optimistic order (and any in-flight reorder's error/announcement
+// state) belongs to the trip it was computed for; discard all of it on
+// navigation so none of it can be misapplied to a different trip's stops (see
+// the displayedStops fallback above for the belt-and-suspenders case where a
+// stale pendingStopOrder lingers anyway).
 watch(tripId, () => {
   pendingStopOrder.value = null;
+  isReordering.value = false;
+  reorderError.value = null;
+  moveAnnouncement.value = "";
 });
 
 // Cap at 6 stops to fit the mini-map without overlapping pins
@@ -700,35 +706,60 @@ async function announceMove(message: string): Promise<void> {
 // isReordering so a second move started before the first settles is dropped
 // rather than interleaving two in-flight requests — the move buttons stay
 // enabled throughout (see onMoveStopUp/Down) so this guard, not a disabled
-// attribute, is what makes that safe.
+// attribute, is what makes that safe. A dropped move still gets a live-region
+// announcement: silently ignoring the click would look like a hang to a
+// screen-reader user, who has no visual cue that a save is already underway.
 async function persistStopOrder(
   newOrder: string[],
   movedStopId: string,
   movedStopName: string,
 ): Promise<void> {
-  if (!tripId.value || isReordering.value) {
+  if (!tripId.value) {
+    return;
+  }
+  if (isReordering.value) {
+    await announceMove(
+      `Still saving the previous move. ${movedStopName} was not moved.`,
+    );
     return;
   }
 
+  // Captured up front: if the user navigates to a different trip before this
+  // request settles, tripId.value will have moved on by the time the await
+  // below resolves, and none of this request's outcome — order, error,
+  // announcement — belongs to whatever trip is on screen by then.
+  const requestTripId = tripId.value;
   pendingStopOrder.value = newOrder;
   isReordering.value = true;
   reorderError.value = null;
 
   try {
-    await tripsStore.reorderStops(tripId.value, newOrder);
+    await tripsStore.reorderStops(requestTripId, newOrder);
+    if (tripId.value !== requestTripId) {
+      return;
+    }
     const newPosition = newOrder.indexOf(movedStopId);
     await announceMove(
       `Moved ${movedStopName} to position ${newPosition + 1} of ${newOrder.length}`,
     );
   } catch (error) {
+    // Revert the optimistic order before announcing: nextTick() inside
+    // announceMove flushes a render, and without this the error banner would
+    // show for one frame above a list still showing the failed reorder.
+    pendingStopOrder.value = null;
+    if (tripId.value !== requestTripId) {
+      return;
+    }
     reorderError.value =
       error instanceof Error ? error.message : "Failed to reorder stops";
     await announceMove(
       `Could not move ${movedStopName}. The order was not changed.`,
     );
   } finally {
-    pendingStopOrder.value = null;
-    isReordering.value = false;
+    if (tripId.value === requestTripId) {
+      pendingStopOrder.value = null;
+      isReordering.value = false;
+    }
   }
 }
 
@@ -784,9 +815,15 @@ function onStopDragStart(stop: TripStop, event: DragEvent): void {
 }
 
 function onStopDragOver(stop: TripStop, event: DragEvent): void {
+  // Only claim the hover (and later the drop) when an in-app drag is active.
+  // Calling preventDefault() unconditionally here would mark every row a
+  // valid drop target for ANY drag — including a non-owner's read-only page,
+  // or an external link/file dragged over the itinerary — silently
+  // swallowing drops the app has no intention of handling.
   if (!draggedStopId.value) {
     return;
   }
+  event.preventDefault();
   if (event.dataTransfer) {
     event.dataTransfer.dropEffect = "move";
   }
@@ -813,12 +850,24 @@ function onStopDragEnd(): void {
   dragOverStopId.value = null;
 }
 
-async function onStopDrop(targetStop: TripStop): Promise<void> {
+async function onStopDrop(
+  targetStop: TripStop,
+  event: DragEvent,
+): Promise<void> {
   const draggedId = draggedStopId.value;
   draggedStopId.value = null;
   dragOverStopId.value = null;
 
-  if (!draggedId || draggedId === targetStop.id) {
+  // Same reasoning as onStopDragOver: only intercept the drop if it's ours to
+  // handle. A drop with no active draggedStopId (external content, or a
+  // non-owner's read-only page where dragstart can never have set it) falls
+  // through to the browser's own default handling instead of being swallowed.
+  if (!draggedId) {
+    return;
+  }
+  event.preventDefault();
+
+  if (draggedId === targetStop.id) {
     return;
   }
 

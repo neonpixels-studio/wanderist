@@ -623,6 +623,102 @@ describe("Trip Detail page (/trips/[id])", () => {
     await flushPromises();
   });
 
+  it("announces the refusal (not silence) when a move is dropped because a reorder is already in flight", async () => {
+    const tripsStore = useTripsStore();
+    let resolveReorder: ((stops: TripStop[]) => void) | undefined;
+    vi.spyOn(tripsStore, "reorderStops").mockReturnValue(
+      new Promise((resolve) => {
+        resolveReorder = resolve;
+      }),
+    );
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const moveButtons = wrapper.findAll(".stop__move-btn");
+    await moveButtons[1]!.trigger("click"); // stop-1 down: request 1 in flight
+    await moveButtons[3]!.trigger("click"); // stop-2 down: refused
+
+    const liveRegion = wrapper.find('[role="status"]');
+    expect(liveRegion.text()).toContain("Jökulsárlón");
+    expect(liveRegion.text().toLowerCase()).toContain("still saving");
+
+    resolveReorder?.(SAMPLE_DETAIL.stops);
+    await flushPromises();
+  });
+
+  it("falls back to the committed order if a pending stop id no longer resolves mid-flight", async () => {
+    // Simulates a stop being deleted (by this tab or another) while a
+    // reorder PUT for the old id set is still in flight — pendingStopOrder
+    // would otherwise reference an id tripDetail.stops no longer has.
+    const tripsStore = useTripsStore();
+    let resolveReorder: ((stops: TripStop[]) => void) | undefined;
+    vi.spyOn(tripsStore, "reorderStops").mockReturnValue(
+      new Promise((resolve) => {
+        resolveReorder = resolve;
+      }),
+    );
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const moveButtons = wrapper.findAll(".stop__move-btn");
+    await moveButtons[1]!.trigger("click"); // stop-1 down: now pending
+
+    tripsStore.currentTripDetail = {
+      ...SAMPLE_DETAIL,
+      stops: SAMPLE_DETAIL.stops.filter((stop) => stop.id !== "stop-1"),
+    };
+    await nextTick();
+
+    const stopNames = wrapper
+      .findAll(".stop__name")
+      .map((element) => element.text());
+    expect(stopNames).toEqual(["Jökulsárlón", "Höfn"]);
+
+    resolveReorder?.(SAMPLE_DETAIL.stops);
+    await flushPromises();
+  });
+
+  it("discards an in-flight reorder's pending state when navigating to a different trip", async () => {
+    const tripsStore = useTripsStore();
+    let resolveReorder: ((stops: TripStop[]) => void) | undefined;
+    vi.spyOn(tripsStore, "reorderStops").mockReturnValue(
+      new Promise((resolve) => {
+        resolveReorder = resolve;
+      }),
+    );
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const moveButtons = wrapper.findAll(".stop__move-btn");
+    await moveButtons[1]!.trigger("click"); // trip-1's stop-1 down: pending
+
+    routeParams.id = "trip-2";
+    await nextTick();
+
+    // The old trip's request resolving afterward must not resurrect any
+    // banner/announcement or reorder state once the same trip is shown again.
+    resolveReorder?.(SAMPLE_DETAIL.stops);
+    await flushPromises();
+
+    routeParams.id = "trip-1";
+    await nextTick();
+
+    expect(wrapper.find(".alert--error").exists()).toBe(false);
+    const liveRegion = wrapper.find('[role="status"]');
+    expect(liveRegion.exists() ? liveRegion.text() : "").toBe("");
+  });
+
+  it("disables drag on every row while a reorder is in flight", async () => {
+    const tripsStore = useTripsStore();
+    vi.spyOn(tripsStore, "reorderStops").mockReturnValue(new Promise(() => {}));
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    const moveButtons = wrapper.findAll(".stop__move-btn");
+    await moveButtons[1]!.trigger("click"); // stop-1 down: reorder now pending
+
+    const stops = wrapper.findAll(".stop");
+    for (const stop of stops) {
+      expect(stop.attributes("draggable")).toBe("false");
+    }
+  });
+
   it("requests the trip named by the route param", () => {
     const tripsStore = useTripsStore();
     mount(TripDetailPage, buildGlobalConfig(pinia));
