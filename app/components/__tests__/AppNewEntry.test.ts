@@ -64,6 +64,17 @@ vi.stubGlobal("useEntryDraft", () => ({
   saveDraft: mockSaveDraft,
   loadDraft: mockLoadDraft,
   clearDraft: mockClearDraft,
+  // Mirrors the real composable's already-resolved fast path (session
+  // resolved synchronously): call back immediately with whatever loadDraft()
+  // currently mocks, and hand back a no-op stop function. Existing tests only
+  // exercise applyDraftOrFreshForm's synchronous loadDraft() branch, which
+  // returns before onDraftReady is ever registered when a draft is found, so
+  // this only matters for the null-draft path, where calling back with null
+  // again is a no-op.
+  onDraftReady: vi.fn((callback: (draft: EntryDraft | null) => void) => {
+    callback(mockLoadDraft());
+    return vi.fn();
+  }),
 }));
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

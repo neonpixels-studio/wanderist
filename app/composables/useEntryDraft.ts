@@ -16,7 +16,7 @@
  * other composable that reads a Clerk composable.
  *
  * Usage:
- *   const { saveDraft, loadDraft, clearDraft } = useEntryDraft()
+ *   const { saveDraft, loadDraft, clearDraft, onDraftReady } = useEntryDraft()
  */
 
 import { isValidLocalDate } from "~/utils/localDate";
@@ -173,5 +173,42 @@ export function useEntryDraft() {
     localStorage.removeItem(key);
   }
 
-  return { saveDraft, loadDraft, clearDraft };
+  // loadDraft() and draftStorageKey() intentionally sample isLoaded/user the
+  // instant they're called: calling loadDraft() while isLoaded is still false
+  // finds no per-user key to read yet and returns null, and nothing about
+  // that call re-runs later on its own. A caller that reads loadDraft()
+  // before Clerk has hydrated (e.g. a drawer that can open pre-hydration)
+  // gets that one-shot null forever, even though a real draft may exist once
+  // the session resolves.
+  //
+  // onDraftReady bridges that gap: if the session has already resolved,
+  // it invokes `callback` synchronously with the current draft (identical to
+  // calling loadDraft() directly). Otherwise it watches isLoaded until it
+  // flips true, then invokes `callback` once with the draft for whichever
+  // user is now signed in (or null if signed out).
+  //
+  // Returns a stop function. Callers should call it once they no longer care
+  // about the pending result — e.g. the consuming UI closed or moved on to a
+  // different mode — so a session that resolves later can't invoke a stale
+  // callback.
+  function onDraftReady(
+    callback: (draft: EntryDraft | null) => void,
+  ): () => void {
+    if (isLoaded.value) {
+      callback(loadDraft());
+      return () => {};
+    }
+
+    const stopWatching = watch(isLoaded, (loaded) => {
+      if (!loaded) {
+        return;
+      }
+      stopWatching();
+      callback(loadDraft());
+    });
+
+    return stopWatching;
+  }
+
+  return { saveDraft, loadDraft, clearDraft, onDraftReady };
 }

@@ -250,10 +250,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onUnmounted } from "vue";
 import type { Trip } from "~/stores/trips";
 import type { Entry } from "~/stores/entries";
 import type { Place } from "~/stores/places";
+import type { EntryDraft } from "~/composables/useEntryDraft";
 import AppNewEntryLocationField from "~/components/AppNewEntryLocationField.vue";
 import {
   localDateToIso,
@@ -307,7 +308,7 @@ const tripsStore = useTripsStore();
 const placesStore = usePlacesStore();
 const { upload, isUploading } = useMediaUpload();
 const uploadError = ref<string | null>(null);
-const { saveDraft, loadDraft, clearDraft } = useEntryDraft();
+const { saveDraft, loadDraft, clearDraft, onDraftReady } = useEntryDraft();
 
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const uploadedPhotos = ref<Array<{ id: string; url: string }>>([]);
@@ -565,16 +566,7 @@ function selectTrip(tripId: string): void {
   tripDefaulted.value = true;
 }
 
-function applyDraftOrFreshForm(): void {
-  tripDefaulted.value = false;
-
-  const draft = loadDraft();
-
-  if (!draft) {
-    applyFreshForm();
-    return;
-  }
-
+function applyRestoredDraft(draft: EntryDraft): void {
   form.value = {
     title: draft.title,
     body: draft.body,
@@ -597,6 +589,41 @@ function applyDraftOrFreshForm(): void {
   uploadedPhotos.value = draft.uploadedPhotos ?? [];
   // Treat a restored draft's tripId as already-defaulted so it is preserved
   tripDefaulted.value = true;
+}
+
+// Bumped every time this function (re)seeds the create-mode form. Captured by
+// the onDraftReady callback below so a session that resolves after the drawer
+// has moved on — closed, reopened, or switched to editing — can tell its
+// restore is stale and skip applying it, rather than overwriting whatever is
+// on screen by the time the session settles.
+let draftSeedToken = 0;
+let stopPendingDraftLoad: (() => void) | null = null;
+
+function applyDraftOrFreshForm(): void {
+  tripDefaulted.value = false;
+  stopPendingDraftLoad?.();
+  const seedToken = (draftSeedToken += 1);
+
+  const draft = loadDraft();
+  if (draft) {
+    applyRestoredDraft(draft);
+    return;
+  }
+
+  applyFreshForm();
+
+  // loadDraft() above came back empty either because there truly is no saved
+  // draft, or because Clerk hasn't resolved the session yet (loadDraft finds
+  // no per-user key to read until then). onDraftReady re-checks once the
+  // session settles, so a draft that exists once we know who's signed in
+  // still restores instead of the drawer silently staying blank.
+  stopPendingDraftLoad = onDraftReady((resolvedDraft) => {
+    const isStaleSeed = seedToken !== draftSeedToken;
+    if (isStaleSeed || !props.open || props.entry || !resolvedDraft) {
+      return;
+    }
+    applyRestoredDraft(resolvedDraft);
+  });
 }
 
 function ensureReferenceData(): void {
@@ -664,6 +691,14 @@ watch(
   },
   { immediate: true },
 );
+
+// The drawer is a single shared instance that's expected to outlive most of
+// the app's lifetime, but a pending draft-ready watch (see
+// applyDraftOrFreshForm) has no other trigger to stop it if this component is
+// ever torn down first — clean it up rather than leave it dangling.
+onUnmounted(() => {
+  stopPendingDraftLoad?.();
+});
 
 function seedFormForCurrentMode(): void {
   // Editing pre-fills from the entry and ignores the create-only draft.

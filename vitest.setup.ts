@@ -81,6 +81,12 @@ Object.assign(globalThis, {
     saveDraft: vi.fn(),
     loadDraft: vi.fn().mockReturnValue(null),
     clearDraft: vi.fn(),
+    // Mirrors the real composable's already-resolved fast path: call back
+    // synchronously with null (no draft) and hand back a no-op stop function.
+    onDraftReady: vi.fn((callback: (draft: unknown) => void) => {
+      callback(null);
+      return vi.fn();
+    }),
   })),
   useMediaUpload: vi.fn(() => ({
     upload: vi.fn().mockResolvedValue({
