@@ -8,7 +8,7 @@
  *    preset, whose mock `IncomingMessage` never emits `data`/`end` at all)
  * so both paths get their own coverage below.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import type { H3Event } from "h3";
 
@@ -22,22 +22,35 @@ const { readCappedUploadBody } =
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
-function buildNodeStreamEvent(req: PassThrough): H3Event {
-  return { node: { req } } as unknown as H3Event;
+function buildNodeStreamEvent(
+  req: PassThrough,
+  setHeader: (name: string, value: string) => void = () => undefined,
+): H3Event {
+  return { node: { req, res: { setHeader } } } as unknown as H3Event;
 }
 
 function buildWebStreamEvent(body: ReadableStream<Uint8Array>): H3Event {
   return { node: { req: { body } } } as unknown as H3Event;
 }
 
+function buildBodyPropertyEvent(body: unknown): H3Event {
+  return { node: { req: { body } } } as unknown as H3Event;
+}
+
 // Builds a `ReadableStream` that yields `chunkCount` chunks of `chunkSize`
-// bytes, tracking how many were actually pulled so a test can assert the
-// cap stopped consumption early rather than draining every chunk.
+// bytes, tracking how many were actually pulled (to prove the cap stopped
+// consumption early rather than draining every chunk) and whether `cancel()`
+// was called (to prove it's actually cancelled, not just no longer read).
 function buildCountingWebStream(
   chunkSize: number,
   chunkCount: number,
-): { stream: ReadableStream<Uint8Array>; getChunksPulled: () => number } {
+): {
+  stream: ReadableStream<Uint8Array>;
+  getChunksPulled: () => number;
+  wasCancelled: () => boolean;
+} {
   let chunksPulled = 0;
+  let cancelled = false;
   let index = 0;
   const stream = new ReadableStream<Uint8Array>({
     pull(controller) {
@@ -49,8 +62,15 @@ function buildCountingWebStream(
       chunksPulled += 1;
       controller.enqueue(new Uint8Array(chunkSize));
     },
+    cancel() {
+      cancelled = true;
+    },
   });
-  return { stream, getChunksPulled: () => chunksPulled };
+  return {
+    stream,
+    getChunksPulled: () => chunksPulled,
+    wasCancelled: () => cancelled,
+  };
 }
 
 describe("readCappedUploadBody — Node stream path (local dev server)", () => {
@@ -98,9 +118,10 @@ describe("readCappedUploadBody — Node stream path (local dev server)", () => {
     const chunk = Buffer.alloc(chunkSize);
     const totalChunksAvailable = 50; // simulates a 50 MB upload against the 10 MB cap
     const maxExpectedChunksSent = MAX_BYTES / chunkSize + 1;
+    const setHeader = vi.fn();
 
     const resultPromise = readCappedUploadBody(
-      buildNodeStreamEvent(req),
+      buildNodeStreamEvent(req, setHeader),
       MAX_BYTES,
     );
     let aborted = false;
@@ -126,6 +147,10 @@ describe("readCappedUploadBody — Node stream path (local dev server)", () => {
     // same connection — see the comment on request.pause() in the source.
     expect(req.isPaused()).toBe(true);
     expect(chunksSent).toBeLessThanOrEqual(maxExpectedChunksSent);
+    // Prevents the leftover unread tail from sitting on a reused keep-alive
+    // connection, where it would otherwise be parsed as the start of the
+    // next request.
+    expect(setHeader).toHaveBeenCalledWith("Connection", "close");
   });
 
   it("propagates a stream error instead of hanging", async () => {
@@ -154,6 +179,25 @@ describe("readCappedUploadBody — Node stream path (local dev server)", () => {
     await new Promise((resolve) => setImmediate(resolve));
     req.write(Buffer.from("partial"));
     req.destroy(); // closes without an error and without ending
+
+    await expect(resultPromise).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("rejects with the same 400 as an abandoned connection when the client resets mid-upload", async () => {
+    const req = new PassThrough();
+
+    const resultPromise = readCappedUploadBody(
+      buildNodeStreamEvent(req),
+      MAX_BYTES,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    // A connection-level abort, not a genuine stream fault — same
+    // user-visible situation as the close-without-end case above, so it
+    // should report the same status rather than a 500.
+    const resetError = Object.assign(new Error("socket hang up"), {
+      code: "ECONNRESET",
+    });
+    req.destroy(resetError);
 
     await expect(resultPromise).rejects.toMatchObject({ statusCode: 400 });
   });
@@ -202,7 +246,7 @@ describe("readCappedUploadBody — Web ReadableStream path (deployed Netlify pre
   it("rejects with 413 and cancels the stream before pulling every chunk when the cap is exceeded", async () => {
     const chunkSize = 1024 * 1024; // 1 MB
     const totalChunksAvailable = 50; // simulates a 50 MB upload against the 10 MB cap
-    const { stream, getChunksPulled } = buildCountingWebStream(
+    const { stream, getChunksPulled, wasCancelled } = buildCountingWebStream(
       chunkSize,
       totalChunksAvailable,
     );
@@ -214,5 +258,48 @@ describe("readCappedUploadBody — Web ReadableStream path (deployed Netlify pre
     // Proves the handler cancelled well before the full (simulated) 50 MB
     // upload was pulled through — it never buffered anywhere close to it.
     expect(getChunksPulled()).toBeLessThan(totalChunksAvailable);
+    expect(wasCancelled()).toBe(true);
+  });
+
+  it("propagates an upstream stream error instead of swallowing it", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("upstream failed"));
+      },
+    });
+
+    await expect(
+      readCappedUploadBody(buildWebStreamEvent(stream), MAX_BYTES),
+    ).rejects.toThrow("upstream failed");
+  });
+});
+
+describe("readCappedUploadBody — Buffer/string body path (other presets or upstream middleware)", () => {
+  it("resolves a Buffer body under the cap as-is", async () => {
+    const result = await readCappedUploadBody(
+      buildBodyPropertyEvent(Buffer.from("fake-image-data")),
+      MAX_BYTES,
+    );
+
+    expect(result.toString()).toBe("fake-image-data");
+  });
+
+  it("converts a string body to a Buffer", async () => {
+    const result = await readCappedUploadBody(
+      buildBodyPropertyEvent("fake-image-data"),
+      MAX_BYTES,
+    );
+
+    expect(Buffer.isBuffer(result)).toBe(true);
+    expect(result.toString()).toBe("fake-image-data");
+  });
+
+  it("rejects with 413 for a Buffer body over the cap", async () => {
+    await expect(
+      readCappedUploadBody(
+        buildBodyPropertyEvent(Buffer.alloc(MAX_BYTES + 1)),
+        MAX_BYTES,
+      ),
+    ).rejects.toMatchObject({ statusCode: 413 });
   });
 });

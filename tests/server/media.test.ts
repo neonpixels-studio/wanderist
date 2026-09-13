@@ -108,16 +108,17 @@ vi.mock("../../server/utils/imageProcessing", () => ({
 // verify the route's own logic — content-type/empty-body/early-check
 // handling and wiring — so it's mocked here rather than driven through a
 // real stream.
-vi.mock("../../server/utils/readCappedUploadBody", () => ({
-  readCappedUploadBody: mockReadCappedUploadBody,
-  createFileTooLargeError: (maxBytes: number) =>
-    Object.assign(
-      new Error(
-        `File too large. Maximum size is ${maxBytes / (1024 * 1024)} MB`,
-      ),
-      { statusCode: 413 },
-    ),
-}));
+vi.mock("../../server/utils/readCappedUploadBody", async () => {
+  // Only the streaming reader is faked; `createFileTooLargeError` stays the
+  // real implementation so this mock can't drift from its actual message.
+  const actual = await vi.importActual<
+    typeof import("../../server/utils/readCappedUploadBody")
+  >("../../server/utils/readCappedUploadBody");
+  return {
+    readCappedUploadBody: mockReadCappedUploadBody,
+    createFileTooLargeError: actual.createFileTooLargeError,
+  };
+});
 
 vi.mock("../../server/db/index", () => ({
   getDb: mockGetDb,

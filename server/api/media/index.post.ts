@@ -71,13 +71,12 @@ function resolveContentType(event: H3Event): string {
 // `readCappedUploadBody` enforces while the body streams in.
 async function readValidatedUploadBuffer(event: H3Event): Promise<Buffer> {
   const declaredLength = Number(getHeader(event, "content-length") ?? 0);
-  // A malformed header (e.g. non-numeric) makes this NaN, and NaN fails every
-  // comparison — silently skipping the check rather than letting a garbage
-  // value slip through it. The streaming cap below is the real backstop
-  // either way.
-  if (Number.isFinite(declaredLength)) {
-    assertFileSizeAllowed(declaredLength);
-  }
+  // A malformed header (e.g. non-numeric) makes this NaN, which fails the
+  // `>` comparison in assertFileSizeAllowed and so is silently let through
+  // this early gate rather than rejected outright — intentional, since the
+  // streaming cap below is the real backstop either way and a garbage
+  // header shouldn't be trusted enough to reject on directly.
+  assertFileSizeAllowed(declaredLength);
 
   const rawBody = await readCappedUploadBody(event, MAX_FILE_SIZE_BYTES);
   if (!rawBody || rawBody.byteLength === 0) {

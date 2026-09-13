@@ -3,12 +3,30 @@ import type { H3Event } from "h3";
 // Single source of the 413 error so every caller (the route's early
 // Content-Length gate and both streaming paths below) reports the exact
 // same, correctly-rounded message instead of drifting independently.
-export function createFileTooLargeError(maxBytes: number): Error {
+export function createFileTooLargeError(maxBytes: number) {
   return createError({
     statusCode: 413,
     statusMessage: `File too large. Maximum size is ${maxBytes / (1024 * 1024)} MB`,
   });
 }
+
+// Same rejection, shared by the two ways an abandoned connection surfaces:
+// a clean `close` with no `end`, or an `error` carrying a connection-level
+// code (e.g. the client resetting the connection mid-upload). Without this,
+// which status a caller sees would depend on which of those two events
+// happened to fire first for the exact same user-visible situation.
+function createAbortedUploadError() {
+  return createError({
+    statusCode: 400,
+    statusMessage: "Upload connection closed before completion",
+  });
+}
+
+const CONNECTION_ABORT_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EPIPE",
+]);
 
 function isWebReadableStream(
   value: unknown,
@@ -87,6 +105,12 @@ function readCappedNodeStream(
         // buffer, not in this process, and normal TCP backpressure stalls
         // the sender once that buffer fills.
         request.pause();
+        // Without this, the socket could stay keep-alive with the rejected
+        // upload's unread tail still queued on it — the next bytes the HTTP
+        // parser sees would be attacker-chosen, parsed as the start of a new
+        // request. Closing forces the leftover bytes to be discarded with
+        // the connection instead.
+        event.node.res.setHeader("Connection", "close");
         reject(createFileTooLargeError(maxBytes));
         return;
       }
@@ -98,9 +122,18 @@ function readCappedNodeStream(
       resolve(Buffer.concat(chunks));
     }
 
-    function onError(error: Error): void {
+    function onError(error: NodeJS.ErrnoException): void {
       cleanup();
-      reject(error);
+      // A connection-level abort (client hung up mid-upload) is the same
+      // user-visible situation `onClose` handles below, and should report
+      // the same 400 rather than surfacing as an unrelated 500 depending on
+      // which event happened to fire first. Anything else is a genuine
+      // stream fault and propagates as-is.
+      reject(
+        error.code && CONNECTION_ABORT_ERROR_CODES.has(error.code)
+          ? createAbortedUploadError()
+          : error,
+      );
     }
 
     // A client that disconnects mid-upload emits `close` without `data`
@@ -110,12 +143,7 @@ function readCappedNodeStream(
     // is a no-op there.
     function onClose(): void {
       cleanup();
-      reject(
-        createError({
-          statusCode: 400,
-          statusMessage: "Upload connection closed before completion",
-        }),
-      );
+      reject(createAbortedUploadError());
     }
 
     request
@@ -129,22 +157,37 @@ function readCappedNodeStream(
 // Reads an upload body with a hard byte cap, so a client that omits or
 // understates Content-Length can't force unbounded buffering into memory.
 //
-// Which stream shape `event.node.req` actually is depends on the Nitro
-// preset the request came through: the local Node dev server gives a real,
-// event-emitting `http.IncomingMessage`, but this app's deployed Netlify
-// preset adapts an underlying Web `Request` and exposes the body as a
-// `ReadableStream` on `event.node.req.body` instead — the mock
+// Which shape `event.node.req.body` actually is depends on the Nitro preset
+// the request came through: the local Node dev server gives a real,
+// event-emitting `http.IncomingMessage` with no `.body` property at all, but
+// this app's deployed Netlify preset adapts an underlying Web `Request` and
+// exposes the body as a `ReadableStream` there instead — the mock
 // `IncomingMessage` behind it (`node-mock-http`) never emits `data`/`end` at
-// all. h3's own `readRawBody()` falls back to that same `body` property for
-// the same reason; without branching on it here, every upload would hang
-// forever in production while working fine in local dev and tests.
+// all, so treating it as a Node stream would hang forever. h3's own
+// `readRawBody()` resolves the same `body` property for the same reason,
+// and also accepts it already being a `Buffer`/`string` (some presets and
+// body-parsing middleware populate it that way) — handled here too so a
+// future preset change doesn't reintroduce the same hang-forever failure
+// mode against an event-emitting API nothing will ever call.
 export function readCappedUploadBody(
   event: H3Event,
   maxBytes: number,
 ): Promise<Buffer> {
   const requestBody = (event.node.req as unknown as { body?: unknown }).body;
+
   if (isWebReadableStream(requestBody)) {
     return readCappedWebStream(requestBody, maxBytes);
   }
+
+  if (Buffer.isBuffer(requestBody) || typeof requestBody === "string") {
+    const buffered = Buffer.isBuffer(requestBody)
+      ? requestBody
+      : Buffer.from(requestBody);
+    if (buffered.byteLength > maxBytes) {
+      return Promise.reject(createFileTooLargeError(maxBytes));
+    }
+    return Promise.resolve(buffered);
+  }
+
   return readCappedNodeStream(event, maxBytes);
 }
