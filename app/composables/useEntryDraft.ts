@@ -185,7 +185,13 @@ export function useEntryDraft() {
   // it invokes `callback` synchronously with the current draft (identical to
   // calling loadDraft() directly). Otherwise it watches isLoaded until it
   // flips true, then invokes `callback` once with the draft for whichever
-  // user is now signed in (or null if signed out).
+  // user is now signed in (or null if the session resolves signed-out).
+  //
+  // isLoaded is the sole readiness gate here, matching draftStorageKey()'s own
+  // contract (it too only ever consults user.value after isLoaded.value is
+  // true): Clerk resolves isLoaded and user together, so "isLoaded true, no
+  // user" already means "resolved, signed out" everywhere else in this file,
+  // not "still hydrating the user".
   //
   // Returns a stop function. Callers should call it once they no longer care
   // about the pending result — e.g. the consuming UI closed or moved on to a

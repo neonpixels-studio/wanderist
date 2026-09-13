@@ -599,9 +599,23 @@ function applyRestoredDraft(draft: EntryDraft): void {
 let draftSeedToken = 0;
 let stopPendingDraftLoad: (() => void) | null = null;
 
+// Everything applyFreshForm/applyRestoredDraft write, snapshotted so a late
+// draft restore (see below) can tell whether the user has typed, picked a
+// place, or attached a photo since the blank form was seeded — and skip
+// applying over it if so, rather than silently discarding what they entered
+// while Clerk was still hydrating.
+function untouchedFormSnapshot(): string {
+  return JSON.stringify({
+    form: form.value,
+    selectedPlace: selectedPlace.value,
+    uploadedPhotos: uploadedPhotos.value,
+  });
+}
+
 function applyDraftOrFreshForm(): void {
   tripDefaulted.value = false;
   stopPendingDraftLoad?.();
+  stopPendingDraftLoad = null;
   const seedToken = (draftSeedToken += 1);
 
   const draft = loadDraft();
@@ -611,6 +625,7 @@ function applyDraftOrFreshForm(): void {
   }
 
   applyFreshForm();
+  const untouchedSnapshot = untouchedFormSnapshot();
 
   // loadDraft() above came back empty either because there truly is no saved
   // draft, or because Clerk hasn't resolved the session yet (loadDraft finds
@@ -619,7 +634,14 @@ function applyDraftOrFreshForm(): void {
   // still restores instead of the drawer silently staying blank.
   stopPendingDraftLoad = onDraftReady((resolvedDraft) => {
     const isStaleSeed = seedToken !== draftSeedToken;
-    if (isStaleSeed || !props.open || props.entry || !resolvedDraft) {
+    const isFormEdited = untouchedFormSnapshot() !== untouchedSnapshot;
+    if (
+      isStaleSeed ||
+      isFormEdited ||
+      !props.open ||
+      props.entry ||
+      !resolvedDraft
+    ) {
       return;
     }
     applyRestoredDraft(resolvedDraft);
