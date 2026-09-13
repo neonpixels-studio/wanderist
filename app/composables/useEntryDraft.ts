@@ -11,6 +11,11 @@
  * every operation a no-op rather than fall back to a key shared across
  * sessions — see draftStorageKey below.
  *
+ * The composable also watches for sign-out (the user id going from set to
+ * unset) and purges that user's draft from localStorage itself, rather than
+ * leaving it on disk for whoever uses the browser next — see the watch()
+ * call below.
+ *
  * Must be called synchronously during a component's setup (it calls
  * useClerkUser(), which needs the active component instance), same as any
  * other composable that reads a Clerk composable.
@@ -102,6 +107,10 @@ function normalizeDraftDate(date: unknown): string {
 export function useEntryDraft() {
   const { user, isLoaded } = useClerkUser();
 
+  function keyForUser(userId: string): string {
+    return `${DRAFT_STORAGE_KEY_PREFIX}:${userId}`;
+  }
+
   // Read fresh on every call (via the reactive refs) rather than once at
   // setup, so a session that resolves/changes after this composable was
   // created is still reflected in the key used.
@@ -113,8 +122,35 @@ export function useEntryDraft() {
     if (!userId) {
       return null;
     }
-    return `${DRAFT_STORAGE_KEY_PREFIX}:${userId}`;
+    return keyForUser(userId);
   }
+
+  // Purges the departing user's draft the instant they sign out, so it isn't
+  // left on disk (readable via devtools) for the next person on a shared
+  // browser. This can't be left to a future clearDraft() call: signing out
+  // is a session event this component never explicitly triggers, and by the
+  // time anything reacts to it, user.value has already gone null — the same
+  // change this watcher is reacting to — so draftStorageKey() can no longer
+  // name the departing user's key. Vue's watch callback still hands us the
+  // old id as its second argument, so we capture it before it's lost.
+  // Also fires on a direct switch to a *different* signed-in id (not just to
+  // signed-out), in case a future auth flow ever lets one session hand off to
+  // another without an intermediate null — the previous id's draft is purged
+  // either way, and the new id's own draft (a different storage key) is
+  // untouched. Gated on isLoaded so a still-resolving session (old id
+  // undefined, new id undefined) is never mistaken for a sign-out.
+  watch(
+    () => user.value?.id,
+    (currentUserId, previousUserId) => {
+      if (!isLoaded.value) {
+        return;
+      }
+      if (!previousUserId || currentUserId === previousUserId) {
+        return;
+      }
+      localStorage.removeItem(keyForUser(previousUserId));
+    },
+  );
 
   // The legacy unscoped key predates per-user scoping and could belong to any
   // account that used this browser. We can't safely attribute it to whichever

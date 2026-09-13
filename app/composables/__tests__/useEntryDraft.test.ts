@@ -360,6 +360,82 @@ describe("useEntryDraft", () => {
     });
   });
 
+  describe("sign-out purge", () => {
+    it("removes the departing user's draft when they sign out", async () => {
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      const { saveDraft } = useEntryDraft();
+      saveDraft(SAMPLE_DRAFT);
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).not.toBeNull();
+
+      userRef.value = null;
+      await vue.nextTick();
+
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).toBeNull();
+    });
+
+    it("does not purge while the session hasn't resolved yet", async () => {
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(false);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+      localStorage.setItem(
+        draftStorageKeyFor("user-1"),
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+
+      useEntryDraft();
+      userRef.value = null;
+      await vue.nextTick();
+
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).not.toBeNull();
+    });
+
+    it("does not throw when signing out with no draft saved", async () => {
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      useEntryDraft();
+      userRef.value = null;
+      await expect(vue.nextTick()).resolves.not.toThrow();
+    });
+
+    it("purges the outgoing user's draft, not the incoming one's, on a direct account switch", async () => {
+      localStorage.setItem(
+        draftStorageKeyFor("user-2"),
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      const { saveDraft } = useEntryDraft();
+      saveDraft(SAMPLE_DRAFT);
+
+      // No real Clerk flow hands off between two signed-in ids without an
+      // intermediate sign-out, but the watcher covers it defensively anyway.
+      userRef.value = { id: "user-2" };
+      await vue.nextTick();
+
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).toBeNull();
+      expect(localStorage.getItem(draftStorageKeyFor("user-2"))).not.toBeNull();
+    });
+  });
+
   describe("clearDraft", () => {
     it("removes the current user's draft from localStorage", () => {
       installClerkUserStub("user-1");
