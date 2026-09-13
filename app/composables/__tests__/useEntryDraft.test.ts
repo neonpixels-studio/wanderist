@@ -398,6 +398,51 @@ describe("useEntryDraft", () => {
       expect(localStorage.getItem(draftStorageKeyFor("user-1"))).not.toBeNull();
     });
 
+    it("purges a sign-out that lands mid-re-resolve, once the session settles", async () => {
+      // A session that is being re-resolved (e.g. a token refresh racing the
+      // sign-out) can surface isLoaded going false and back to true around
+      // the id disappearing, rather than the id changing while isLoaded
+      // stays true throughout. The purge must still fire once isLoaded
+      // settles back to true, not just on the id transition itself.
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      const { saveDraft } = useEntryDraft();
+      saveDraft(SAMPLE_DRAFT);
+
+      isLoadedRef.value = false;
+      userRef.value = null;
+      await vue.nextTick();
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).not.toBeNull();
+
+      isLoadedRef.value = true;
+      await vue.nextTick();
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).toBeNull();
+    });
+
+    it("also removes a legacy unscoped draft when the user signs out", async () => {
+      localStorage.setItem(
+        LEGACY_DRAFT_STORAGE_KEY,
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      useEntryDraft();
+      userRef.value = null;
+      await vue.nextTick();
+
+      expect(localStorage.getItem(LEGACY_DRAFT_STORAGE_KEY)).toBeNull();
+    });
+
     it("does not throw when signing out with no draft saved", async () => {
       const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
       const isLoadedRef = vue.ref(true);
