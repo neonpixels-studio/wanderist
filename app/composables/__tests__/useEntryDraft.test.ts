@@ -443,7 +443,7 @@ describe("useEntryDraft", () => {
       expect(localStorage.getItem(LEGACY_DRAFT_STORAGE_KEY)).toBeNull();
     });
 
-    it("does not throw when signing out with no draft saved", async () => {
+    it("leaves storage empty when signing out with no draft saved", async () => {
       const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
       const isLoadedRef = vue.ref(true);
       vi.stubGlobal("useClerkUser", () => ({
@@ -453,7 +453,43 @@ describe("useEntryDraft", () => {
 
       useEntryDraft();
       userRef.value = null;
-      await expect(vue.nextTick()).resolves.not.toThrow();
+      await vue.nextTick();
+
+      expect(localStorage.length).toBe(0);
+    });
+
+    it("logs rather than throws when the sign-out purge itself fails", async () => {
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      // Spies on the localStorage instance, not Storage.prototype: happy-dom
+      // shadows prototype methods with own properties on first real use, and
+      // earlier tests in this file already call the real removeItem — a
+      // prototype spy silently stops intercepting once that's happened.
+      const removeItemSpy = vi
+        .spyOn(localStorage, "removeItem")
+        .mockImplementation(() => {
+          throw new DOMException("denied", "SecurityError");
+        });
+
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      useEntryDraft();
+      userRef.value = null;
+
+      await vue.nextTick();
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "useEntryDraft: failed to purge departing user's draft",
+        expect.any(DOMException),
+      );
+
+      removeItemSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
     });
 
     it("purges the outgoing user's draft, not the incoming one's, on a direct account switch", async () => {

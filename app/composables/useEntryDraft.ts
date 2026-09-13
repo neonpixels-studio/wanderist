@@ -126,12 +126,14 @@ export function useEntryDraft() {
   }
 
   // The last user id seen while the session was resolved (isLoaded true).
-  // Tracked separately from watch()'s own previous-value argument because the
-  // watch source below also needs to react to isLoaded flipping true on its
-  // own (a sign-out that lands mid-resolve must still be purged once the
-  // session settles), and at that point the source tuple's id half hasn't
-  // changed — only isLoaded has.
-  const lastSignedInUserId = ref<string | undefined>();
+  // A plain closure variable, not a ref: nothing reactive ever reads it, it
+  // only records state between one watch() invocation and the next. Tracked
+  // separately from watch()'s own previous-value argument because the watch
+  // source below also needs to react to isLoaded flipping true on its own (a
+  // sign-out that lands mid-resolve must still be purged once the session
+  // settles), and at that point the source tuple's id half hasn't changed —
+  // only isLoaded has.
+  let lastSignedInUserId: string | undefined;
 
   // Purges the departing user's draft the instant they sign out, so it isn't
   // left on disk (readable via devtools) for the next person on a shared
@@ -140,6 +142,15 @@ export function useEntryDraft() {
   // time anything reacts to it, user.value has already gone null — the same
   // change this watcher is reacting to — so draftStorageKey() can no longer
   // name the departing user's key.
+  //
+  // Relies on this composable's caller (AppNewEntry.vue) being mounted for
+  // as long as the "app" layout is: every authenticated page uses that
+  // layout, which renders AppNewEntry unconditionally regardless of whether
+  // its drawer is open, so this watch() is alive on every page sign-out can
+  // be triggered from. It would go silent for a page that used a different
+  // layout — if a future authenticated route stops using "app", it needs its
+  // own way to trigger this purge (or the purge needs to move somewhere
+  // layout-independent, e.g. a client plugin).
   //
   // Watches [isLoaded, userId] rather than just userId so a sign-out that
   // lands while the session is still resolving isn't missed: if the id goes
@@ -159,8 +170,8 @@ export function useEntryDraft() {
       if (!loaded) {
         return;
       }
-      const previousUserId = lastSignedInUserId.value;
-      lastSignedInUserId.value = currentUserId;
+      const previousUserId = lastSignedInUserId;
+      lastSignedInUserId = currentUserId;
       if (!previousUserId || previousUserId === currentUserId) {
         return;
       }
@@ -172,13 +183,18 @@ export function useEntryDraft() {
   // Isolates the actual storage call so a watcher failure (e.g. localStorage
   // blocked in a third-party embed) can't propagate into Vue's error handler
   // and abort a reactive effect — the watcher above fires on session changes
-  // no user gesture triggered, unlike saveDraft/clearDraft.
+  // no user gesture triggered, unlike saveDraft/clearDraft. Logs rather than
+  // swallowing silently: a failed privacy-motivated deletion should be
+  // observable, not just assumed to have happened.
   function purgeDraftForDepartingUser(userId: string): void {
     try {
       localStorage.removeItem(keyForUser(userId));
       cleanupLegacyDraft();
-    } catch {
-      // Storage unavailable; nothing to purge in that case either.
+    } catch (error) {
+      console.error(
+        "useEntryDraft: failed to purge departing user's draft",
+        error,
+      );
     }
   }
 
