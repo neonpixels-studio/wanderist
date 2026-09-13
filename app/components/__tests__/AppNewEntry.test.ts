@@ -35,8 +35,14 @@ vi.stubGlobal("useEntriesStore", () => ({
   error: ref(null),
 }));
 
+// A getter (not a plain property), matching usePlacesStore below: the
+// component's tripId-default watch (`watch(() => tripsStore.tripList, ...)`)
+// needs a live read to react to trips arriving after mount, not a value
+// snapshotted once when useTripsStore() was called.
 vi.stubGlobal("useTripsStore", () => ({
-  tripList: tripsStoreTrips.value,
+  get tripList() {
+    return tripsStoreTrips.value;
+  },
   fetchTrips: mockFetchTrips,
   isLoadingList: ref(false),
 }));
@@ -496,6 +502,47 @@ describe("AppNewEntry", () => {
       await wrapper.vm.$nextTick();
 
       expect(titleInputValue(wrapper)).toBe("Typed while waiting");
+    });
+
+    it("does not clobber a half-typed tag the user entered while the session was resolving", async () => {
+      deferDraftReady = true;
+      mockLoadDraft.mockReturnValue(null);
+
+      const wrapper = mountOpen();
+      await wrapper.vm.$nextTick();
+      await wrapper.find('input[placeholder="add tag…"]').setValue("icel");
+
+      capturedDraftReadyCallbacks[0](LATE_DRAFT);
+      await wrapper.vm.$nextTick();
+
+      // The draft must not have been applied over the half-typed tag: title
+      // stays blank rather than jumping to the draft's.
+      expect(titleInputValue(wrapper)).toBe("");
+    });
+
+    it("still restores a late draft after the trips-default watch writes tripId first", async () => {
+      // Regression: the trips-default watch (see "Apply a default tripId
+      // once trips arrive" below) writes form.value.tripId as soon as the
+      // trip list arrives, independent of whether Clerk has resolved yet. A
+      // naive "any form change means the user touched it" check would treat
+      // that programmatic write as an edit and drop a real pending draft.
+      deferDraftReady = true;
+      mockLoadDraft.mockReturnValue(null);
+      tripsStoreTrips.value = [];
+
+      const wrapper = mountOpen();
+      await wrapper.vm.$nextTick();
+
+      tripsStoreTrips.value = [
+        { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
+      ];
+      await wrapper.vm.$nextTick();
+
+      mockLoadDraft.mockReturnValue(LATE_DRAFT);
+      capturedDraftReadyCallbacks[0](LATE_DRAFT);
+      await wrapper.vm.$nextTick();
+
+      expect(titleInputValue(wrapper)).toBe("Restored after hydration");
     });
 
     it("ignores a late resolve from a seed the drawer has since moved past by reopening", async () => {
