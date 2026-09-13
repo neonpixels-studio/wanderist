@@ -64,25 +64,73 @@ function resolveContentType(event: H3Event): string {
   return (getHeader(event, "content-type") ?? "").split(";")[0].trim();
 }
 
-// Reject early on Content-Length before buffering the body.
-// Note: `readRawBody` still reads the full payload into memory — this check
-// only rejects honest clients before they finish uploading. A malicious client
-// that omits Content-Length or sends less than the actual size bypasses the
-// early gate. The platform-level body size limit in nuxt.config (via Nitro's
-// `maxBodySize`) is the correct backstop for unbounded uploads.
+// Reads the request body directly off the underlying Node stream, aborting as
+// soon as more than `maxBytes` have arrived.
+//
+// h3's `readRawBody` buffers the entire payload into memory before any size
+// check can run, and Nitro (the version pinned here) has no `maxBodySize`
+// config to backstop it — a client that omits or understates Content-Length
+// can force unbounded buffering past the early Content-Length check below.
+// Reading (and counting) the stream ourselves means an oversized/lying
+// upload is rejected the moment the excess byte arrives, not after the full
+// body has already been buffered.
+function readCappedRawBody(event: H3Event, maxBytes: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const request = event.node.req;
+    const chunks: Buffer[] = [];
+    let receivedBytes = 0;
+
+    function cleanup(): void {
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("error", onError);
+    }
+
+    function onData(chunk: Buffer): void {
+      receivedBytes += chunk.byteLength;
+      if (receivedBytes > maxBytes) {
+        cleanup();
+        // Stop the client from streaming any further bytes to us.
+        request.destroy();
+        reject(
+          createError({
+            statusCode: 413,
+            statusMessage: `File too large. Maximum size is ${maxBytes / (1024 * 1024)} MB`,
+          }),
+        );
+        return;
+      }
+      chunks.push(chunk);
+    }
+
+    function onEnd(): void {
+      cleanup();
+      resolve(Buffer.concat(chunks));
+    }
+
+    function onError(error: Error): void {
+      cleanup();
+      reject(error);
+    }
+
+    request.on("data", onData).on("end", onEnd).on("error", onError);
+  });
+}
+
+// Reject early on Content-Length before reading the body at all. This is
+// only a fast path for honest clients — the real backstop against a
+// malicious client that omits or understates Content-Length is the byte
+// cap enforced by `readCappedRawBody` while the body streams in.
 async function readValidatedUploadBuffer(event: H3Event): Promise<Buffer> {
   const declaredLength = Number(getHeader(event, "content-length") ?? 0);
   assertFileSizeAllowed(declaredLength);
 
-  const rawBody = await readRawBody(event, false);
+  const rawBody = await readCappedRawBody(event, MAX_FILE_SIZE_BYTES);
   if (!rawBody || rawBody.byteLength === 0) {
     throw createError({ statusCode: 400, statusMessage: "Empty request body" });
   }
 
-  // Re-check on actual byte length to catch clients that omit Content-Length.
-  assertFileSizeAllowed(rawBody.byteLength);
-
-  return Buffer.from(rawBody);
+  return rawBody;
 }
 
 async function cleanupOrphanedBlobs(

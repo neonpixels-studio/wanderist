@@ -5,6 +5,7 @@
  * or database access is needed.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { PassThrough } from "node:stream";
 
 // ---------------------------------------------------------------------------
 // Hoist mock factories so they are available inside vi.mock() closures, which
@@ -29,7 +30,6 @@ const {
   mockGetDb,
   mockGetRouterParam,
   mockGetHeader,
-  mockReadRawBody,
   mockSetResponseHeader,
   mockSetResponseStatus,
 } = vi.hoisted(() => {
@@ -75,7 +75,6 @@ const {
     mockGetDb,
     mockGetRouterParam: vi.fn(),
     mockGetHeader: vi.fn(),
-    mockReadRawBody: vi.fn(),
     mockSetResponseHeader: vi.fn(),
     mockSetResponseStatus: vi.fn(),
   };
@@ -118,7 +117,6 @@ Object.assign(globalThis, {
     Object.assign(new Error(options.statusMessage), options),
   getRouterParam: mockGetRouterParam,
   getHeader: mockGetHeader,
-  readRawBody: mockReadRawBody,
   setResponseHeader: mockSetResponseHeader,
   setResponseStatus: mockSetResponseStatus,
   // Returns "https" to simulate a production request; tests assert on the path only.
@@ -145,6 +143,21 @@ type H3Event = object;
 
 function buildEvent(): H3Event {
   return { context: { userId: "user-1" }, node: { req: { socket: true } } };
+}
+
+// The media POST handler reads the upload body directly off `event.node.req`
+// (a real Node stream) rather than via a mocked `readRawBody`, so its tests
+// need a real stream to write bytes into. A PassThrough buffers whatever is
+// written before a reader attaches, so writing (and optionally ending) it
+// before the handler is invoked is safe — the handler's later `data`/`end`
+// listeners still receive everything already written.
+function buildUploadEvent(bodyChunks: Buffer[]): H3Event {
+  const req = new PassThrough();
+  for (const chunk of bodyChunks) {
+    req.write(chunk);
+  }
+  req.end();
+  return { context: { userId: "user-1" }, node: { req } };
 }
 
 function callHandler(handler: unknown, event: H3Event): Promise<unknown> {
@@ -178,13 +191,13 @@ function stubHeaders(contentType: string): void {
 // POST /api/media
 // ---------------------------------------------------------------------------
 
+const sampleUploadBuffer = Buffer.from("fake-image-data");
+
 describe("POST /api/media", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockEnsureUser.mockResolvedValue("user-1");
     stubHeaders("image/jpeg");
-    const sampleBuffer = Buffer.from("fake-image-data");
-    mockReadRawBody.mockResolvedValue(sampleBuffer);
     resetDbMocks();
     mockAssertPhotoLimit.mockResolvedValue(undefined);
     // Reset to the default resolved behavior in case a previous test in this
@@ -203,7 +216,9 @@ describe("POST /api/media", () => {
       Object.assign(new Error("Plan limit reached"), { statusCode: 402 }),
     );
 
-    await expect(callHandler(postHandler, buildEvent())).rejects.toMatchObject({
+    await expect(
+      callHandler(postHandler, buildUploadEvent([sampleUploadBuffer])),
+    ).rejects.toMatchObject({
       statusCode: 402,
     });
     expect(mockAssertPhotoLimit).toHaveBeenCalledWith("user-1");
@@ -211,7 +226,10 @@ describe("POST /api/media", () => {
   });
 
   it("returns 201 with id, url, dimensions, and thumbnailUrl on success", async () => {
-    const result = (await callHandler(postHandler, buildEvent())) as {
+    const result = (await callHandler(
+      postHandler,
+      buildUploadEvent([sampleUploadBuffer]),
+    )) as {
       id: string;
       url: string;
       width: number | null;
@@ -230,7 +248,7 @@ describe("POST /api/media", () => {
   });
 
   it("calls putMediaBlob with the correct key pattern and content type", async () => {
-    await callHandler(postHandler, buildEvent());
+    await callHandler(postHandler, buildUploadEvent([sampleUploadBuffer]));
 
     expect(mockPutMediaBlob).toHaveBeenCalledWith(
       expect.stringMatching(/^user-1\//),
@@ -242,7 +260,7 @@ describe("POST /api/media", () => {
   it("probes dimensions and passes width/height through to the DB insert", async () => {
     mockProbeImageDimensions.mockResolvedValue({ width: 1024, height: 768 });
 
-    await callHandler(postHandler, buildEvent());
+    await callHandler(postHandler, buildUploadEvent([sampleUploadBuffer]));
 
     expect(mockProbeImageDimensions).toHaveBeenCalledWith(expect.any(Buffer));
     expect(mockDbInsertValues).toHaveBeenCalledWith(
@@ -251,7 +269,7 @@ describe("POST /api/media", () => {
   });
 
   it("stores the thumbnail under the derived key alongside the original", async () => {
-    await callHandler(postHandler, buildEvent());
+    await callHandler(postHandler, buildUploadEvent([sampleUploadBuffer]));
 
     expect(mockGenerateThumbnail).toHaveBeenCalledWith(expect.any(Buffer));
     expect(mockPutMediaBlob).toHaveBeenCalledWith(
@@ -265,7 +283,10 @@ describe("POST /api/media", () => {
     mockProbeImageDimensions.mockResolvedValue(null);
     mockGenerateThumbnail.mockResolvedValue(null);
 
-    const result = (await callHandler(postHandler, buildEvent())) as {
+    const result = (await callHandler(
+      postHandler,
+      buildUploadEvent([sampleUploadBuffer]),
+    )) as {
       width: number | null;
       height: number | null;
       thumbnailUrl: string | null;
@@ -290,7 +311,10 @@ describe("POST /api/media", () => {
     });
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const result = (await callHandler(postHandler, buildEvent())) as {
+    const result = (await callHandler(
+      postHandler,
+      buildUploadEvent([sampleUploadBuffer]),
+    )) as {
       width: number | null;
       height: number | null;
       thumbnailUrl: string | null;
@@ -316,31 +340,34 @@ describe("POST /api/media", () => {
   it("throws 415 for a disallowed content type", async () => {
     stubHeaders("application/pdf");
 
-    await expect(callHandler(postHandler, buildEvent())).rejects.toMatchObject({
+    await expect(
+      callHandler(postHandler, buildUploadEvent([sampleUploadBuffer])),
+    ).rejects.toMatchObject({
       statusCode: 415,
     });
   });
 
   it("throws 400 for an empty body", async () => {
-    mockReadRawBody.mockResolvedValue(null);
-
-    await expect(callHandler(postHandler, buildEvent())).rejects.toMatchObject({
+    await expect(
+      callHandler(postHandler, buildUploadEvent([])),
+    ).rejects.toMatchObject({
       statusCode: 400,
     });
   });
 
-  it("throws 413 when the actual byte length exceeds the limit (post-buffer check)", async () => {
+  it("throws 413 when the actual byte length exceeds the limit (streaming check)", async () => {
     const oversizedBuffer = Buffer.alloc(11 * 1024 * 1024);
-    mockReadRawBody.mockResolvedValue(oversizedBuffer);
 
-    await expect(callHandler(postHandler, buildEvent())).rejects.toMatchObject({
+    await expect(
+      callHandler(postHandler, buildUploadEvent([oversizedBuffer])),
+    ).rejects.toMatchObject({
       statusCode: 413,
     });
   });
 
   it("throws 413 on Content-Length alone before reading the body (early check)", async () => {
     // Stub content-length to exceed the limit; body is small so only the early
-    // check fires, not the post-buffer backstop.
+    // check fires, not the streaming backstop.
     mockGetHeader.mockImplementation((_event: unknown, header: string) => {
       if (header === "content-type") {
         return "image/jpeg";
@@ -353,12 +380,66 @@ describe("POST /api/media", () => {
       }
       return null;
     });
+    const event = buildUploadEvent([sampleUploadBuffer]);
 
-    await expect(callHandler(postHandler, buildEvent())).rejects.toMatchObject({
+    await expect(callHandler(postHandler, event)).rejects.toMatchObject({
       statusCode: 413,
     });
-    // Body should not have been read; the early check fires before readRawBody.
-    expect(mockReadRawBody).not.toHaveBeenCalled();
+    // The body stream is never read; the early check fires first, so no
+    // `data`/`end` listeners were ever attached to it.
+    const req = (event as { node: { req: PassThrough } }).node.req;
+    expect(req.listenerCount("data")).toBe(0);
+  });
+
+  it("aborts the stream before consuming the full body when a client omits or understates Content-Length", async () => {
+    // No Content-Length header at all — the early check can't catch this,
+    // so only the streaming byte cap can stop an oversized upload.
+    mockGetHeader.mockImplementation((_event: unknown, header: string) => {
+      if (header === "content-type") {
+        return "image/jpeg";
+      }
+      if (header === "host") {
+        return "localhost:3000";
+      }
+      return null;
+    });
+
+    const req = new PassThrough();
+    // Once the cap trips, the handler destroys `req` while this loop may
+    // still be mid-write; that can surface a stray write-after-destroy
+    // stream error that has nothing to do with what this test asserts, so
+    // it's swallowed here rather than left to fail the run as unhandled.
+    req.on("error", () => {});
+    const event = { context: { userId: "user-1" }, node: { req } };
+    const chunk = Buffer.alloc(1024 * 1024); // 1 MB
+    const totalChunksAvailable = 50; // simulates a 50 MB upload against the 10 MB cap
+
+    const handlerPromise = callHandler(postHandler, event);
+    let aborted = false;
+    handlerPromise.catch(() => {
+      aborted = true;
+    });
+
+    let chunksSent = 0;
+    for (let index = 0; index < totalChunksAvailable; index += 1) {
+      if (aborted || req.destroyed) {
+        break;
+      }
+      req.write(chunk);
+      chunksSent += 1;
+      // Yield so the handler's `data` listener (and a possible `destroy()`
+      // once the cap is exceeded) runs between writes.
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    if (!req.destroyed) {
+      req.end();
+    }
+
+    await expect(handlerPromise).rejects.toMatchObject({ statusCode: 413 });
+    expect(req.destroyed).toBe(true);
+    // Proves the handler aborted well before the full (simulated) 50 MB
+    // upload was sent — it never buffered anywhere close to the whole body.
+    expect(chunksSent).toBeLessThan(totalChunksAvailable);
   });
 
   it("throws 401 when the user is not authenticated", async () => {
@@ -367,7 +448,9 @@ describe("POST /api/media", () => {
     });
     mockEnsureUser.mockRejectedValue(authError);
 
-    await expect(callHandler(postHandler, buildEvent())).rejects.toMatchObject({
+    await expect(
+      callHandler(postHandler, buildUploadEvent([sampleUploadBuffer])),
+    ).rejects.toMatchObject({
       statusCode: 401,
     });
   });
@@ -375,7 +458,10 @@ describe("POST /api/media", () => {
   it("accepts content-type with parameters (e.g. image/jpeg; charset=binary)", async () => {
     stubHeaders("image/jpeg; charset=binary");
 
-    const result = (await callHandler(postHandler, buildEvent())) as {
+    const result = (await callHandler(
+      postHandler,
+      buildUploadEvent([sampleUploadBuffer]),
+    )) as {
       id: string;
       url: string;
     };
@@ -392,9 +478,9 @@ describe("POST /api/media", () => {
     const insertError = new Error("DB error");
     mockDbInsertReturning.mockRejectedValue(insertError);
 
-    await expect(callHandler(postHandler, buildEvent())).rejects.toThrow(
-      "DB error",
-    );
+    await expect(
+      callHandler(postHandler, buildUploadEvent([sampleUploadBuffer])),
+    ).rejects.toThrow("DB error");
     expect(mockPutMediaBlob).toHaveBeenCalled();
     expect(mockRemoveMediaBlob).toHaveBeenCalledWith(
       expect.stringMatching(/^user-1\//),
@@ -409,9 +495,9 @@ describe("POST /api/media", () => {
     const insertError = new Error("DB error");
     mockDbInsertReturning.mockRejectedValue(insertError);
 
-    await expect(callHandler(postHandler, buildEvent())).rejects.toThrow(
-      "DB error",
-    );
+    await expect(
+      callHandler(postHandler, buildUploadEvent([sampleUploadBuffer])),
+    ).rejects.toThrow("DB error");
     expect(mockRemoveMediaBlob).toHaveBeenCalledTimes(1);
     expect(mockRemoveMediaBlob).toHaveBeenCalledWith(
       expect.stringMatching(/^user-1\//),
