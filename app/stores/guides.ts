@@ -20,6 +20,16 @@ export interface Guide {
   visibility: GuideVisibility;
   createdAt: string;
   updatedAt: string;
+  // Author byline fields. Only the single-guide read (GET /api/guides/:id,
+  // see loadReadableGuideWithAuthor) populates these as strings or explicit
+  // nulls — the list endpoint (GET /api/guides) is always the current user's
+  // own guides, where a byline would be redundant, so it omits the keys
+  // entirely. The detail page (guides/[id].vue) does not distinguish the two
+  // shapes: both "key omitted" and "key present but null" render the generic
+  // formatAuthorByline fallback, since in practice only fetchGuideById ever
+  // populates currentGuide from scratch and it always sends both keys.
+  ownerDisplayName?: string | null;
+  ownerHandle?: string | null;
 }
 
 export interface CreateGuideInput {
@@ -255,8 +265,18 @@ export const useGuidesStore = defineStore("guides", () => {
     );
     // Keep the open detail page (which renders from currentGuide, not the
     // list) in sync so an edit doesn't leave it showing pre-edit content.
+    // The PATCH response is the bare guide row (see server/api/guides/[id]
+    // .patch.ts) — it never carries ownerDisplayName/ownerHandle, and editing
+    // title/body/visibility never changes who the author is, so carry the
+    // byline fields already on currentGuide forward rather than letting this
+    // splice blank them out (which would wrongly show "by a traveler" under
+    // the owner's own guide until the next full fetch).
     if (currentGuide.value?.id === id) {
-      currentGuide.value = updated;
+      currentGuide.value = {
+        ...updated,
+        ownerDisplayName: currentGuide.value.ownerDisplayName,
+        ownerHandle: currentGuide.value.ownerHandle,
+      };
     }
     await markLoadSucceeded();
 

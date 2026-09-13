@@ -1118,6 +1118,9 @@ textarea.field__input {
   max-height: 380px;
   overflow-y: auto;
 }
+.notif__error {
+  margin: 10px 16px 0;
+}
 .notif__item {
   display: flex;
   align-items: flex-start;
@@ -1191,6 +1194,53 @@ textarea.field__input {
 }
 .notif__item.is-unread .notif__dot {
   opacity: 1;
+}
+.notif__dismiss {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--faint);
+  transition:
+    opacity 0.12s,
+    background 0.12s,
+    color 0.12s;
+}
+/* Hidden-until-hover only applies on devices that actually have hover (mouse/
+   trackpad) — on touch devices `:hover` never fires, which would otherwise
+   leave a permanently-invisible-but-still-tappable delete target at the edge
+   of every row. Touch users always see the button. */
+@media (hover: hover) {
+  .notif__dismiss {
+    opacity: 0;
+  }
+  .notif__item:hover .notif__dismiss {
+    opacity: 1;
+  }
+}
+.notif__dismiss:focus-visible {
+  opacity: 1;
+}
+.notif__dismiss:not(:disabled):hover {
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+/* Selector specificity matches `.notif__item:hover .notif__dismiss` above (two
+   classes + one pseudo-class each) and is declared after it, so a disabled
+   button stays dimmed even while the row it belongs to is hovered — otherwise
+   the hover-visibility rule's opacity: 1 would win and an in-flight dismiss
+   would render as if it were still fully interactive. */
+.notif__item .notif__dismiss:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.notif__dismiss .ico {
+  width: 14px;
+  height: 14px;
 }
 .notif__foot {
   display: flex;

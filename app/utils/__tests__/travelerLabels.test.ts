@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { DEFAULT_TRAVELER_NAME, formatHandle } from "../travelerLabels";
+import {
+  DEFAULT_AUTHOR_BYLINE,
+  DEFAULT_TRAVELER_NAME,
+  formatAuthorByline,
+  formatHandle,
+} from "../travelerLabels";
 
 describe("formatHandle", () => {
   it("prefixes a bare handle with a single @", () => {
@@ -24,5 +29,30 @@ describe("formatHandle", () => {
 describe("DEFAULT_TRAVELER_NAME", () => {
   it("is the shared fallback label", () => {
     expect(DEFAULT_TRAVELER_NAME).toBe("Wanderist traveler");
+  });
+});
+
+describe("DEFAULT_AUTHOR_BYLINE", () => {
+  it("is the shared fallback byline", () => {
+    expect(DEFAULT_AUTHOR_BYLINE).toBe("by a traveler");
+  });
+});
+
+describe("formatAuthorByline", () => {
+  it("prefers the handle over the display name", () => {
+    expect(formatAuthorByline("elsa_far", "Elsa")).toBe("by @elsa_far");
+  });
+
+  it("falls back to the display name when there is no handle", () => {
+    expect(formatAuthorByline(null, "Elsa")).toBe("by Elsa");
+  });
+
+  it("falls back to a generic label when both are missing", () => {
+    expect(formatAuthorByline(null, null)).toBe("by a traveler");
+    expect(formatAuthorByline(undefined, undefined)).toBe("by a traveler");
+  });
+
+  it("falls back to a generic label when the display name is an empty string", () => {
+    expect(formatAuthorByline(null, "")).toBe("by a traveler");
   });
 });

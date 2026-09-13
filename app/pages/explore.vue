@@ -306,7 +306,11 @@ import type {
   SuggestedPerson,
   TrendingPlace,
 } from "~/composables/useDiscover";
-import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
+import {
+  DEFAULT_TRAVELER_NAME,
+  formatAuthorByline,
+  formatHandle,
+} from "~/utils/travelerLabels";
 
 const openNotifications = inject<(() => void) | undefined>(
   "openNotifications",
@@ -440,14 +444,7 @@ function tripAuthorLabel(trip: FeaturedTrip): string {
 }
 
 function guideAuthorLabel(guide: DiscoverGuide): string {
-  const handle = formatHandle(guide.ownerHandle);
-  if (handle) {
-    return `by ${handle}`;
-  }
-  if (guide.ownerDisplayName) {
-    return `by ${guide.ownerDisplayName}`;
-  }
-  return "by a traveler";
+  return formatAuthorByline(guide.ownerHandle, guide.ownerDisplayName);
 }
 
 function personDisplayName(person: SuggestedPerson): string {

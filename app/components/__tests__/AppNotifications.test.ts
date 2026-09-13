@@ -10,18 +10,22 @@ import type { AppNotification } from "~/composables/useNotifications";
 const notificationsRef = ref<AppNotification[]>([]);
 const isLoadingRef = ref(false);
 const errorRef = ref<string | null>(null);
+const dismissingIdsRef = ref<Set<string>>(new Set());
 const mockMarkAllRead = vi.fn();
 const mockMarkRead = vi.fn();
+const mockDismissNotification = vi.fn();
 const mockFetchNotifications = vi.fn().mockResolvedValue(undefined);
 
 vi.stubGlobal("useNotifications", () => ({
   notifications: notificationsRef,
   isLoading: isLoadingRef,
   error: errorRef,
+  dismissingIds: dismissingIdsRef,
   unreadCount: 0,
   fetchNotifications: mockFetchNotifications,
   markAllRead: mockMarkAllRead,
   markRead: mockMarkRead,
+  dismissNotification: mockDismissNotification,
 }));
 
 const SAMPLE_NOTIFICATIONS: AppNotification[] = [
@@ -75,9 +79,11 @@ describe("AppNotifications", () => {
     vi.clearAllMocks();
     mockMarkAllRead.mockResolvedValue(undefined);
     mockMarkRead.mockResolvedValue(undefined);
+    mockDismissNotification.mockResolvedValue(undefined);
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
+    dismissingIdsRef.value = new Set();
   });
 
   it("renders nothing when closed", () => {
@@ -122,18 +128,33 @@ describe("AppNotifications", () => {
     expect(mockMarkAllRead).toHaveBeenCalledTimes(1);
   });
 
-  it("calls composable markRead when an unread notification item is clicked", async () => {
+  it("calls composable markRead when an unread notification's body is clicked", async () => {
     const wrapper = mount(AppNotifications, {
       props: { open: true },
       ...globalConfig,
     });
-    const unreadItem = wrapper.findAll(".notif__item.is-unread")[0];
-    await unreadItem?.trigger("click");
+    const unreadBody = wrapper
+      .findAll(".notif__item.is-unread")[0]
+      ?.find(".notif__body");
+    await unreadBody?.trigger("click");
     expect(mockMarkRead).toHaveBeenCalledTimes(1);
     expect(mockMarkRead).toHaveBeenCalledWith("n-1");
   });
 
-  it("does not call composable markRead when an already-read notification item is clicked", async () => {
+  it("calls composable markRead when clicking elsewhere on an unread row (e.g. the icon), not just the body text", async () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const unreadIcon = wrapper
+      .findAll(".notif__item.is-unread")[0]
+      ?.find(".notif__ico");
+    await unreadIcon?.trigger("click");
+    expect(mockMarkRead).toHaveBeenCalledTimes(1);
+    expect(mockMarkRead).toHaveBeenCalledWith("n-1");
+  });
+
+  it("does not call composable markRead when an already-read notification's body is clicked", async () => {
     const wrapper = mount(AppNotifications, {
       props: { open: true },
       ...globalConfig,
@@ -141,35 +162,52 @@ describe("AppNotifications", () => {
     const readItem = wrapper
       .findAll(".notif__item")
       .find((item) => !item.classes("is-unread"));
-    await readItem?.trigger("click");
+    await readItem?.find(".notif__body").trigger("click");
     expect(mockMarkRead).not.toHaveBeenCalled();
   });
 
-  it("calls composable markRead when Enter or Space is pressed on an unread item", async () => {
+  it("calls composable markRead when Enter or Space is pressed on an unread notification's body", async () => {
     const wrapper = mount(AppNotifications, {
       props: { open: true },
       ...globalConfig,
     });
-    const unreadItem = wrapper.findAll(".notif__item.is-unread")[0];
-    await unreadItem?.trigger("keydown.enter");
-    await unreadItem?.trigger("keydown.space");
+    const unreadBody = wrapper
+      .findAll(".notif__item.is-unread")[0]
+      ?.find(".notif__body");
+    await unreadBody?.trigger("keydown.enter");
+    await unreadBody?.trigger("keydown.space");
     expect(mockMarkRead).toHaveBeenCalledTimes(2);
     expect(mockMarkRead).toHaveBeenCalledWith("n-1");
   });
 
-  it("marks unread items as keyboard-focusable buttons and read items as neither", () => {
+  it("marks unread items' body as a keyboard-focusable button and read items' as neither", () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const unreadBody = wrapper
+      .findAll(".notif__item.is-unread")[0]
+      ?.find(".notif__body");
+    const readBody = wrapper
+      .findAll(".notif__item")
+      .find((item) => !item.classes("is-unread"))
+      ?.find(".notif__body");
+    expect(unreadBody?.attributes("tabindex")).toBe("0");
+    expect(unreadBody?.attributes("role")).toBe("button");
+    expect(readBody?.attributes("tabindex")).toBeUndefined();
+    expect(readBody?.attributes("role")).toBeUndefined();
+  });
+
+  it("does not nest the dismiss button inside the body's role=button (avoids nested-interactive controls)", () => {
     const wrapper = mount(AppNotifications, {
       props: { open: true },
       ...globalConfig,
     });
     const unreadItem = wrapper.findAll(".notif__item.is-unread")[0];
-    const readItem = wrapper
-      .findAll(".notif__item")
-      .find((item) => !item.classes("is-unread"));
-    expect(unreadItem?.attributes("tabindex")).toBe("0");
-    expect(unreadItem?.attributes("role")).toBe("button");
-    expect(readItem?.attributes("tabindex")).toBeUndefined();
-    expect(readItem?.attributes("role")).toBeUndefined();
+    expect(unreadItem?.find(".notif__body .notif__dismiss").exists()).toBe(
+      false,
+    );
+    expect(unreadItem?.find(".notif__dismiss").exists()).toBe(true);
   });
 
   it("renders the header with Notifications title", () => {
@@ -236,7 +274,7 @@ describe("AppNotifications", () => {
     expect(wrapper.find(".notif__list").text()).toContain("Loading");
   });
 
-  it("renders the error state when error is set", () => {
+  it("renders the full-page error state when error is set and no notifications have loaded", () => {
     notificationsRef.value = [];
     errorRef.value = "Could not load notifications";
 
@@ -248,5 +286,72 @@ describe("AppNotifications", () => {
     expect(wrapper.find('[role="alert"]').text()).toContain(
       "Could not load notifications",
     );
+    expect(wrapper.findAll(".notif__item")).toHaveLength(0);
+  });
+
+  it("shows an error banner without hiding an already-loaded list (e.g. a failed dismiss)", () => {
+    errorRef.value = "Could not dismiss notification";
+
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+    expect(wrapper.find('[role="alert"]').text()).toContain(
+      "Could not dismiss notification",
+    );
+    expect(wrapper.findAll(".notif__item")).toHaveLength(3);
+  });
+
+  it("renders a dismiss button on every notification item", () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    expect(wrapper.findAll(".notif__dismiss")).toHaveLength(3);
+  });
+
+  it("calls composable dismissNotification when the dismiss button is clicked", async () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const dismissButton = wrapper.findAll(".notif__dismiss")[0];
+    await dismissButton?.trigger("click");
+    expect(mockDismissNotification).toHaveBeenCalledTimes(1);
+    expect(mockDismissNotification).toHaveBeenCalledWith("n-1");
+  });
+
+  it("does not call composable markRead when the dismiss button on an unread item is clicked", async () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const dismissButton = wrapper.findAll(".notif__dismiss")[0];
+    await dismissButton?.trigger("click");
+    expect(mockMarkRead).not.toHaveBeenCalled();
+  });
+
+  it("does not call composable markRead when Enter or Space is pressed on the dismiss button of an unread item", async () => {
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const dismissButton = wrapper.findAll(".notif__dismiss")[0];
+    await dismissButton?.trigger("keydown.enter");
+    await dismissButton?.trigger("keydown.space");
+    expect(mockMarkRead).not.toHaveBeenCalled();
+  });
+
+  it("disables the dismiss button while that notification's dismissal is in flight", () => {
+    dismissingIdsRef.value = new Set(["n-1"]);
+
+    const wrapper = mount(AppNotifications, {
+      props: { open: true },
+      ...globalConfig,
+    });
+    const dismissButtons = wrapper.findAll(".notif__dismiss");
+    expect(dismissButtons[0]?.attributes("disabled")).toBeDefined();
+    expect(dismissButtons[1]?.attributes("disabled")).toBeUndefined();
   });
 });

@@ -1,5 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { getDb } from "../../../../db/index";
+import { getDb, runBatch } from "../../../../db/index";
 import { tripStops } from "../../../../db/schema";
 import { requireTripId, loadOwnedTrip } from "../../../../utils/trip-helpers";
 
@@ -97,18 +97,31 @@ export default defineEventHandler(async (event) => {
 
   validateAllStopsPresent(stopIds, existingIds);
 
-  // Note: neon-http uses HTTP connections which do not support interactive
-  // transactions. Each UPDATE is issued independently. If any fails partway
-  // through, earlier updates will have committed. Switching to neon-serverless
-  // (WebSocket pool) would allow wrapping these in a real transaction.
-  await Promise.all(
-    stopIds.map((stopId, index) =>
-      database
-        .update(tripStops)
-        .set({ sortOrder: index })
-        .where(and(eq(tripStops.id, stopId), eq(tripStops.tripId, tripId))),
-    ),
+  // Each stop's new sortOrder is already known (its index in the caller's
+  // list), so none of these updates depends on another's result — they run as
+  // ONE atomic database.batch() call, the neon-http driver's real BEGIN/COMMIT
+  // unit (see server/db/index.ts), instead of the previous Promise.all of
+  // independent HTTP calls where a mid-sequence failure could leave the trip's
+  // stops in a half-reordered state. Each UPDATE holds its row lock for the
+  // life of that one transaction (unlike the old Promise.all, where every
+  // update auto-committed and released its lock immediately), so two
+  // concurrent reorders of the same trip in different orders would deadlock if
+  // each locked rows in the caller's order. Locking in a fixed, sorted-by-id
+  // order (same fix as upsertTags in server/utils/entry-helpers.ts) makes any
+  // two callers acquire the same rows in the same order; sortOrder still comes
+  // from each stop's index in the caller's original list, so the result is
+  // unaffected — only lock acquisition order changes.
+  const sortOrderByStopId = new Map(
+    stopIds.map((stopId, index) => [stopId, index]),
   );
+  const lockOrderedStopIds = [...stopIds].sort();
+  const updateStatements = lockOrderedStopIds.map((stopId) =>
+    database
+      .update(tripStops)
+      .set({ sortOrder: sortOrderByStopId.get(stopId)! })
+      .where(and(eq(tripStops.id, stopId), eq(tripStops.tripId, tripId))),
+  );
+  await runBatch(database, updateStatements);
 
   const reorderedStops = await database
     .select()

@@ -1,5 +1,6 @@
 import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
+import type { BatchItem } from "drizzle-orm/batch";
 import * as schema from "./schema";
 
 let cachedDb: ReturnType<typeof drizzle> | null = null;
@@ -36,4 +37,24 @@ export function getDb() {
     useRuntimeConfig().databaseUrl;
   cachedDb = createDb(databaseUrl);
   return cachedDb;
+}
+
+/**
+ * Runs a variable-length list of statements as one atomic database.batch()
+ * call — the neon-http driver's real BEGIN/COMMIT unit. Callers build
+ * `statements` dynamically (some writes are conditional on the request body),
+ * so its length isn't known at the type level, but drizzle's `batch()` is
+ * typed to require a non-empty tuple. Owning the `as [...]` cast and the
+ * empty-array guard here means every call site enforces the same invariant
+ * (an empty batch is a silent no-op, never a runtime call to Neon) instead of
+ * each one reimplementing — and potentially forgetting — its own guard.
+ */
+export async function runBatch(
+  database: ReturnType<typeof getDb>,
+  statements: BatchItem<"pg">[],
+): Promise<unknown[]> {
+  if (statements.length === 0) {
+    return [];
+  }
+  return database.batch(statements as [BatchItem<"pg">, ...BatchItem<"pg">[]]);
 }

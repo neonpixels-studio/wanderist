@@ -11,15 +11,19 @@ import type { AppNotification } from "~/composables/useNotifications";
 const notificationsRef = ref<AppNotification[]>([]);
 const isLoadingRef = ref(false);
 const errorRef = ref<string | null>(null);
+const dismissingIdsRef = ref<Set<string>>(new Set());
 const mockFetchAllNotifications = vi.fn().mockResolvedValue(undefined);
+const mockDismissNotification = vi.fn().mockResolvedValue(undefined);
 
 vi.stubGlobal("useNotifications", () => ({
   notifications: notificationsRef,
   isLoading: isLoadingRef,
   error: errorRef,
+  dismissingIds: dismissingIdsRef,
   unreadCount: 0,
   fetchAllNotifications: mockFetchAllNotifications,
   markAllRead: vi.fn().mockResolvedValue(undefined),
+  dismissNotification: mockDismissNotification,
 }));
 
 const SAMPLE_NOTIFICATIONS: AppNotification[] = [
@@ -47,9 +51,11 @@ describe("Activity page (/activity)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetchAllNotifications.mockResolvedValue(undefined);
+    mockDismissNotification.mockResolvedValue(undefined);
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
+    dismissingIdsRef.value = new Set();
   });
 
   it("renders without crashing and matches snapshot", () => {
@@ -115,7 +121,7 @@ describe("Activity page (/activity)", () => {
     expect(wrapper.find(".activity__state").text()).toContain("Loading");
   });
 
-  it("shows error state when error is set", () => {
+  it("shows the full-page error state when error is set and no notifications have loaded", () => {
     notificationsRef.value = [];
     errorRef.value = "Could not load notifications";
 
@@ -124,6 +130,19 @@ describe("Activity page (/activity)", () => {
     expect(wrapper.find('[role="alert"]').text()).toContain(
       "Could not load notifications",
     );
+    expect(wrapper.find(".activity__list").exists()).toBe(false);
+  });
+
+  it("shows an error banner without hiding an already-loaded list (e.g. a failed dismiss)", () => {
+    errorRef.value = "Could not dismiss notification";
+
+    const wrapper = mount(ActivityPage, globalConfig);
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true);
+    expect(wrapper.find('[role="alert"]').text()).toContain(
+      "Could not dismiss notification",
+    );
+    expect(wrapper.find(".activity__list").exists()).toBe(true);
+    expect(wrapper.findAll(".activity__item")).toHaveLength(2);
   });
 
   it("shows empty state when there are no notifications", () => {
@@ -133,5 +152,27 @@ describe("Activity page (/activity)", () => {
     expect(wrapper.find(".activity__state").text()).toContain(
       "No activity yet",
     );
+  });
+
+  it("renders a dismiss button on every notification item", () => {
+    const wrapper = mount(ActivityPage, globalConfig);
+    expect(wrapper.findAll(".activity__dismiss")).toHaveLength(2);
+  });
+
+  it("calls composable dismissNotification when the dismiss button is clicked", async () => {
+    const wrapper = mount(ActivityPage, globalConfig);
+    const dismissButton = wrapper.findAll(".activity__dismiss")[0];
+    await dismissButton?.trigger("click");
+    expect(mockDismissNotification).toHaveBeenCalledTimes(1);
+    expect(mockDismissNotification).toHaveBeenCalledWith("n-1");
+  });
+
+  it("disables the dismiss button while that notification's dismissal is in flight", () => {
+    dismissingIdsRef.value = new Set(["n-1"]);
+
+    const wrapper = mount(ActivityPage, globalConfig);
+    const dismissButtons = wrapper.findAll(".activity__dismiss");
+    expect(dismissButtons[0]?.attributes("disabled")).toBeDefined();
+    expect(dismissButtons[1]?.attributes("disabled")).toBeUndefined();
   });
 });

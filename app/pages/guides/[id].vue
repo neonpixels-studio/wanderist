@@ -39,6 +39,7 @@
 
     <header class="gdetail__head">
       <h1>{{ guide.title }}</h1>
+      <div class="gdetail__by">{{ authorLabel }}</div>
       <div class="gdetail__meta">
         <span class="m">
           <AppIcon name="clock" :size="12" />
@@ -63,6 +64,7 @@
 import { computed } from "vue";
 import { useGuidesStore } from "~/stores/guides";
 import type { GuideVisibility } from "~/stores/guides";
+import { formatAuthorByline } from "~/utils/travelerLabels";
 
 // No auth middleware: a public guide must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private or
@@ -93,6 +95,19 @@ const guide = computed(() =>
 // a missing guide to a share-link visitor, so it gets its own error state.
 const loadError = computed(() => guidesStore.guideError);
 
+// isLoaded gates nothing rendered on this page (unlike trips/[id].vue, which
+// has an owner-only UI split), but the fetch below still needs it: mirrors
+// trips/[id].vue's canRetryAuthenticated so a signed-in owner opening their own
+// private guide isn't stuck on the anonymous-first-fetch 404. A refetch only
+// changes the answer once the viewer is signed in and can carry a token; an
+// anonymous visitor never gains one, so watching this (not isClerkLoaded)
+// gives them a single fetch while still re-issuing the owner's request once
+// their session resolves.
+const { isLoaded: isClerkLoaded, isSignedIn } = useClerkAuth();
+const canRetryAuthenticated = computed(
+  () => isClerkLoaded.value && !!isSignedIn.value,
+);
+
 // `server: false` keeps the fetch client-only, mirroring u/[id].vue: the request
 // carries the Clerk session token, which only exists on the client (Clerk runs
 // with skipServerMiddleware). Running it during SSR would hang, since Clerk's
@@ -106,7 +121,7 @@ const loadError = computed(() => guidesStore.guideError);
 const { status: fetchStatus, refresh: refreshGuide } = useAsyncData(
   () => `guide-detail-${guideId.value}`,
   () => guidesStore.fetchGuideById(guideId.value),
-  { server: false, watch: [guideId] },
+  { server: false, watch: [guideId, canRetryAuthenticated] },
 );
 
 async function onRetryLoad(): Promise<void> {
@@ -125,6 +140,16 @@ const isLoading = computed(
 
 const visibilityTagClass = computed(() =>
   guide.value ? VISIBILITY_TAG_CLASS[guide.value.visibility] : "",
+);
+
+// Falls back to "by a traveler" when the author has set neither a handle nor
+// a display name — a public guide always has an author (userId is never
+// null), so this covers "anonymous" in the sense of "hasn't set a name", not
+// "no author at all".
+const authorLabel = computed(() =>
+  guide.value
+    ? formatAuthorByline(guide.value.ownerHandle, guide.value.ownerDisplayName)
+    : "",
 );
 
 useHead(
@@ -158,6 +183,11 @@ useHead(
   font-size: 28px;
   font-weight: 700;
   letter-spacing: -0.02em;
+}
+.gdetail__by {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
 }
 .gdetail__meta {
   display: flex;

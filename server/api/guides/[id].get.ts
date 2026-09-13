@@ -1,7 +1,7 @@
 import { getDb } from "../../db/index";
 import { optionalUser } from "../../utils/auth";
 import { requireRouterParam } from "../../utils/db-helpers";
-import { loadReadableGuide } from "../../utils/guide-queries";
+import { loadReadableGuideWithAuthor } from "../../utils/guide-queries";
 
 export default defineEventHandler(async (event) => {
   const id = requireRouterParam(event, "id");
@@ -21,6 +21,7 @@ export default defineEventHandler(async (event) => {
   setResponseHeader(event, "Vary", "Authorization");
 
   // Returns the full guide row (including body) subject to the visibility
-  // rule — owner reads any, non-owner reads public only, otherwise 404.
-  return loadReadableGuide(database, id, userId);
+  // rule — owner reads any, non-owner reads public only, otherwise 404 — plus
+  // the author's byline fields so the detail page can show who wrote it.
+  return loadReadableGuideWithAuthor(database, id, userId);
 });

@@ -36,6 +36,13 @@ vi.mock("../../../server/utils/db-helpers", () => ({
 
 vi.mock("../../../server/db/index", () => ({
   getDb: vi.fn(),
+  // Mirrors the real runBatch (server/db/index.ts): empty-array short
+  // circuit, otherwise delegate to the test's mocked database.batch().
+  runBatch: (
+    database: { batch: (statements: unknown[]) => unknown },
+    statements: unknown[],
+  ) =>
+    statements.length === 0 ? Promise.resolve([]) : database.batch(statements),
 }));
 
 vi.mock("../../../server/utils/coverImageCleanup", () => ({
@@ -119,11 +126,15 @@ const mockAssertTripOwnershipIfPresent = vi.mocked(
   assertTripOwnershipIfPresent,
 );
 
-// The neon-http driver has no interactive transactions, so the handler runs its
-// writes sequentially on the base client. Each mock therefore exposes the write
-// methods directly (no transaction wrapper) plus a `transaction` spy that must
-// stay uncalled — the regression guard for issue #200, where a stray
-// database.transaction() call 500s every entry PATCH.
+// The neon-http driver has no interactive transactions of its own, but the
+// handler now runs its scalar update plus tag/photo replaces as one atomic
+// database.batch() call (see server/api/entries/[id].patch.ts) instead of
+// separate sequential writes. `batch` mirrors that by awaiting every
+// statement it's given — each statement here is already a promise (or, for
+// the scalar update's `.where()` result, a plain value Promise.all resolves
+// immediately) — plus a `transaction` spy that must stay uncalled — the
+// regression guard for issue #200, where a stray database.transaction() call
+// 500s every entry PATCH.
 function makeDbForPatch(updatedEntry: Record<string, unknown>) {
   const returningMock = vi.fn().mockResolvedValue([updatedEntry]);
   const whereMock = vi.fn().mockReturnValue({ returning: returningMock });
@@ -141,6 +152,7 @@ function makeDbForPatch(updatedEntry: Record<string, unknown>) {
       values: vi.fn().mockResolvedValue([]),
     }),
     select: vi.fn().mockReturnValue({ from: selectFromMock }),
+    batch: vi.fn((statements: unknown[]) => Promise.all(statements)),
     transaction: vi.fn(),
   };
 }
@@ -181,6 +193,7 @@ function makeDbForPhotoPatch(
       values: vi.fn().mockResolvedValue([]),
     }),
     select: selectMock,
+    batch: vi.fn((statements: unknown[]) => Promise.all(statements)),
     transaction: vi.fn(),
   };
 }
@@ -396,18 +409,67 @@ describe("PATCH /api/entries/:id", () => {
     expect(mockDb.delete).toHaveBeenCalled();
     expect(mockDb.insert).toHaveBeenCalled();
     expect(mockDb.transaction).not.toHaveBeenCalled();
-    // The non-destructive scalar update runs before the destructive tag replace,
-    // so a failure in the replace never discards an already-applied scalar edit
-    // silently — and matches the documented ordering.
+    // The scalar update statement is built (and therefore batched) before the
+    // tag-replace statements, matching the documented, deterministic ordering
+    // — both now travel in the same atomic database.batch() call, so this is
+    // about statement order, not partial-failure blast radius (a failure
+    // anywhere in the batch rolls back the whole thing, scalar update included).
     expect(mockDb.update.mock.invocationCallOrder[0]).toBeLessThan(
       mockDb.delete.mock.invocationCallOrder[0],
     );
-    // upsertTags runs before the destructive entryTags delete, so a tag-upsert
-    // failure leaves the entry's existing tags intact instead of deleting them
-    // and then failing (there is no transaction to roll back).
+    // upsertTags is its own separate read/write round trip that must resolve
+    // tagIds before the entryTags delete/insert statements can even be built,
+    // so a tag-upsert failure never touches the entry's existing tags at all
+    // — the destructive delete/insert pair is never reached.
     expect(mockUpsertTags.mock.invocationCallOrder[0]).toBeLessThan(
       mockDb.delete.mock.invocationCallOrder[0],
     );
+  });
+
+  it("issues the scalar update, tag replace, and photo replace as one atomic batch", async () => {
+    const updatedEntry = { id: "e-1", userId: "user-1", title: "Trip" };
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({
+      title: "Trip",
+      tags: ["hiking"],
+      photoMediaIds: ["media-1"],
+    });
+    const mockDb = makeDbForPhotoPatch(updatedEntry, []);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+    mockUpsertTags.mockResolvedValueOnce(["tag-1"]);
+
+    await invokeHandler({});
+
+    // Scalar update (1) + tag delete/insert (2) + photo delete/insert (2) = 5
+    // statements travel in a single database.batch() call — a real
+    // BEGIN/COMMIT on the neon-http driver — instead of 5 independent,
+    // non-atomic round trips.
+    expect(mockDb.batch).toHaveBeenCalledTimes(1);
+    expect(mockDb.batch.mock.calls[0][0]).toHaveLength(5);
+  });
+
+  it("propagates a batch failure and skips post-commit media cleanup", async () => {
+    // The real atomicity guarantee (nothing partially commits) is enforced by
+    // drizzle's neon-http batch() implementation itself, not by this handler —
+    // that's out of reach for a mocked unit test. What the handler must get
+    // right, and what this asserts, is that a rejected batch propagates as a
+    // failure and that cleanupReplacedPhotoMedia — which assumes the photo
+    // replace already committed — never runs on that path. Same setup as
+    // "cleans up removed media and returns the entry on a photos-only patch"
+    // below, which is this test's positive control: with the batch resolving
+    // instead of rejecting, that test proves media-1 *would* be cleaned up —
+    // so a batch failure suppressing the same cleanup call is a real assertion,
+    // not a vacuous one.
+    const updatedEntry = { id: "e-1", userId: "user-1", title: "Keep" };
+    mockRequireRouterParam.mockReturnValue("e-1");
+    mockReadBody.mockResolvedValue({ title: "Keep", photoMediaIds: [] });
+    const mockDb = makeDbForPhotoPatch(updatedEntry, [{ mediaId: "media-1" }]);
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+    const batchError = new Error("batch failed");
+    mockDb.batch = vi.fn().mockRejectedValue(batchError);
+
+    await expect(invokeHandler({})).rejects.toThrow(batchError);
+    expect(mockDeleteMediaIfUnreferenced).not.toHaveBeenCalled();
   });
 
   it("throws 404 and runs no transaction when a photoMediaId is not owned", async () => {
