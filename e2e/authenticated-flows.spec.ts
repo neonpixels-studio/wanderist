@@ -11,9 +11,9 @@
  */
 import { test, expect, type TestInfo } from "@playwright/test";
 import {
-  hasClerkCredentials,
   setupClerkTestingToken,
   signIn,
+  skipWithoutClerkCredentials,
   waitForAppReady,
 } from "./support/clerk";
 
@@ -31,12 +31,7 @@ test.beforeAll(async () => {
 // ---------------------------------------------------------------------------
 
 test.beforeEach(async ({}, testInfo) => {
-  if (!hasClerkCredentials()) {
-    testInfo.skip(
-      true,
-      "Clerk keys are not set — add NUXT_PUBLIC_CLERK_PUBLISHABLE_KEY and NUXT_CLERK_SECRET_KEY to .env to run authenticated flows",
-    );
-  }
+  skipWithoutClerkCredentials(testInfo);
 });
 
 // ---------------------------------------------------------------------------

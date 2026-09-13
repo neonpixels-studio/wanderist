@@ -19,7 +19,7 @@
  * Callers should skip their tests when hasClerkCredentials() is false, so a
  * CI run without credentials degrades gracefully rather than erroring.
  */
-import type { Page } from "@playwright/test";
+import type { Page, TestInfo } from "@playwright/test";
 import { clerk, clerkSetup } from "@clerk/testing/playwright";
 
 // Fixed Clerk test identifier — no env var needed. The +clerk_test suffix marks
@@ -37,6 +37,16 @@ const secretKey = process.env.NUXT_CLERK_SECRET_KEY;
 
 export function hasClerkCredentials(): boolean {
   return Boolean(publishableKey && secretKey);
+}
+
+// Skips the current test when the Clerk keys are absent. Call from each
+// spec's own test.beforeEach — the skip must be requested per-test (Playwright
+// has no file-level "don't run any of these" hook that also reports a reason).
+export function skipWithoutClerkCredentials(testInfo: TestInfo): void {
+  testInfo.skip(
+    !hasClerkCredentials(),
+    "Clerk keys are not set — add NUXT_PUBLIC_CLERK_PUBLISHABLE_KEY and NUXT_CLERK_SECRET_KEY to .env to run authenticated flows",
+  );
 }
 
 // Fetches a testing token from Clerk's Backend API once per test file. Skipped
