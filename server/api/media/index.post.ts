@@ -9,6 +9,7 @@ import { processMediaImage, storeMediaBlobs } from "../../utils/mediaPipeline";
 
 // 10 MB expressed in bytes.
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const MAX_FILE_SIZE_MB = MAX_FILE_SIZE_BYTES / (1024 * 1024);
 
 const ALLOWED_CONTENT_TYPES = new Set([
   "image/jpeg",
@@ -50,12 +51,19 @@ function assertContentTypeAllowed(contentType: string): void {
   }
 }
 
+// Single source of the 413 error so the early Content-Length gate and the
+// streaming byte cap can't drift into differently-worded (or differently
+// rounded) messages for what is the same rejection.
+function createFileTooLargeError(): Error {
+  return createError({
+    statusCode: 413,
+    statusMessage: `File too large. Maximum size is ${MAX_FILE_SIZE_MB} MB`,
+  });
+}
+
 function assertFileSizeAllowed(byteLength: number): void {
   if (byteLength > MAX_FILE_SIZE_BYTES) {
-    throw createError({
-      statusCode: 413,
-      statusMessage: `File too large. Maximum size is ${MAX_FILE_SIZE_BYTES / (1024 * 1024)} MB`,
-    });
+    throw createFileTooLargeError();
   }
 }
 
@@ -84,23 +92,29 @@ function readCappedRawBody(event: H3Event, maxBytes: number): Promise<Buffer> {
       request.off("data", onData);
       request.off("end", onEnd);
       request.off("error", onError);
+      request.off("close", onClose);
     }
 
-    function onData(chunk: Buffer): void {
-      receivedBytes += chunk.byteLength;
+    function onData(chunk: Buffer | string): void {
+      // `chunk` is a Buffer for every caller in this codebase (nothing sets
+      // an encoding on the request), but guard anyway: a string chunk would
+      // make `byteLength` undefined and silently disable the cap below.
+      const bufferedChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      receivedBytes += bufferedChunk.byteLength;
       if (receivedBytes > maxBytes) {
         cleanup();
-        // Stop the client from streaming any further bytes to us.
-        request.destroy();
-        reject(
-          createError({
-            statusCode: 413,
-            statusMessage: `File too large. Maximum size is ${maxBytes / (1024 * 1024)} MB`,
-          }),
-        );
+        // Stop reading further bytes without destroying the socket — the
+        // request and response can share a connection (e.g. local dev's raw
+        // Node HTTP server), and destroying the request can prevent the 413
+        // response below from ever reaching the client. Pausing still bounds
+        // our own memory: the client's remaining bytes sit in the OS/TCP
+        // buffer, not in this process, and normal TCP backpressure stalls
+        // the sender once that buffer fills.
+        request.pause();
+        reject(createFileTooLargeError());
         return;
       }
-      chunks.push(chunk);
+      chunks.push(bufferedChunk);
     }
 
     function onEnd(): void {
@@ -113,7 +127,26 @@ function readCappedRawBody(event: H3Event, maxBytes: number): Promise<Buffer> {
       reject(error);
     }
 
-    request.on("data", onData).on("end", onEnd).on("error", onError);
+    // A client that disconnects mid-upload emits `close` without `data`
+    // finishing, and (unlike a normal parse failure) may never emit `error`
+    // either — without this, the promise would hang forever on an abandoned
+    // connection. `onEnd` already ran `cleanup()` on the happy path, so this
+    // is a no-op there.
+    function onClose(): void {
+      cleanup();
+      reject(
+        createError({
+          statusCode: 400,
+          statusMessage: "Upload connection closed before completion",
+        }),
+      );
+    }
+
+    request
+      .on("data", onData)
+      .on("end", onEnd)
+      .on("error", onError)
+      .on("close", onClose);
   });
 }
 
@@ -123,7 +156,13 @@ function readCappedRawBody(event: H3Event, maxBytes: number): Promise<Buffer> {
 // cap enforced by `readCappedRawBody` while the body streams in.
 async function readValidatedUploadBuffer(event: H3Event): Promise<Buffer> {
   const declaredLength = Number(getHeader(event, "content-length") ?? 0);
-  assertFileSizeAllowed(declaredLength);
+  // A malformed header (e.g. non-numeric) makes this NaN, and NaN fails every
+  // comparison — silently skipping the check rather than letting a garbage
+  // value slip through it. The streaming cap below is the real backstop
+  // either way.
+  if (Number.isFinite(declaredLength)) {
+    assertFileSizeAllowed(declaredLength);
+  }
 
   const rawBody = await readCappedRawBody(event, MAX_FILE_SIZE_BYTES);
   if (!rawBody || rawBody.byteLength === 0) {

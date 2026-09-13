@@ -405,14 +405,13 @@ describe("POST /api/media", () => {
     });
 
     const req = new PassThrough();
-    // Once the cap trips, the handler destroys `req` while this loop may
-    // still be mid-write; that can surface a stray write-after-destroy
-    // stream error that has nothing to do with what this test asserts, so
-    // it's swallowed here rather than left to fail the run as unhandled.
-    req.on("error", () => {});
     const event = { context: { userId: "user-1" }, node: { req } };
-    const chunk = Buffer.alloc(1024 * 1024); // 1 MB
+    const CHUNK_SIZE_BYTES = 1024 * 1024; // 1 MB
+    const chunk = Buffer.alloc(CHUNK_SIZE_BYTES);
     const totalChunksAvailable = 50; // simulates a 50 MB upload against the 10 MB cap
+    // 10 MB cap / 1 MB chunks = 10 whole chunks fit; the 11th is what tips
+    // it over and triggers the reject, so nothing past that should ever send.
+    const maxExpectedChunksSent = 11;
 
     const handlerPromise = callHandler(postHandler, event);
     let aborted = false;
@@ -422,24 +421,48 @@ describe("POST /api/media", () => {
 
     let chunksSent = 0;
     for (let index = 0; index < totalChunksAvailable; index += 1) {
-      if (aborted || req.destroyed) {
+      if (aborted) {
         break;
       }
       req.write(chunk);
       chunksSent += 1;
-      // Yield so the handler's `data` listener (and a possible `destroy()`
+      // Yield so the handler's `data` listener (and the pause() it calls
       // once the cap is exceeded) runs between writes.
       await new Promise((resolve) => setImmediate(resolve));
     }
-    if (!req.destroyed) {
+    if (!aborted) {
       req.end();
     }
 
     await expect(handlerPromise).rejects.toMatchObject({ statusCode: 413 });
-    expect(req.destroyed).toBe(true);
+    // The handler stops reading (pauses, doesn't destroy the socket, so a
+    // real response can still be sent) rather than draining the rest of the
+    // simulated 50 MB upload.
+    expect(req.isPaused()).toBe(true);
     // Proves the handler aborted well before the full (simulated) 50 MB
     // upload was sent — it never buffered anywhere close to the whole body.
-    expect(chunksSent).toBeLessThan(totalChunksAvailable);
+    expect(chunksSent).toBeLessThanOrEqual(maxExpectedChunksSent);
+  });
+
+  it("accepts an upload of exactly the byte cap", async () => {
+    const exactlyAtCapBuffer = Buffer.alloc(10 * 1024 * 1024);
+
+    const result = (await callHandler(
+      postHandler,
+      buildUploadEvent([exactlyAtCapBuffer]),
+    )) as { id: string };
+
+    expect(result.id).toBe("media-123");
+  });
+
+  it("propagates a stream error instead of hanging", async () => {
+    const req = new PassThrough();
+    const event = { context: { userId: "user-1" }, node: { req } };
+
+    const handlerPromise = callHandler(postHandler, event);
+    req.destroy(new Error("socket hang up"));
+
+    await expect(handlerPromise).rejects.toThrow("socket hang up");
   });
 
   it("throws 401 when the user is not authenticated", async () => {
