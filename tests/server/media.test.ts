@@ -385,6 +385,52 @@ describe("POST /api/media", () => {
     expect(mockReadCappedUploadBody).not.toHaveBeenCalled();
   });
 
+  it("does not block the early check on a non-numeric Content-Length header", async () => {
+    // Number("not-a-number") is NaN, which fails every `>` comparison
+    // harmlessly rather than being rejected outright, so the request
+    // proceeds to the streaming cap (the real backstop) instead of trusting
+    // an untrustworthy header directly.
+    mockGetHeader.mockImplementation((_event: unknown, header: string) => {
+      if (header === "content-type") {
+        return "image/jpeg";
+      }
+      if (header === "content-length") {
+        return "not-a-number";
+      }
+      if (header === "host") {
+        return "localhost:3000";
+      }
+      return null;
+    });
+
+    await callHandler(postHandler, buildEvent());
+
+    expect(mockReadCappedUploadBody).toHaveBeenCalled();
+  });
+
+  it("throws 413 early for an absurdly large (but numeric) Content-Length header", async () => {
+    // Number("9".repeat(400)) overflows to Infinity, and Infinity > cap is
+    // true, so this still correctly trips the early gate without reading
+    // any body.
+    mockGetHeader.mockImplementation((_event: unknown, header: string) => {
+      if (header === "content-type") {
+        return "image/jpeg";
+      }
+      if (header === "content-length") {
+        return "9".repeat(400);
+      }
+      if (header === "host") {
+        return "localhost:3000";
+      }
+      return null;
+    });
+
+    await expect(callHandler(postHandler, buildEvent())).rejects.toMatchObject({
+      statusCode: 413,
+    });
+    expect(mockReadCappedUploadBody).not.toHaveBeenCalled();
+  });
+
   it("throws 401 when the user is not authenticated", async () => {
     const authError = Object.assign(new Error("Unauthorized"), {
       statusCode: 401,
