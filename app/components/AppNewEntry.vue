@@ -308,7 +308,7 @@ const tripsStore = useTripsStore();
 const placesStore = usePlacesStore();
 const { upload, isUploading } = useMediaUpload();
 const uploadError = ref<string | null>(null);
-const { saveDraft, loadDraft, clearDraft, onDraftReady } = useEntryDraft();
+const { saveDraft, clearDraft, onDraftReady } = useEntryDraft();
 
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const uploadedPhotos = ref<Array<{ id: string; url: string }>>([]);
@@ -591,84 +591,80 @@ function applyRestoredDraft(draft: EntryDraft): void {
   tripDefaulted.value = true;
 }
 
-// Bumped every time this function (re)seeds the create-mode form. Captured by
-// the onDraftReady callback below so a session that resolves after the drawer
-// has moved on — closed, reopened, or switched to editing — can tell its
-// restore is stale and skip applying it, rather than overwriting whatever is
-// on screen by the time the session settles.
-let draftSeedToken = 0;
 let stopPendingDraftLoad: (() => void) | null = null;
 
-// The baseline snapshot a pending late draft-restore compares against to
-// detect a user edit (see armPendingDraftRestore). Non-null only for the
-// window between arming a restore and it resolving or going stale.
-let pendingSeedSnapshot: string | null = null;
-
-// Everything applyFreshForm/applyRestoredDraft write (plus tagInput, a real
-// text field not part of FormState), snapshotted so a late draft restore
-// (see armPendingDraftRestore) can tell whether the user has typed, picked a
-// place, attached a photo, or half-typed a tag since the blank form was
-// seeded — and skip applying over it if so, rather than silently discarding
-// what they entered while Clerk was still hydrating.
-function untouchedFormSnapshot(): string {
-  return JSON.stringify({
-    form: form.value,
-    selectedPlace: selectedPlace.value,
-    uploadedPhotos: uploadedPhotos.value,
-    tagInput: tagInput.value,
-  });
+// Everything applyFreshForm/applyRestoredDraft write, plus tagInput (a real
+// text field not part of FormState). A late draft restore (see the
+// onDraftReady callback in applyDraftOrFreshForm below) compares against a
+// snapshot of these to tell whether the user has typed, picked a place,
+// attached a photo, or half-typed a tag since the blank form was seeded — and
+// skips applying over it if so, rather than silently discarding what they
+// entered while Clerk was still hydrating.
+//
+// Kept as a plain object (not a single serialized string) so the trips-load
+// watch below can patch in just the field it legitimately writes
+// (tripId) without also re-baselining — and so silently accepting — every
+// other field the user may have touched in the meantime.
+interface UntouchedFormSnapshot {
+  form: FormState;
+  selectedPlace: PlaceSuggestion | null;
+  uploadedPhotos: Array<{ id: string; url: string }>;
+  tagInput: string;
 }
 
-// Seeds a blank create-mode form, or restores a draft that's available
-// synchronously (the common case: the session had already resolved).
-// Returns true when a draft was restored synchronously, so
-// seedFormForCurrentMode knows whether a late-arriving restore still needs
-// to be armed.
-function applyDraftOrFreshForm(): boolean {
+function captureUntouchedFormSnapshot(): UntouchedFormSnapshot {
+  return {
+    form: { ...form.value, tags: [...form.value.tags] },
+    selectedPlace: selectedPlace.value ? { ...selectedPlace.value } : null,
+    uploadedPhotos: uploadedPhotos.value.map((photo) => ({ ...photo })),
+    tagInput: tagInput.value,
+  };
+}
+
+function snapshotsMatch(
+  a: UntouchedFormSnapshot,
+  b: UntouchedFormSnapshot,
+): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// The baseline a pending late draft-restore compares against to detect a user
+// edit. Non-null only for the window between seeding a blank form and the
+// onDraftReady callback below resolving.
+let pendingSeedSnapshot: UntouchedFormSnapshot | null = null;
+
+// Seeds the create-mode form and, when no draft is available synchronously
+// (either there truly is none, or Clerk hasn't resolved the session yet),
+// arms a one-shot reactive retry via onDraftReady so a draft that exists
+// once we know who's signed in still restores instead of the drawer silently
+// staying blank.
+//
+// Always routes through onDraftReady (rather than calling loadDraft()
+// directly first) so there is exactly one restore path to reason about: when
+// the session has already resolved, onDraftReady's fast path invokes the
+// callback synchronously, so a draft that's available immediately still
+// restores within this same call, before anything renders.
+function applyDraftOrFreshForm(): void {
   tripDefaulted.value = false;
+  // Stopping the previous watch before registering a new one means a
+  // superseded registration can never fire — Vue drops a stopped watcher's
+  // pending callback rather than running it — so this alone is what makes a
+  // reopen (or a second seed of any kind) safe; the `!props.open`/
+  // `props.entry` checks below cover the remaining case, switching to edit
+  // mode, which never calls this function at all.
   stopPendingDraftLoad?.();
   stopPendingDraftLoad = null;
   pendingSeedSnapshot = null;
-  draftSeedToken += 1;
-
-  const draft = loadDraft();
-  if (draft) {
-    applyRestoredDraft(draft);
-    return true;
-  }
 
   applyFreshForm();
-  return false;
-}
-
-// loadDraft() inside applyDraftOrFreshForm above came back empty either
-// because there truly is no saved draft, or because Clerk hasn't resolved
-// the session yet (loadDraft finds no per-user key to read until then).
-// Arms a one-shot reactive retry so a draft that exists once we know who's
-// signed in still restores instead of the drawer silently staying blank.
-//
-// Called from seedFormForCurrentMode after its tagInput reset (rather than
-// snapshotting inline in applyDraftOrFreshForm above): a half-typed tag left
-// over from a previous open wouldn't be cleared yet at that point, and would
-// make every fresh seed look "already edited" the instant the late callback
-// fires.
-function armPendingDraftRestore(): void {
-  const seedToken = draftSeedToken;
-  pendingSeedSnapshot = untouchedFormSnapshot();
+  pendingSeedSnapshot = captureUntouchedFormSnapshot();
 
   stopPendingDraftLoad = onDraftReady((resolvedDraft) => {
-    const isStaleSeed = seedToken !== draftSeedToken;
     const isFormEdited =
       pendingSeedSnapshot !== null &&
-      untouchedFormSnapshot() !== pendingSeedSnapshot;
+      !snapshotsMatch(captureUntouchedFormSnapshot(), pendingSeedSnapshot);
     pendingSeedSnapshot = null;
-    if (
-      isStaleSeed ||
-      isFormEdited ||
-      !props.open ||
-      props.entry ||
-      !resolvedDraft
-    ) {
+    if (isFormEdited || !props.open || props.entry || !resolvedDraft) {
       return;
     }
     applyRestoredDraft(resolvedDraft);
@@ -750,24 +746,24 @@ onUnmounted(() => {
 });
 
 function seedFormForCurrentMode(): void {
+  // Reset before seeding (rather than after, as a leftover from a previous
+  // open would otherwise still be present when applyDraftOrFreshForm takes
+  // its untouched-form snapshot): a stray tag typed but not committed on a
+  // prior open must not make every fresh seed look "already edited".
+  tagInput.value = "";
+
   // Editing pre-fills from the entry and ignores the create-only draft.
-  let restoredDraftSynchronously = false;
   if (props.entry) {
     applyEntryForm(props.entry);
   } else {
-    restoredDraftSynchronously = applyDraftOrFreshForm();
+    applyDraftOrFreshForm();
   }
 
-  tagInput.value = "";
   publishError.value = null;
   uploadError.value = null;
   createPlaceError.value = null;
   isCreatingPlace.value = false;
   activeCreateToken += 1;
-
-  if (!props.entry && !restoredDraftSynchronously) {
-    armPendingDraftRestore();
-  }
 
   ensureReferenceData();
 }
@@ -784,12 +780,12 @@ watch(
     }
     form.value.tripId = defaultTripId(trips);
     tripDefaulted.value = true;
-    // Not a user edit: keep a pending draft-restore's baseline in sync so
-    // this programmatic default isn't mistaken for the user having touched
-    // the form while the session was still resolving (see
-    // armPendingDraftRestore/pendingSeedSnapshot).
+    // Not a user edit: patch only the field this watch actually wrote into a
+    // pending draft-restore's baseline (see pendingSeedSnapshot), rather than
+    // re-snapshotting the whole form — which would also silently absorb
+    // anything the user has typed elsewhere in the meantime.
     if (pendingSeedSnapshot !== null) {
-      pendingSeedSnapshot = untouchedFormSnapshot();
+      pendingSeedSnapshot.form.tripId = form.value.tripId;
     }
   },
 );

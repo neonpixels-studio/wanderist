@@ -80,20 +80,31 @@ vi.stubGlobal("useEntryDraft", () => ({
   saveDraft: mockSaveDraft,
   loadDraft: mockLoadDraft,
   clearDraft: mockClearDraft,
-  // Mirrors the real composable's already-resolved fast path (session
-  // resolved synchronously) by default: call back immediately with whatever
-  // loadDraft() currently mocks, and hand back a no-op stop function. Existing
-  // tests only exercise applyDraftOrFreshForm's synchronous loadDraft()
-  // branch, which returns before onDraftReady is ever registered when a draft
-  // is found, so this only matters for the null-draft path, where calling
-  // back with null again is a no-op.
+  // Mirrors the real composable's already-resolved fast path by default:
+  // call back immediately with whatever loadDraft() currently mocks, and
+  // hand back a no-op stop function.
+  //
+  // When deferred, mirrors the real onDraftReady's stop semantics too: the
+  // returned stop function must make its *own* captured callback inert, the
+  // same way stopping a real Vue watch guarantees it can never fire again —
+  // otherwise a test simulating a stale registration (the component calls
+  // stopPendingDraftLoad() on every reseed) would still be able to invoke it.
   onDraftReady: vi.fn((callback: (draft: EntryDraft | null) => void) => {
-    if (deferDraftReady) {
-      capturedDraftReadyCallbacks.push(callback);
-      return mockStopDraftReady;
+    if (!deferDraftReady) {
+      callback(mockLoadDraft());
+      return vi.fn();
     }
-    callback(mockLoadDraft());
-    return vi.fn();
+    let isStopped = false;
+    capturedDraftReadyCallbacks.push((draft) => {
+      if (isStopped) {
+        return;
+      }
+      callback(draft);
+    });
+    return () => {
+      isStopped = true;
+      mockStopDraftReady();
+    };
   }),
 }));
 
@@ -543,6 +554,33 @@ describe("AppNewEntry", () => {
       await wrapper.vm.$nextTick();
 
       expect(titleInputValue(wrapper)).toBe("Restored after hydration");
+    });
+
+    it("does not clobber typed text when trips arrive before the session resolves", async () => {
+      // Regression: the trips-default watch patches only tripId into the
+      // pending snapshot's baseline (see pendingSeedSnapshot.form.tripId
+      // above). Re-baselining the *whole* form there would also silently
+      // treat this typed title as part of the "untouched" starting point,
+      // defeating the edit check below.
+      deferDraftReady = true;
+      mockLoadDraft.mockReturnValue(null);
+      tripsStoreTrips.value = [];
+
+      const wrapper = mountOpen();
+      await wrapper.vm.$nextTick();
+      await wrapper
+        .find('.field__input[placeholder="Give this moment a name…"]')
+        .setValue("Typed while waiting");
+
+      tripsStoreTrips.value = [
+        { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
+      ];
+      await wrapper.vm.$nextTick();
+
+      capturedDraftReadyCallbacks[0](LATE_DRAFT);
+      await wrapper.vm.$nextTick();
+
+      expect(titleInputValue(wrapper)).toBe("Typed while waiting");
     });
 
     it("ignores a late resolve from a seed the drawer has since moved past by reopening", async () => {
