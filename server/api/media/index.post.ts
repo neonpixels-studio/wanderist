@@ -6,6 +6,10 @@ import { removeMediaBlob } from "../../utils/mediaStore";
 import { assertPhotoLimit } from "../../utils/planLimits";
 import type { ImageDimensions } from "../../utils/imageProcessing";
 import { processMediaImage, storeMediaBlobs } from "../../utils/mediaPipeline";
+import {
+  createFileTooLargeError,
+  readCappedUploadBody,
+} from "../../utils/readCappedUploadBody";
 
 // 10 MB expressed in bytes.
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
@@ -52,10 +56,7 @@ function assertContentTypeAllowed(contentType: string): void {
 
 function assertFileSizeAllowed(byteLength: number): void {
   if (byteLength > MAX_FILE_SIZE_BYTES) {
-    throw createError({
-      statusCode: 413,
-      statusMessage: `File too large. Maximum size is ${MAX_FILE_SIZE_BYTES / (1024 * 1024)} MB`,
-    });
+    throw createFileTooLargeError(MAX_FILE_SIZE_BYTES);
   }
 }
 
@@ -64,25 +65,25 @@ function resolveContentType(event: H3Event): string {
   return (getHeader(event, "content-type") ?? "").split(";")[0].trim();
 }
 
-// Reject early on Content-Length before buffering the body.
-// Note: `readRawBody` still reads the full payload into memory — this check
-// only rejects honest clients before they finish uploading. A malicious client
-// that omits Content-Length or sends less than the actual size bypasses the
-// early gate. The platform-level body size limit in nuxt.config (via Nitro's
-// `maxBodySize`) is the correct backstop for unbounded uploads.
+// Reject early on Content-Length before reading the body at all. This is
+// only a fast path for honest clients — the real backstop against a
+// malicious client that omits or understates Content-Length is the byte cap
+// `readCappedUploadBody` enforces while the body streams in.
 async function readValidatedUploadBuffer(event: H3Event): Promise<Buffer> {
   const declaredLength = Number(getHeader(event, "content-length") ?? 0);
+  // A malformed header (e.g. non-numeric) makes this NaN, which fails the
+  // `>` comparison in assertFileSizeAllowed and so is silently let through
+  // this early gate rather than rejected outright — intentional, since the
+  // streaming cap below is the real backstop either way and a garbage
+  // header shouldn't be trusted enough to reject on directly.
   assertFileSizeAllowed(declaredLength);
 
-  const rawBody = await readRawBody(event, false);
+  const rawBody = await readCappedUploadBody(event, MAX_FILE_SIZE_BYTES);
   if (!rawBody || rawBody.byteLength === 0) {
     throw createError({ statusCode: 400, statusMessage: "Empty request body" });
   }
 
-  // Re-check on actual byte length to catch clients that omit Content-Length.
-  assertFileSizeAllowed(rawBody.byteLength);
-
-  return Buffer.from(rawBody);
+  return rawBody;
 }
 
 async function cleanupOrphanedBlobs(

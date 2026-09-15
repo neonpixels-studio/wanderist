@@ -20,6 +20,7 @@ const {
   mockToThumbnailKey,
   mockProbeImageDimensions,
   mockGenerateThumbnail,
+  mockReadCappedUploadBody,
   mockDbInsertValues,
   mockDbInsertReturning,
   mockDbSelectFrom,
@@ -29,7 +30,6 @@ const {
   mockGetDb,
   mockGetRouterParam,
   mockGetHeader,
-  mockReadRawBody,
   mockSetResponseHeader,
   mockSetResponseStatus,
 } = vi.hoisted(() => {
@@ -66,6 +66,7 @@ const {
     mockToThumbnailKey: vi.fn((storageKey: string) => `${storageKey}-thumb`),
     mockProbeImageDimensions: vi.fn(),
     mockGenerateThumbnail: vi.fn(),
+    mockReadCappedUploadBody: vi.fn(),
     mockDbInsertValues,
     mockDbInsertReturning,
     mockDbSelectFrom,
@@ -75,7 +76,6 @@ const {
     mockGetDb,
     mockGetRouterParam: vi.fn(),
     mockGetHeader: vi.fn(),
-    mockReadRawBody: vi.fn(),
     mockSetResponseHeader: vi.fn(),
     mockSetResponseStatus: vi.fn(),
   };
@@ -102,6 +102,24 @@ vi.mock("../../server/utils/imageProcessing", () => ({
   generateThumbnail: mockGenerateThumbnail,
 }));
 
+// The size-cap streaming reader has its own dedicated coverage (both the
+// Node-stream and Web-ReadableStream paths) in
+// tests/server/utils/readCappedUploadBody.test.ts. Route tests only need to
+// verify the route's own logic — content-type/empty-body/early-check
+// handling and wiring — so it's mocked here rather than driven through a
+// real stream.
+vi.mock("../../server/utils/readCappedUploadBody", async () => {
+  // Only the streaming reader is faked; `createFileTooLargeError` stays the
+  // real implementation so this mock can't drift from its actual message.
+  const actual = await vi.importActual<
+    typeof import("../../server/utils/readCappedUploadBody")
+  >("../../server/utils/readCappedUploadBody");
+  return {
+    readCappedUploadBody: mockReadCappedUploadBody,
+    createFileTooLargeError: actual.createFileTooLargeError,
+  };
+});
+
 vi.mock("../../server/db/index", () => ({
   getDb: mockGetDb,
 }));
@@ -118,7 +136,6 @@ Object.assign(globalThis, {
     Object.assign(new Error(options.statusMessage), options),
   getRouterParam: mockGetRouterParam,
   getHeader: mockGetHeader,
-  readRawBody: mockReadRawBody,
   setResponseHeader: mockSetResponseHeader,
   setResponseStatus: mockSetResponseStatus,
   // Returns "https" to simulate a production request; tests assert on the path only.
@@ -178,13 +195,13 @@ function stubHeaders(contentType: string): void {
 // POST /api/media
 // ---------------------------------------------------------------------------
 
+const sampleUploadBuffer = Buffer.from("fake-image-data");
+
 describe("POST /api/media", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockEnsureUser.mockResolvedValue("user-1");
     stubHeaders("image/jpeg");
-    const sampleBuffer = Buffer.from("fake-image-data");
-    mockReadRawBody.mockResolvedValue(sampleBuffer);
     resetDbMocks();
     mockAssertPhotoLimit.mockResolvedValue(undefined);
     // Reset to the default resolved behavior in case a previous test in this
@@ -196,6 +213,7 @@ describe("POST /api/media", () => {
     );
     mockProbeImageDimensions.mockResolvedValue({ width: 800, height: 600 });
     mockGenerateThumbnail.mockResolvedValue(Buffer.from("thumb-bytes"));
+    mockReadCappedUploadBody.mockReset().mockResolvedValue(sampleUploadBuffer);
   });
 
   it("propagates a 402 when the plan's photo-storage limit has been reached", async () => {
@@ -322,16 +340,22 @@ describe("POST /api/media", () => {
   });
 
   it("throws 400 for an empty body", async () => {
-    mockReadRawBody.mockResolvedValue(null);
+    mockReadCappedUploadBody.mockResolvedValue(Buffer.alloc(0));
 
     await expect(callHandler(postHandler, buildEvent())).rejects.toMatchObject({
       statusCode: 400,
     });
   });
 
-  it("throws 413 when the actual byte length exceeds the limit (post-buffer check)", async () => {
-    const oversizedBuffer = Buffer.alloc(11 * 1024 * 1024);
-    mockReadRawBody.mockResolvedValue(oversizedBuffer);
+  it("propagates the 413 thrown by the size-cap reader (e.g. a lying/oversized upload)", async () => {
+    // The actual byte-counting and streaming abort live in
+    // readCappedUploadBody (see tests/server/utils/readCappedUploadBody.test.ts);
+    // this only proves the route doesn't swallow or alter its rejection.
+    mockReadCappedUploadBody.mockRejectedValue(
+      Object.assign(new Error("File too large. Maximum size is 10 MB"), {
+        statusCode: 413,
+      }),
+    );
 
     await expect(callHandler(postHandler, buildEvent())).rejects.toMatchObject({
       statusCode: 413,
@@ -340,7 +364,7 @@ describe("POST /api/media", () => {
 
   it("throws 413 on Content-Length alone before reading the body (early check)", async () => {
     // Stub content-length to exceed the limit; body is small so only the early
-    // check fires, not the post-buffer backstop.
+    // check fires, not the streaming backstop.
     mockGetHeader.mockImplementation((_event: unknown, header: string) => {
       if (header === "content-type") {
         return "image/jpeg";
@@ -357,8 +381,54 @@ describe("POST /api/media", () => {
     await expect(callHandler(postHandler, buildEvent())).rejects.toMatchObject({
       statusCode: 413,
     });
-    // Body should not have been read; the early check fires before readRawBody.
-    expect(mockReadRawBody).not.toHaveBeenCalled();
+    // The body is never read; the early check fires first.
+    expect(mockReadCappedUploadBody).not.toHaveBeenCalled();
+  });
+
+  it("does not block the early check on a non-numeric Content-Length header", async () => {
+    // Number("not-a-number") is NaN, which fails every `>` comparison
+    // harmlessly rather than being rejected outright, so the request
+    // proceeds to the streaming cap (the real backstop) instead of trusting
+    // an untrustworthy header directly.
+    mockGetHeader.mockImplementation((_event: unknown, header: string) => {
+      if (header === "content-type") {
+        return "image/jpeg";
+      }
+      if (header === "content-length") {
+        return "not-a-number";
+      }
+      if (header === "host") {
+        return "localhost:3000";
+      }
+      return null;
+    });
+
+    await callHandler(postHandler, buildEvent());
+
+    expect(mockReadCappedUploadBody).toHaveBeenCalled();
+  });
+
+  it("throws 413 early for an absurdly large (but numeric) Content-Length header", async () => {
+    // Number("9".repeat(400)) overflows to Infinity, and Infinity > cap is
+    // true, so this still correctly trips the early gate without reading
+    // any body.
+    mockGetHeader.mockImplementation((_event: unknown, header: string) => {
+      if (header === "content-type") {
+        return "image/jpeg";
+      }
+      if (header === "content-length") {
+        return "9".repeat(400);
+      }
+      if (header === "host") {
+        return "localhost:3000";
+      }
+      return null;
+    });
+
+    await expect(callHandler(postHandler, buildEvent())).rejects.toMatchObject({
+      statusCode: 413,
+    });
+    expect(mockReadCappedUploadBody).not.toHaveBeenCalled();
   });
 
   it("throws 401 when the user is not authenticated", async () => {
