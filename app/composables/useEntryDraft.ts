@@ -11,6 +11,17 @@
  * every operation a no-op rather than fall back to a key shared across
  * sessions — see draftStorageKey below.
  *
+ * The composable also watches the resolved session and sweeps localStorage
+ * so the only draft key ever left on disk is the current user's own — see
+ * the watch() call below. This is deliberately more aggressive than "purge
+ * on sign-out": Wanderist has no in-app sign-out control today, so the
+ * common way a session actually ends is the tab closing or the token
+ * expiring while the app isn't open, not a live transition this composable
+ * could watch. Sweeping on every resolved render (including the first one
+ * after a fresh sign-in) also catches a *different* user's leftover key from
+ * an earlier session on the same shared browser, not only the composable's
+ * own most-recently-seen user.
+ *
  * Must be called synchronously during a component's setup (it calls
  * useClerkUser(), which needs the active component instance), same as any
  * other composable that reads a Clerk composable.
@@ -99,6 +110,47 @@ function normalizeDraftDate(date: unknown): string {
   return isValidLocalDate(date) ? date : "";
 }
 
+function keyForUser(userId: string): string {
+  return `${DRAFT_STORAGE_KEY_PREFIX}:${userId}`;
+}
+
+// Deliberately excludes the legacy unscoped key: unlike a per-user key, it
+// can't be attributed to "belongs to the current user or is stale" — it
+// predates per-user scoping entirely, so it's not this sweep's concern. It
+// keeps its own narrower, already-reasoned handling in cleanupLegacyDraft
+// below (only touched once there's a resolved, signed-in user to hand the
+// cleanup to).
+function isDraftKey(key: string): boolean {
+  return key.startsWith(`${DRAFT_STORAGE_KEY_PREFIX}:`);
+}
+
+// Isolates each storage deletion so one failing key (e.g. localStorage
+// blocked in a third-party embed) can't skip a sibling deletion or propagate
+// into Vue's error handler and abort a reactive effect — the sweep below
+// fires on session changes no user gesture triggered, unlike
+// saveDraft/loadDraft/clearDraft. Logs rather than swallowing silently: a
+// failed privacy-motivated deletion should be observable, not just assumed
+// to have happened.
+function removeKeySafely(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch (error) {
+    console.error(`useEntryDraft: failed to purge draft key "${key}"`, error);
+  }
+}
+
+// Removes every draft key in localStorage except the current user's own
+// (or every draft key at all, if nobody is currently signed in). Any other
+// key is, by definition, left over from a session that is no longer active —
+// whether that's the same browser's previous occupant signing out, or this
+// user finding a stranger's key still here from before they signed in.
+function purgeStaleDrafts(currentUserId: string | undefined): void {
+  const currentUserKey = currentUserId ? keyForUser(currentUserId) : null;
+  Object.keys(localStorage)
+    .filter((key) => isDraftKey(key) && key !== currentUserKey)
+    .forEach(removeKeySafely);
+}
+
 export function useEntryDraft() {
   const { user, isLoaded } = useClerkUser();
 
@@ -113,8 +165,33 @@ export function useEntryDraft() {
     if (!userId) {
       return null;
     }
-    return `${DRAFT_STORAGE_KEY_PREFIX}:${userId}`;
+    return keyForUser(userId);
   }
+
+  // Sweeps localStorage every time the session resolves to a new state, so
+  // the only draft key ever left on disk is the current user's own (see
+  // purgeStaleDrafts above for why this is a full sweep rather than tracking
+  // just the one id this composable previously saw). This can't be left to a
+  // future clearDraft() call keyed off draftStorageKey(): that function only
+  // knows the *current* signed-in user, so it can never name a departing or
+  // stranger's leftover key for removal.
+  //
+  // `flush: "sync"` runs the sweep synchronously, in the same tick as the
+  // reactive change, rather than batched onto a microtask: if a future
+  // sign-out flow ever triggers a full-page redirect (e.g. Clerk's
+  // signOut({ redirectUrl })), that navigation must not be able to happen
+  // before this purge runs. The callback is cheap (a localStorage scan plus
+  // a few removeItem calls), so there's no batching benefit to give up.
+  watch(
+    () => [isLoaded.value, user.value?.id] as const,
+    ([loaded, currentUserId]) => {
+      if (!loaded) {
+        return;
+      }
+      purgeStaleDrafts(currentUserId);
+    },
+    { immediate: true, flush: "sync" },
+  );
 
   // The legacy unscoped key predates per-user scoping and could belong to any
   // account that used this browser. We can't safely attribute it to whichever
@@ -124,6 +201,10 @@ export function useEntryDraft() {
   // never set. Only called once we have a resolved, signed-in key so it never
   // fires (and destroys a legacy draft pointlessly) while the session is
   // still loading or signed out and there is no user to hand the cleanup to.
+  // Deliberately not part of the watch() sweep above: that sweep decides
+  // what's stale by comparing against the *current* user's own key, which
+  // doesn't apply to a key that was never scoped to any user in the first
+  // place — it keeps this narrower, already-reasoned handling instead.
   function cleanupLegacyDraft(): void {
     localStorage.removeItem(LEGACY_DRAFT_STORAGE_KEY);
   }
