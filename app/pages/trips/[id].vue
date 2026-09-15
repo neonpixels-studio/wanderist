@@ -151,70 +151,98 @@
               Route &amp; stops
             </h2>
           </div>
-          <button
-            v-if="isOwner"
-            class="btn btn--ghost btn--sm"
-            :disabled="sortedStops.length < 2"
-            @click="onReorder"
-          >
-            <AppIcon name="sliders" :size="14" />
-            reorder
-          </button>
         </div>
 
         <div class="iti">
-          <div
-            v-for="stop in sortedStops"
-            :key="stop.id"
-            class="stop"
-            :class="stopStateClass(stop.status)"
-          >
-            <div class="stop__node">
-              <div class="stop__pin">
-                <AppIcon
-                  v-if="stop.status === 'done'"
-                  name="check"
-                  :size="18"
-                />
-                <AppIcon
-                  v-else-if="stop.status === 'next'"
-                  name="pin"
-                  :size="18"
-                />
-                <span v-else>{{ stopDisplayNumber(stop) }}</span>
+          <ul class="iti__list">
+            <li
+              v-for="stop in displayedStops"
+              :key="stop.id"
+              class="stop"
+              :class="[
+                stopStateClass(stop.status),
+                {
+                  'stop--dragging': draggedStopId === stop.id,
+                  'stop--drag-over':
+                    dragOverStopId === stop.id && draggedStopId !== stop.id,
+                },
+              ]"
+              :draggable="isOwner && !isReordering"
+              @dragstart="onStopDragStart(stop, $event)"
+              @dragover="onStopDragOver(stop, $event)"
+              @dragleave="onStopDragLeave(stop, $event)"
+              @drop="onStopDrop(stop, $event)"
+              @dragend="onStopDragEnd"
+            >
+              <div class="stop__node">
+                <div class="stop__pin">
+                  <AppIcon
+                    v-if="stop.status === 'done'"
+                    name="check"
+                    :size="18"
+                  />
+                  <AppIcon
+                    v-else-if="stop.status === 'next'"
+                    name="pin"
+                    :size="18"
+                  />
+                  <span v-else>{{ stopDisplayNumber(stop) }}</span>
+                </div>
               </div>
-            </div>
-            <div class="stop__card">
-              <div class="stop__top">
-                <div>
-                  <div class="stop__name">{{ stop.name }}</div>
-                  <div class="stop__sub">
-                    <template v-if="stop.arriveDate">
-                      <AppIcon name="calendar" :size="12" />
-                      {{ formatStopDate(stop.arriveDate) }}
-                      <template v-if="stop.nights != null">
-                        · {{ stop.nights }}
-                        {{ stop.nights === 1 ? "night" : "nights" }}
+              <div class="stop__card">
+                <div class="stop__top">
+                  <div>
+                    <div class="stop__name">{{ stop.name }}</div>
+                    <div class="stop__sub">
+                      <template v-if="stop.arriveDate">
+                        <AppIcon name="calendar" :size="12" />
+                        {{ formatStopDate(stop.arriveDate) }}
+                        <template v-if="stop.nights != null">
+                          · {{ stop.nights }}
+                          {{ stop.nights === 1 ? "night" : "nights" }}
+                        </template>
                       </template>
-                    </template>
-                    <span v-if="stop.status === 'next'" class="tag tag--accent"
-                      >next</span
+                      <span
+                        v-if="stop.status === 'next'"
+                        class="tag tag--accent"
+                        >next</span
+                      >
+                    </div>
+                  </div>
+                  <div v-if="isOwner" class="stop__reorder">
+                    <button
+                      type="button"
+                      class="stop__move-btn"
+                      :aria-label="`Move ${stop.name} up`"
+                      :disabled="isFirstStop(stop)"
+                      @click="onMoveStopUp(stop, $event)"
                     >
+                      <AppIcon name="arrow-up" :size="14" />
+                    </button>
+                    <button
+                      type="button"
+                      class="stop__move-btn"
+                      :aria-label="`Move ${stop.name} down`"
+                      :disabled="isLastStop(stop)"
+                      @click="onMoveStopDown(stop, $event)"
+                    >
+                      <AppIcon name="arrow-down" :size="14" />
+                    </button>
+                    <span class="stop__grip" aria-hidden="true">
+                      <AppIcon name="grip" :size="16" />
+                    </span>
                   </div>
                 </div>
-                <span v-if="isOwner" class="stop__grip">
-                  <AppIcon name="grip" :size="16" />
-                </span>
+                <p v-if="stop.note" class="stop__note">{{ stop.note }}</p>
+                <div class="stop__foot">
+                  <span v-if="stop.distanceKm != null" class="m">
+                    <AppIcon name="ruler" :size="12" />
+                    {{ formatKm(stop.distanceKm) }}
+                  </span>
+                </div>
               </div>
-              <p v-if="stop.note" class="stop__note">{{ stop.note }}</p>
-              <div class="stop__foot">
-                <span v-if="stop.distanceKm != null" class="m">
-                  <AppIcon name="ruler" :size="12" />
-                  {{ formatKm(stop.distanceKm) }}
-                </span>
-              </div>
-            </div>
-          </div>
+            </li>
+          </ul>
 
           <div v-if="isOwner" class="stop__add">
             <div />
@@ -223,6 +251,10 @@
               {{ isAddingStop ? "adding…" : "add a stop" }}
             </button>
           </div>
+
+          <p class="visually-hidden" role="status" aria-live="polite">
+            {{ moveAnnouncement }}
+          </p>
         </div>
 
         <div
@@ -349,6 +381,8 @@
 import { useTripsStore } from "~/stores/trips";
 import type { Trip, TripStop } from "~/stores/trips";
 import { useMediaUpload } from "~/composables/useMediaUpload";
+import { moveIdUp, moveIdDown, moveIdToDropTarget } from "~/utils/stopOrder";
+import type { StopOrderMutator } from "~/utils/stopOrder";
 
 // No auth middleware: a public trip must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private trip returns
@@ -380,6 +414,19 @@ const reorderError = ref<string | null>(null);
 const uploadError = ref<string | null>(null);
 const shareError = ref<string | null>(null);
 const coverInputRef = ref<HTMLInputElement | null>(null);
+
+// Drag-and-drop + keyboard reorder state. isReordering guards against
+// overlapping requests (a second drag/click while one is still persisting).
+const draggedStopId = ref<string | null>(null);
+const dragOverStopId = ref<string | null>(null);
+const isReordering = ref(false);
+const moveAnnouncement = ref("");
+
+// While a reorder is in flight (or has just landed), the visual order can
+// differ from the store's last-committed order (tripDetail.stops) — this is
+// the optimistic override. Null once nothing is pending, at which point the
+// list falls back to the store's own order.
+const pendingStopOrder = ref<string[] | null>(null);
 
 // Guard against the render window during in-page navigation (trip-1 -> trip-2):
 // the route id updates reactively before the refetch flips isLoadingDetail, so
@@ -466,8 +513,50 @@ const sortedStops = computed<TripStop[]>(() => {
   );
 });
 
+// The order actually rendered: the optimistic pending order while a drag or
+// move-button reorder is in flight, otherwise the store's committed order.
+// Falling back to sortedStops keeps every other computed/template reference
+// correct without threading isReordering through them individually.
+//
+// pendingStopOrder can reference a stop id the current tripDetail no longer
+// has — e.g. a concurrent deleteStop resolving mid-flight, or (despite the
+// requestTripId guard in persistStopOrder and the tripId watcher below) a
+// navigation landing between renders. Rather than silently dropping the ids
+// that no longer resolve — which would render a partial/empty itinerary —
+// fall back to the committed order whenever any id can't be resolved.
+const displayedStops = computed<TripStop[]>(() => {
+  if (!pendingStopOrder.value || !tripDetail.value) {
+    return sortedStops.value;
+  }
+
+  const stopsById = new Map(
+    tripDetail.value.stops.map((stop) => [stop.id, stop]),
+  );
+  const resolvedStops = pendingStopOrder.value.map((stopId) =>
+    stopsById.get(stopId),
+  );
+  const hasUnresolvedStop = resolvedStops.some((stop) => stop == null);
+  if (hasUnresolvedStop) {
+    return sortedStops.value;
+  }
+
+  return resolvedStops as TripStop[];
+});
+
+// A pending optimistic order (and any in-flight reorder's error/announcement
+// state) belongs to the trip it was computed for; discard all of it on
+// navigation so none of it can be misapplied to a different trip's stops (see
+// the displayedStops fallback above for the belt-and-suspenders case where a
+// stale pendingStopOrder lingers anyway).
+watch(tripId, () => {
+  pendingStopOrder.value = null;
+  isReordering.value = false;
+  reorderError.value = null;
+  moveAnnouncement.value = "";
+});
+
 // Cap at 6 stops to fit the mini-map without overlapping pins
-const mapPins = computed<TripStop[]>(() => sortedStops.value.slice(0, 6));
+const mapPins = computed<TripStop[]>(() => displayedStops.value.slice(0, 6));
 
 // pendingCoverUrl holds the optimistically cached URL after a successful cover
 // upload so the hero displays immediately without a round-trip to re-fetch the trip.
@@ -519,10 +608,18 @@ function stopStateClass(status: TripStop["status"]): string {
 }
 
 function stopDisplayNumber(stop: TripStop): number {
-  const index = sortedStops.value.findIndex(
+  const index = displayedStops.value.findIndex(
     (candidateStop) => candidateStop.id === stop.id,
   );
   return index + 1;
+}
+
+function isFirstStop(stop: TripStop): boolean {
+  return displayedStops.value[0]?.id === stop.id;
+}
+
+function isLastStop(stop: TripStop): boolean {
+  return displayedStops.value.at(-1)?.id === stop.id;
 }
 
 const UTC_DATE_FORMAT = {
@@ -590,23 +687,225 @@ async function onAddStop(): Promise<void> {
   }
 }
 
-async function onReorder(): Promise<void> {
-  if (!tripId.value || sortedStops.value.length < 2) {
+// aria-live only announces on an actual text mutation, so writing the same
+// message twice in a row (e.g. the same stop failing to move on two
+// consecutive attempts) would announce nothing the second time. Clearing the
+// region first, on its own tick, guarantees every call is a real mutation.
+async function announceMove(message: string): Promise<void> {
+  moveAnnouncement.value = "";
+  await nextTick();
+  moveAnnouncement.value = message;
+}
+
+// Shared by drag-and-drop and the move-up/move-down buttons: applies the new
+// order optimistically, then persists it via the existing reorder endpoint.
+// On success the store's own order already matches newOrder (verified by
+// tests/trips-store.test.ts's reorderStops coverage), so clearing the override
+// causes no flicker; on failure the store was never touched, so clearing it
+// reverts the view to the last-committed (pre-reorder) order. Guarded on
+// isReordering so a second move started before the first settles is dropped
+// rather than interleaving two in-flight requests — the move buttons stay
+// enabled throughout (see onMoveStopUp/Down) so this guard, not a disabled
+// attribute, is what makes that safe. A dropped move still gets a live-region
+// announcement: silently ignoring the click would look like a hang to a
+// screen-reader user, who has no visual cue that a save is already underway.
+async function persistStopOrder(
+  newOrder: string[],
+  movedStopId: string,
+  movedStopName: string,
+): Promise<void> {
+  if (!tripId.value) {
+    return;
+  }
+  if (isReordering.value) {
+    await announceMove(
+      `Still saving the previous move. ${movedStopName} was not moved.`,
+    );
     return;
   }
 
+  // Captured up front: if the user navigates to a different trip before this
+  // request settles, tripId.value will have moved on by the time the await
+  // below resolves, and none of this request's outcome — order, error,
+  // announcement — belongs to whatever trip is on screen by then.
+  const requestTripId = tripId.value;
+  pendingStopOrder.value = newOrder;
+  isReordering.value = true;
   reorderError.value = null;
 
   try {
-    // Reorder is a drag operation in the full UI; for now the button persists
-    // the current visual order to the server (no-op if already ordered,
-    // but wires the endpoint so drag-and-drop can call reorderStops directly).
-    const stopIds = sortedStops.value.map((stop) => stop.id);
-    await tripsStore.reorderStops(tripId.value, stopIds);
+    await tripsStore.reorderStops(requestTripId, newOrder);
+    if (tripId.value !== requestTripId) {
+      return;
+    }
+    const newPosition = newOrder.indexOf(movedStopId);
+    await announceMove(
+      `Moved ${movedStopName} to position ${newPosition + 1} of ${newOrder.length}`,
+    );
   } catch (error) {
+    // Revert the optimistic order before announcing: nextTick() inside
+    // announceMove flushes a render, and without this the error banner would
+    // show for one frame above a list still showing the failed reorder.
+    pendingStopOrder.value = null;
+    if (tripId.value !== requestTripId) {
+      return;
+    }
     reorderError.value =
       error instanceof Error ? error.message : "Failed to reorder stops";
+    await announceMove(
+      `Could not move ${movedStopName}. The order was not changed.`,
+    );
+  } finally {
+    if (tripId.value === requestTripId) {
+      pendingStopOrder.value = null;
+      isReordering.value = false;
+    }
   }
+}
+
+// Shared by the drop handler and both move buttons: compute the candidate
+// order, bail (no-op) if the mover didn't actually produce a new order, else
+// persist it.
+async function applyStopOrder(
+  computeOrder: StopOrderMutator,
+  movedStopId: string,
+  movedStopName: string,
+): Promise<void> {
+  const currentOrder = displayedStops.value.map((stop) => stop.id);
+  const newOrder = computeOrder(currentOrder);
+  if (newOrder === currentOrder) {
+    return;
+  }
+  await persistStopOrder(newOrder, movedStopId, movedStopName);
+}
+
+// The move buttons are deliberately never disabled while a reorder is in
+// flight (persistStopOrder's isReordering guard makes that safe — see its
+// comment) because a disabled button loses focus to <body>, forcing a
+// keyboard/screen-reader user to re-tab through the whole itinerary after
+// every single move. Instead, focus is restored here once the order settles:
+// back onto the same button if it's still usable, otherwise onto its sibling
+// (the button crossed a boundary, e.g. move-up from the second-to-first slot).
+async function refocusMoveButton(
+  clickedButton: HTMLButtonElement,
+): Promise<void> {
+  await nextTick();
+  if (!clickedButton.disabled) {
+    clickedButton.focus();
+    return;
+  }
+  clickedButton.parentElement
+    ?.querySelector<HTMLButtonElement>(".stop__move-btn:not(:disabled)")
+    ?.focus();
+}
+
+function onStopDragStart(stop: TripStop, event: DragEvent): void {
+  if (!isOwner.value || isReordering.value) {
+    event.preventDefault();
+    return;
+  }
+  // Firefox cancels a drag outright unless dataTransfer carries data set
+  // during dragstart; Chrome/Safari are lenient, which is why this was easy
+  // to miss without cross-browser testing.
+  event.dataTransfer?.setData("text/plain", stop.id);
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "move";
+  }
+  draggedStopId.value = stop.id;
+}
+
+function onStopDragOver(stop: TripStop, event: DragEvent): void {
+  // Only claim the hover (and later the drop) when an in-app drag is active.
+  // Calling preventDefault() unconditionally here would mark every row a
+  // valid drop target for ANY drag — including a non-owner's read-only page,
+  // or an external link/file dragged over the itinerary — silently
+  // swallowing drops the app has no intention of handling.
+  if (!draggedStopId.value) {
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = "move";
+  }
+  dragOverStopId.value = stop.id;
+}
+
+// dragleave fires whenever the pointer crosses into a descendant (the card,
+// its icons, etc.), not just when it truly leaves the row — ignore leaves
+// that land on a node still inside the current row so the drop-target outline
+// doesn't flicker while dragging across a card's contents.
+function onStopDragLeave(stop: TripStop, event: DragEvent): void {
+  const nextTarget = event.relatedTarget as Node | null;
+  const row = event.currentTarget as HTMLElement | null;
+  if (nextTarget && row?.contains(nextTarget)) {
+    return;
+  }
+  if (dragOverStopId.value === stop.id) {
+    dragOverStopId.value = null;
+  }
+}
+
+function onStopDragEnd(): void {
+  draggedStopId.value = null;
+  dragOverStopId.value = null;
+}
+
+async function onStopDrop(
+  targetStop: TripStop,
+  event: DragEvent,
+): Promise<void> {
+  const draggedId = draggedStopId.value;
+  draggedStopId.value = null;
+  dragOverStopId.value = null;
+
+  // Same reasoning as onStopDragOver: only intercept the drop if it's ours to
+  // handle. A drop with no active draggedStopId (external content, or a
+  // non-owner's read-only page where dragstart can never have set it) falls
+  // through to the browser's own default handling instead of being swallowed.
+  if (!draggedId) {
+    return;
+  }
+  event.preventDefault();
+
+  if (draggedId === targetStop.id) {
+    return;
+  }
+
+  const draggedStop = displayedStops.value.find(
+    (stop) => stop.id === draggedId,
+  );
+  await applyStopOrder(
+    (currentOrder) =>
+      moveIdToDropTarget(currentOrder, draggedId, targetStop.id),
+    draggedId,
+    draggedStop?.name ?? "stop",
+  );
+}
+
+async function onMoveStopUp(stop: TripStop, event: MouseEvent): Promise<void> {
+  // Captured before the first await: DOM event objects reset currentTarget
+  // to null once dispatch finishes, which happens well before the async work
+  // below completes.
+  const clickedButton = event.currentTarget as HTMLButtonElement;
+  await applyStopOrder(
+    (currentOrder) => moveIdUp(currentOrder, stop.id),
+    stop.id,
+    stop.name,
+  );
+  await refocusMoveButton(clickedButton);
+}
+
+async function onMoveStopDown(
+  stop: TripStop,
+  event: MouseEvent,
+): Promise<void> {
+  const clickedButton = event.currentTarget as HTMLButtonElement;
+  await applyStopOrder(
+    (currentOrder) => moveIdDown(currentOrder, stop.id),
+    stop.id,
+    stop.name,
+  );
+  await refocusMoveButton(clickedButton);
 }
 
 function onEditCover(): void {
@@ -816,12 +1115,28 @@ function onInvite(): void {
   width: 2px;
   background: var(--line);
 }
+.iti__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
 .stop {
   position: relative;
   display: grid;
   grid-template-columns: 40px 1fr;
   gap: 14px;
   margin-bottom: 16px;
+}
+.stop[draggable="true"] {
+  cursor: grab;
+}
+.stop--dragging {
+  opacity: 0.5;
+}
+.stop--drag-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius);
 }
 .stop__node {
   width: 40px;
@@ -881,10 +1196,45 @@ function onInvite(): void {
   gap: 6px;
   flex-wrap: wrap;
 }
-.stop__grip {
+.stop__reorder {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.stop__move-btn {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.stop__move-btn:hover:not(:disabled) {
+  background: var(--bg-tint);
+  color: var(--accent-ink);
+}
+.stop__move-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.stop__grip {
   color: var(--faint);
-  cursor: grab;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 .stop__note {
   font-size: 12.5px;
