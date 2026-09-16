@@ -35,8 +35,14 @@ vi.stubGlobal("useEntriesStore", () => ({
   error: ref(null),
 }));
 
+// A getter (not a plain property), matching usePlacesStore below: the
+// component's tripId-default watch (`watch(() => tripsStore.tripList, ...)`)
+// needs a live read to react to trips arriving after mount, not a value
+// snapshotted once when useTripsStore() was called.
 vi.stubGlobal("useTripsStore", () => ({
-  tripList: tripsStoreTrips.value,
+  get tripList() {
+    return tripsStoreTrips.value;
+  },
   fetchTrips: mockFetchTrips,
   isLoadingList: ref(false),
 }));
@@ -60,10 +66,46 @@ vi.stubGlobal("useMediaUpload", () => ({
   isUploading: ref(false),
 }));
 
+// Toggled per-test to exercise the deferred (session-not-yet-resolved) path:
+// when true, onDraftReady stashes its callback instead of firing it, so a
+// test can invoke it later to simulate the session resolving after the
+// drawer has already rendered. Every registration is recorded (not just the
+// latest) so a test can assert an earlier registration is correctly ignored
+// once the drawer has moved on to a fresh seed.
+let deferDraftReady = false;
+let capturedDraftReadyCallbacks: Array<(draft: EntryDraft | null) => void> = [];
+const mockStopDraftReady = vi.fn();
+
 vi.stubGlobal("useEntryDraft", () => ({
   saveDraft: mockSaveDraft,
   loadDraft: mockLoadDraft,
   clearDraft: mockClearDraft,
+  // Mirrors the real composable's already-resolved fast path by default:
+  // call back immediately with whatever loadDraft() currently mocks, and
+  // hand back a no-op stop function.
+  //
+  // When deferred, mirrors the real onDraftReady's stop semantics too: the
+  // returned stop function must make its *own* captured callback inert, the
+  // same way stopping a real Vue watch guarantees it can never fire again —
+  // otherwise a test simulating a stale registration (the component calls
+  // stopPendingDraftLoad() on every reseed) would still be able to invoke it.
+  onDraftReady: vi.fn((callback: (draft: EntryDraft | null) => void) => {
+    if (!deferDraftReady) {
+      callback(mockLoadDraft());
+      return vi.fn();
+    }
+    let isStopped = false;
+    capturedDraftReadyCallbacks.push((draft) => {
+      if (isStopped) {
+        return;
+      }
+      callback(draft);
+    });
+    return () => {
+      isStopped = true;
+      mockStopDraftReady();
+    };
+  }),
 }));
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -133,6 +175,8 @@ describe("AppNewEntry", () => {
     placesStorePlaces.value = [];
     placesStoreLoading.value = false;
     mockLoadDraft.mockReturnValue(null);
+    deferDraftReady = false;
+    capturedDraftReadyCallbacks = [];
     // fetchPlaces returns a Promise in the real store (the open-watch calls
     // `.catch` on it), so the default mock must resolve rather than return void.
     mockFetchPlaces.mockResolvedValue(undefined);
@@ -424,6 +468,165 @@ describe("AppNewEntry", () => {
     expect((titleInput.element as HTMLInputElement).value).toBe(
       "Restored title",
     );
+  });
+
+  describe("draft restore reacting to a session that resolves late", () => {
+    const LATE_DRAFT: EntryDraft = {
+      title: "Restored after hydration",
+      body: "Written before Clerk resolved",
+      location: "Reykjavík",
+      tripId: "trip-saved",
+      date: "2026-06-01",
+      visibility: "public",
+      tags: ["iceland"],
+      weather: "clear",
+      uploadedPhotos: [],
+    };
+
+    it("restores a draft that only resolves after the drawer opened blank", async () => {
+      deferDraftReady = true;
+      mockLoadDraft.mockReturnValue(null);
+
+      const wrapper = mountOpen();
+      await wrapper.vm.$nextTick();
+      expect(titleInputValue(wrapper)).toBe("");
+
+      mockLoadDraft.mockReturnValue(LATE_DRAFT);
+      capturedDraftReadyCallbacks[0](LATE_DRAFT);
+      await wrapper.vm.$nextTick();
+
+      expect(titleInputValue(wrapper)).toBe("Restored after hydration");
+    });
+
+    it("does not clobber text the user already typed while the session was resolving", async () => {
+      deferDraftReady = true;
+      mockLoadDraft.mockReturnValue(null);
+
+      const wrapper = mountOpen();
+      await wrapper.vm.$nextTick();
+      const titleInput = wrapper.find(
+        '.field__input[placeholder="Give this moment a name…"]',
+      );
+      await titleInput.setValue("Typed while waiting");
+
+      capturedDraftReadyCallbacks[0](LATE_DRAFT);
+      await wrapper.vm.$nextTick();
+
+      expect(titleInputValue(wrapper)).toBe("Typed while waiting");
+    });
+
+    it("does not clobber a half-typed tag the user entered while the session was resolving", async () => {
+      deferDraftReady = true;
+      mockLoadDraft.mockReturnValue(null);
+
+      const wrapper = mountOpen();
+      await wrapper.vm.$nextTick();
+      await wrapper.find('input[placeholder="add tag…"]').setValue("icel");
+
+      capturedDraftReadyCallbacks[0](LATE_DRAFT);
+      await wrapper.vm.$nextTick();
+
+      // The draft must not have been applied over the half-typed tag: title
+      // stays blank rather than jumping to the draft's.
+      expect(titleInputValue(wrapper)).toBe("");
+    });
+
+    it("still restores a late draft after the trips-default watch writes tripId first", async () => {
+      // Regression: the trips-default watch (see "Apply a default tripId
+      // once trips arrive" below) writes form.value.tripId as soon as the
+      // trip list arrives, independent of whether Clerk has resolved yet. A
+      // naive "any form change means the user touched it" check would treat
+      // that programmatic write as an edit and drop a real pending draft.
+      deferDraftReady = true;
+      mockLoadDraft.mockReturnValue(null);
+      tripsStoreTrips.value = [];
+
+      const wrapper = mountOpen();
+      await wrapper.vm.$nextTick();
+
+      tripsStoreTrips.value = [
+        { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
+      ];
+      await wrapper.vm.$nextTick();
+
+      mockLoadDraft.mockReturnValue(LATE_DRAFT);
+      capturedDraftReadyCallbacks[0](LATE_DRAFT);
+      await wrapper.vm.$nextTick();
+
+      expect(titleInputValue(wrapper)).toBe("Restored after hydration");
+    });
+
+    it("does not clobber typed text when trips arrive before the session resolves", async () => {
+      // Regression: the trips-default watch patches only tripId into the
+      // pending snapshot's baseline (see pendingSeedSnapshot.form.tripId
+      // above). Re-baselining the *whole* form there would also silently
+      // treat this typed title as part of the "untouched" starting point,
+      // defeating the edit check below.
+      deferDraftReady = true;
+      mockLoadDraft.mockReturnValue(null);
+      tripsStoreTrips.value = [];
+
+      const wrapper = mountOpen();
+      await wrapper.vm.$nextTick();
+      await wrapper
+        .find('.field__input[placeholder="Give this moment a name…"]')
+        .setValue("Typed while waiting");
+
+      tripsStoreTrips.value = [
+        { id: "trip-1", name: "Iceland Ring Road", status: "ongoing" },
+      ];
+      await wrapper.vm.$nextTick();
+
+      capturedDraftReadyCallbacks[0](LATE_DRAFT);
+      await wrapper.vm.$nextTick();
+
+      expect(titleInputValue(wrapper)).toBe("Typed while waiting");
+    });
+
+    it("ignores a late resolve from a seed the drawer has since moved past by reopening", async () => {
+      deferDraftReady = true;
+      mockLoadDraft.mockReturnValue(null);
+
+      const wrapper = mountOpen();
+      await wrapper.vm.$nextTick();
+      const staleCallback = capturedDraftReadyCallbacks[0];
+
+      await wrapper.setProps({ open: false });
+      await wrapper.setProps({ open: true });
+      await wrapper.vm.$nextTick();
+
+      staleCallback(LATE_DRAFT);
+      await wrapper.vm.$nextTick();
+
+      expect(titleInputValue(wrapper)).toBe("");
+    });
+
+    it("ignores a late resolve after the drawer switched to editing an entry", async () => {
+      deferDraftReady = true;
+      mockLoadDraft.mockReturnValue(null);
+
+      const wrapper = mountOpen();
+      await wrapper.vm.$nextTick();
+      const staleCallback = capturedDraftReadyCallbacks[0];
+
+      await wrapper.setProps({ entry: SAMPLE_ENTRY });
+      await wrapper.vm.$nextTick();
+
+      staleCallback(LATE_DRAFT);
+      await wrapper.vm.$nextTick();
+
+      expect(titleInputValue(wrapper)).toBe(SAMPLE_ENTRY.title);
+    });
+
+    it("stops the pending draft-ready watch when the component unmounts", () => {
+      deferDraftReady = true;
+      mockLoadDraft.mockReturnValue(null);
+
+      const wrapper = mountOpen();
+      wrapper.unmount();
+
+      expect(mockStopDraftReady).toHaveBeenCalled();
+    });
   });
 
   it("blocks publish and shows an error when a restored draft's date was cleared", async () => {

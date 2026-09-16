@@ -250,10 +250,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onUnmounted } from "vue";
 import type { Trip } from "~/stores/trips";
 import type { Entry } from "~/stores/entries";
 import type { Place } from "~/stores/places";
+import type { EntryDraft } from "~/composables/useEntryDraft";
 import AppNewEntryLocationField from "~/components/AppNewEntryLocationField.vue";
 import {
   localDateToIso,
@@ -307,7 +308,7 @@ const tripsStore = useTripsStore();
 const placesStore = usePlacesStore();
 const { upload, isUploading } = useMediaUpload();
 const uploadError = ref<string | null>(null);
-const { saveDraft, loadDraft, clearDraft } = useEntryDraft();
+const { saveDraft, clearDraft, onDraftReady } = useEntryDraft();
 
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const uploadedPhotos = ref<Array<{ id: string; url: string }>>([]);
@@ -565,16 +566,7 @@ function selectTrip(tripId: string): void {
   tripDefaulted.value = true;
 }
 
-function applyDraftOrFreshForm(): void {
-  tripDefaulted.value = false;
-
-  const draft = loadDraft();
-
-  if (!draft) {
-    applyFreshForm();
-    return;
-  }
-
+function applyRestoredDraft(draft: EntryDraft): void {
   form.value = {
     title: draft.title,
     body: draft.body,
@@ -597,6 +589,86 @@ function applyDraftOrFreshForm(): void {
   uploadedPhotos.value = draft.uploadedPhotos ?? [];
   // Treat a restored draft's tripId as already-defaulted so it is preserved
   tripDefaulted.value = true;
+}
+
+let stopPendingDraftLoad: (() => void) | null = null;
+
+// Everything applyFreshForm/applyRestoredDraft write, plus tagInput (a real
+// text field not part of FormState). A late draft restore (see the
+// onDraftReady callback in applyDraftOrFreshForm below) compares against a
+// snapshot of these to tell whether the user has typed, picked a place,
+// attached a photo, or half-typed a tag since the blank form was seeded — and
+// skips applying over it if so, rather than silently discarding what they
+// entered while Clerk was still hydrating.
+//
+// Kept as a plain object (not a single serialized string) so the trips-load
+// watch below can patch in just the field it legitimately writes
+// (tripId) without also re-baselining — and so silently accepting — every
+// other field the user may have touched in the meantime.
+interface UntouchedFormSnapshot {
+  form: FormState;
+  selectedPlace: PlaceSuggestion | null;
+  uploadedPhotos: Array<{ id: string; url: string }>;
+  tagInput: string;
+}
+
+function captureUntouchedFormSnapshot(): UntouchedFormSnapshot {
+  return {
+    form: { ...form.value, tags: [...form.value.tags] },
+    selectedPlace: selectedPlace.value ? { ...selectedPlace.value } : null,
+    uploadedPhotos: uploadedPhotos.value.map((photo) => ({ ...photo })),
+    tagInput: tagInput.value,
+  };
+}
+
+function snapshotsMatch(
+  a: UntouchedFormSnapshot,
+  b: UntouchedFormSnapshot,
+): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// The baseline a pending late draft-restore compares against to detect a user
+// edit. Non-null only for the window between seeding a blank form and the
+// onDraftReady callback below resolving.
+let pendingSeedSnapshot: UntouchedFormSnapshot | null = null;
+
+// Seeds the create-mode form and, when no draft is available synchronously
+// (either there truly is none, or Clerk hasn't resolved the session yet),
+// arms a one-shot reactive retry via onDraftReady so a draft that exists
+// once we know who's signed in still restores instead of the drawer silently
+// staying blank.
+//
+// Always routes through onDraftReady (rather than calling loadDraft()
+// directly first) so there is exactly one restore path to reason about: when
+// the session has already resolved, onDraftReady's fast path invokes the
+// callback synchronously, so a draft that's available immediately still
+// restores within this same call, before anything renders.
+function applyDraftOrFreshForm(): void {
+  tripDefaulted.value = false;
+  // Stopping the previous watch before registering a new one means a
+  // superseded registration can never fire — Vue drops a stopped watcher's
+  // pending callback rather than running it — so this alone is what makes a
+  // reopen (or a second seed of any kind) safe; the `!props.open`/
+  // `props.entry` checks below cover the remaining case, switching to edit
+  // mode, which never calls this function at all.
+  stopPendingDraftLoad?.();
+  stopPendingDraftLoad = null;
+  pendingSeedSnapshot = null;
+
+  applyFreshForm();
+  pendingSeedSnapshot = captureUntouchedFormSnapshot();
+
+  stopPendingDraftLoad = onDraftReady((resolvedDraft) => {
+    const isFormEdited =
+      pendingSeedSnapshot !== null &&
+      !snapshotsMatch(captureUntouchedFormSnapshot(), pendingSeedSnapshot);
+    pendingSeedSnapshot = null;
+    if (isFormEdited || !props.open || props.entry || !resolvedDraft) {
+      return;
+    }
+    applyRestoredDraft(resolvedDraft);
+  });
 }
 
 function ensureReferenceData(): void {
@@ -665,7 +737,21 @@ watch(
   { immediate: true },
 );
 
+// The drawer is a single shared instance that's expected to outlive most of
+// the app's lifetime, but a pending draft-ready watch (see
+// applyDraftOrFreshForm) has no other trigger to stop it if this component is
+// ever torn down first — clean it up rather than leave it dangling.
+onUnmounted(() => {
+  stopPendingDraftLoad?.();
+});
+
 function seedFormForCurrentMode(): void {
+  // Reset before seeding (rather than after, as a leftover from a previous
+  // open would otherwise still be present when applyDraftOrFreshForm takes
+  // its untouched-form snapshot): a stray tag typed but not committed on a
+  // prior open must not make every fresh seed look "already edited".
+  tagInput.value = "";
+
   // Editing pre-fills from the entry and ignores the create-only draft.
   if (props.entry) {
     applyEntryForm(props.entry);
@@ -673,7 +759,6 @@ function seedFormForCurrentMode(): void {
     applyDraftOrFreshForm();
   }
 
-  tagInput.value = "";
   publishError.value = null;
   uploadError.value = null;
   createPlaceError.value = null;
@@ -695,6 +780,13 @@ watch(
     }
     form.value.tripId = defaultTripId(trips);
     tripDefaulted.value = true;
+    // Not a user edit: patch only the field this watch actually wrote into a
+    // pending draft-restore's baseline (see pendingSeedSnapshot), rather than
+    // re-snapshotting the whole form — which would also silently absorb
+    // anything the user has typed elsewhere in the meantime.
+    if (pendingSeedSnapshot !== null) {
+      pendingSeedSnapshot.form.tripId = form.value.tripId;
+    }
   },
 );
 

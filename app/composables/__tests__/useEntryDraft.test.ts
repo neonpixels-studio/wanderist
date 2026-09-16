@@ -361,6 +361,134 @@ describe("useEntryDraft", () => {
     });
   });
 
+  describe("onDraftReady", () => {
+    it("calls back synchronously with the draft when the session has already resolved", () => {
+      installClerkUserStub("user-1");
+      localStorage.setItem(
+        draftStorageKeyFor("user-1"),
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+      const { onDraftReady } = useEntryDraft();
+      const callback = vi.fn();
+
+      onDraftReady(callback);
+
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith(SAMPLE_DRAFT);
+    });
+
+    it("calls back synchronously with null when already resolved and no draft exists", () => {
+      installClerkUserStub("user-1");
+      const { onDraftReady } = useEntryDraft();
+      const callback = vi.fn();
+
+      onDraftReady(callback);
+
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith(null);
+    });
+
+    // Regression test for the bug described in the issue: a bare loadDraft()
+    // call sampled while isLoaded is still false finds no per-user key to read
+    // and returns null forever, with nothing re-triggering the read once Clerk
+    // hydrates. Before the fix, onDraftReady did not exist (or a naive version
+    // of it would have called back once with null and never again), so this
+    // fails without the reactive watch in place.
+    it("does not call back while the session hasn't resolved yet", () => {
+      const userRef = vue.ref<{ id: string } | null>(null);
+      const isLoadedRef = vue.ref(false);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+      localStorage.setItem(
+        draftStorageKeyFor("user-1"),
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+
+      const { onDraftReady } = useEntryDraft();
+      const callback = vi.fn();
+      onDraftReady(callback);
+
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("calls back with the restored draft once the session resolves after being pending", async () => {
+      const userRef = vue.ref<{ id: string } | null>(null);
+      const isLoadedRef = vue.ref(false);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+      localStorage.setItem(
+        draftStorageKeyFor("user-1"),
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+
+      const { onDraftReady } = useEntryDraft();
+      const callback = vi.fn();
+      onDraftReady(callback);
+      expect(callback).not.toHaveBeenCalled();
+
+      // Set the resolved user before flipping isLoaded, mirroring Clerk's own
+      // contract (see useEntryDraft's draftStorageKey doc comment): isLoaded
+      // only flips true once the user is already resolved, never the other
+      // way around. Flipping isLoaded first would make the sign-out purge
+      // sweep's `flush: "sync"` watcher observe a transient "resolved, no
+      // user yet" tick and wipe every draft — including the one this test
+      // just seeded for user-1 — before the second assignment lands.
+      userRef.value = { id: "user-1" };
+      isLoadedRef.value = true;
+      await vue.nextTick();
+
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledWith(SAMPLE_DRAFT);
+    });
+
+    it("calls back only once even if isLoaded flips again after resolving", async () => {
+      const userRef = vue.ref<{ id: string } | null>(null);
+      const isLoadedRef = vue.ref(false);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      const { onDraftReady } = useEntryDraft();
+      const callback = vi.fn();
+      onDraftReady(callback);
+
+      isLoadedRef.value = true;
+      await vue.nextTick();
+      expect(callback).toHaveBeenCalledTimes(1);
+
+      isLoadedRef.value = false;
+      await vue.nextTick();
+      isLoadedRef.value = true;
+      await vue.nextTick();
+
+      expect(callback).toHaveBeenCalledTimes(1);
+    });
+
+    it("stops watching once the returned stop function is called", async () => {
+      const userRef = vue.ref<{ id: string } | null>(null);
+      const isLoadedRef = vue.ref(false);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      const { onDraftReady } = useEntryDraft();
+      const callback = vi.fn();
+      const stop = onDraftReady(callback);
+
+      stop();
+      isLoadedRef.value = true;
+      await vue.nextTick();
+
+      expect(callback).not.toHaveBeenCalled();
+    });
+  });
+
   describe("sign-out purge", () => {
     it("removes the departing user's draft when they sign out", async () => {
       const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
