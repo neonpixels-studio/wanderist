@@ -430,8 +430,15 @@ describe("useEntryDraft", () => {
       onDraftReady(callback);
       expect(callback).not.toHaveBeenCalled();
 
-      isLoadedRef.value = true;
+      // Set the resolved user before flipping isLoaded, mirroring Clerk's own
+      // contract (see useEntryDraft's draftStorageKey doc comment): isLoaded
+      // only flips true once the user is already resolved, never the other
+      // way around. Flipping isLoaded first would make the sign-out purge
+      // sweep's `flush: "sync"` watcher observe a transient "resolved, no
+      // user yet" tick and wipe every draft — including the one this test
+      // just seeded for user-1 — before the second assignment lands.
       userRef.value = { id: "user-1" };
+      isLoadedRef.value = true;
       await vue.nextTick();
 
       expect(callback).toHaveBeenCalledTimes(1);
