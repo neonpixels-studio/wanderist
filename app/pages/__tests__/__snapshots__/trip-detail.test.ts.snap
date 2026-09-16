@@ -23,66 +23,72 @@ exports[`Trip Detail page (/trips/[id]) > renders without crashing and matches s
         <div data-v-a25903e0="">
           <div data-v-a25903e0="" class="label">// itinerary</div>
           <h2 data-v-a25903e0="" class="display" style="font-size: 20px; margin-top: 8px;"> Route &amp; stops </h2>
-        </div><button data-v-a25903e0="" class="btn btn--ghost btn--sm"><svg data-v-a25903e0="" data-icon="" name="sliders" size="14"></svg> reorder </button>
+        </div>
       </div>
       <div data-v-a25903e0="" class="iti">
-        <div data-v-a25903e0="" class="stop is-done">
-          <div data-v-a25903e0="" class="stop__node">
-            <div data-v-a25903e0="" class="stop__pin"><svg data-v-a25903e0="" data-icon="" name="check" size="18"></svg></div>
-          </div>
-          <div data-v-a25903e0="" class="stop__card">
-            <div data-v-a25903e0="" class="stop__top">
-              <div data-v-a25903e0="">
-                <div data-v-a25903e0="" class="stop__name">Reykjavík</div>
-                <div data-v-a25903e0="" class="stop__sub"><svg data-v-a25903e0="" data-icon="" name="calendar" size="12"></svg> Jun 9 · 2 nights
-                  <!--v-if-->
-                </div>
-              </div><span data-v-a25903e0="" class="stop__grip"><svg data-v-a25903e0="" data-icon="" name="grip" size="16"></svg></span>
+        <ul data-v-a25903e0="" class="iti__list">
+          <li data-v-a25903e0="" class="stop is-done" draggable="true">
+            <div data-v-a25903e0="" class="stop__node">
+              <div data-v-a25903e0="" class="stop__pin"><svg data-v-a25903e0="" data-icon="" name="check" size="18"></svg></div>
             </div>
-            <p data-v-a25903e0="" class="stop__note">Landed, picked up the camper.</p>
-            <div data-v-a25903e0="" class="stop__foot">
+            <div data-v-a25903e0="" class="stop__card">
+              <div data-v-a25903e0="" class="stop__top">
+                <div data-v-a25903e0="">
+                  <div data-v-a25903e0="" class="stop__name">Reykjavík</div>
+                  <div data-v-a25903e0="" class="stop__sub"><svg data-v-a25903e0="" data-icon="" name="calendar" size="12"></svg> Jun 9 · 2 nights
+                    <!--v-if-->
+                  </div>
+                </div>
+                <div data-v-a25903e0="" class="stop__reorder"><button data-v-a25903e0="" type="button" class="stop__move-btn" aria-label="Move Reykjavík up" disabled=""><svg data-v-a25903e0="" data-icon="" name="arrow-up" size="14"></svg></button><button data-v-a25903e0="" type="button" class="stop__move-btn" aria-label="Move Reykjavík down"><svg data-v-a25903e0="" data-icon="" name="arrow-down" size="14"></svg></button><span data-v-a25903e0="" class="stop__grip" aria-hidden="true"><svg data-v-a25903e0="" data-icon="" name="grip" size="16"></svg></span></div>
+              </div>
+              <p data-v-a25903e0="" class="stop__note">Landed, picked up the camper.</p>
+              <div data-v-a25903e0="" class="stop__foot">
+                <!--v-if-->
+              </div>
+            </div>
+          </li>
+          <li data-v-a25903e0="" class="stop is-next" draggable="true">
+            <div data-v-a25903e0="" class="stop__node">
+              <div data-v-a25903e0="" class="stop__pin"><svg data-v-a25903e0="" data-icon="" name="pin" size="18"></svg></div>
+            </div>
+            <div data-v-a25903e0="" class="stop__card">
+              <div data-v-a25903e0="" class="stop__top">
+                <div data-v-a25903e0="">
+                  <div data-v-a25903e0="" class="stop__name">Jökulsárlón</div>
+                  <div data-v-a25903e0="" class="stop__sub">
+                    <!--v-if--><span data-v-a25903e0="" class="tag tag--accent">next</span>
+                  </div>
+                </div>
+                <div data-v-a25903e0="" class="stop__reorder"><button data-v-a25903e0="" type="button" class="stop__move-btn" aria-label="Move Jökulsárlón up"><svg data-v-a25903e0="" data-icon="" name="arrow-up" size="14"></svg></button><button data-v-a25903e0="" type="button" class="stop__move-btn" aria-label="Move Jökulsárlón down"><svg data-v-a25903e0="" data-icon="" name="arrow-down" size="14"></svg></button><span data-v-a25903e0="" class="stop__grip" aria-hidden="true"><svg data-v-a25903e0="" data-icon="" name="grip" size="16"></svg></span></div>
+              </div>
               <!--v-if-->
+              <div data-v-a25903e0="" class="stop__foot"><span data-v-a25903e0="" class="m"><svg data-v-a25903e0="" data-icon="" name="ruler" size="12"></svg> 270 km</span></div>
             </div>
-          </div>
-        </div>
-        <div data-v-a25903e0="" class="stop is-next">
-          <div data-v-a25903e0="" class="stop__node">
-            <div data-v-a25903e0="" class="stop__pin"><svg data-v-a25903e0="" data-icon="" name="pin" size="18"></svg></div>
-          </div>
-          <div data-v-a25903e0="" class="stop__card">
-            <div data-v-a25903e0="" class="stop__top">
-              <div data-v-a25903e0="">
-                <div data-v-a25903e0="" class="stop__name">Jökulsárlón</div>
-                <div data-v-a25903e0="" class="stop__sub">
-                  <!--v-if--><span data-v-a25903e0="" class="tag tag--accent">next</span>
+          </li>
+          <li data-v-a25903e0="" class="stop" draggable="true">
+            <div data-v-a25903e0="" class="stop__node">
+              <div data-v-a25903e0="" class="stop__pin"><span data-v-a25903e0="">3</span></div>
+            </div>
+            <div data-v-a25903e0="" class="stop__card">
+              <div data-v-a25903e0="" class="stop__top">
+                <div data-v-a25903e0="">
+                  <div data-v-a25903e0="" class="stop__name">Höfn</div>
+                  <div data-v-a25903e0="" class="stop__sub">
+                    <!--v-if-->
+                    <!--v-if-->
+                  </div>
                 </div>
-              </div><span data-v-a25903e0="" class="stop__grip"><svg data-v-a25903e0="" data-icon="" name="grip" size="16"></svg></span>
+                <div data-v-a25903e0="" class="stop__reorder"><button data-v-a25903e0="" type="button" class="stop__move-btn" aria-label="Move Höfn up"><svg data-v-a25903e0="" data-icon="" name="arrow-up" size="14"></svg></button><button data-v-a25903e0="" type="button" class="stop__move-btn" aria-label="Move Höfn down" disabled=""><svg data-v-a25903e0="" data-icon="" name="arrow-down" size="14"></svg></button><span data-v-a25903e0="" class="stop__grip" aria-hidden="true"><svg data-v-a25903e0="" data-icon="" name="grip" size="16"></svg></span></div>
+              </div>
+              <!--v-if-->
+              <div data-v-a25903e0="" class="stop__foot"><span data-v-a25903e0="" class="m"><svg data-v-a25903e0="" data-icon="" name="ruler" size="12"></svg> 180 km</span></div>
             </div>
-            <!--v-if-->
-            <div data-v-a25903e0="" class="stop__foot"><span data-v-a25903e0="" class="m"><svg data-v-a25903e0="" data-icon="" name="ruler" size="12"></svg> 270 km</span></div>
-          </div>
-        </div>
-        <div data-v-a25903e0="" class="stop">
-          <div data-v-a25903e0="" class="stop__node">
-            <div data-v-a25903e0="" class="stop__pin"><span data-v-a25903e0="">3</span></div>
-          </div>
-          <div data-v-a25903e0="" class="stop__card">
-            <div data-v-a25903e0="" class="stop__top">
-              <div data-v-a25903e0="">
-                <div data-v-a25903e0="" class="stop__name">Höfn</div>
-                <div data-v-a25903e0="" class="stop__sub">
-                  <!--v-if-->
-                  <!--v-if-->
-                </div>
-              </div><span data-v-a25903e0="" class="stop__grip"><svg data-v-a25903e0="" data-icon="" name="grip" size="16"></svg></span>
-            </div>
-            <!--v-if-->
-            <div data-v-a25903e0="" class="stop__foot"><span data-v-a25903e0="" class="m"><svg data-v-a25903e0="" data-icon="" name="ruler" size="12"></svg> 180 km</span></div>
-          </div>
-        </div>
+          </li>
+        </ul>
         <div data-v-a25903e0="" class="stop__add">
           <div data-v-a25903e0=""></div><button data-v-a25903e0="" class="add-btn"><svg data-v-a25903e0="" data-icon="" name="plus" size="15"></svg> add a stop</button>
         </div>
+        <p data-v-a25903e0="" class="visually-hidden" role="status" aria-live="polite"></p>
       </div>
       <!--v-if-->
       <!--v-if-->

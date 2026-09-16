@@ -153,21 +153,22 @@ describe("useEntryDraft", () => {
 
     it("isolates drafts between two different user ids", () => {
       installClerkUserStub("user-1");
-      let { saveDraft } = useEntryDraft();
-      saveDraft(SAMPLE_DRAFT);
+      const { saveDraft: saveDraftAsUserOne, loadDraft: loadDraftAsUserOne } =
+        useEntryDraft();
+      saveDraftAsUserOne(SAMPLE_DRAFT);
+      expect(loadDraftAsUserOne()?.title).toBe(SAMPLE_DRAFT.title);
 
       installClerkUserStub("user-2");
-      ({ saveDraft } = useEntryDraft());
+      const { saveDraft: saveDraftAsUserTwo, loadDraft: loadDraftAsUserTwo } =
+        useEntryDraft();
       const userTwoDraft = { ...SAMPLE_DRAFT, title: "User two's entry" };
-      saveDraft(userTwoDraft);
+      saveDraftAsUserTwo(userTwoDraft);
+      expect(loadDraftAsUserTwo()?.title).toBe("User two's entry");
 
-      installClerkUserStub("user-1");
-      let { loadDraft } = useEntryDraft();
-      expect(loadDraft()?.title).toBe(SAMPLE_DRAFT.title);
-
-      installClerkUserStub("user-2");
-      ({ loadDraft } = useEntryDraft());
-      expect(loadDraft()?.title).toBe("User two's entry");
+      // Each user only ever reads/writes their own key while active — and
+      // once user-2 is the active session, user-1's key isn't left behind
+      // for whoever uses the browser next.
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).toBeNull();
     });
 
     it("does not read another user's draft while logged out", () => {
@@ -481,6 +482,221 @@ describe("useEntryDraft", () => {
     });
   });
 
+  describe("sign-out purge", () => {
+    it("removes the departing user's draft when they sign out", async () => {
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      const { saveDraft } = useEntryDraft();
+      saveDraft(SAMPLE_DRAFT);
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).not.toBeNull();
+
+      userRef.value = null;
+      await vue.nextTick();
+
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).toBeNull();
+    });
+
+    it("does not purge while the session hasn't resolved yet", async () => {
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(false);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+      localStorage.setItem(
+        draftStorageKeyFor("user-1"),
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+
+      useEntryDraft();
+      userRef.value = null;
+      await vue.nextTick();
+
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).not.toBeNull();
+    });
+
+    it("purges a sign-out that lands mid-re-resolve, once the session settles", async () => {
+      // A session that is being re-resolved (e.g. a token refresh racing the
+      // sign-out) can surface isLoaded going false and back to true around
+      // the id disappearing, rather than the id changing while isLoaded
+      // stays true throughout. The purge must still fire once isLoaded
+      // settles back to true, not just on the id transition itself.
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      const { saveDraft } = useEntryDraft();
+      saveDraft(SAMPLE_DRAFT);
+
+      isLoadedRef.value = false;
+      userRef.value = null;
+      await vue.nextTick();
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).not.toBeNull();
+
+      isLoadedRef.value = true;
+      await vue.nextTick();
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).toBeNull();
+    });
+
+    it("leaves the legacy unscoped key alone (out of scope for this sweep)", async () => {
+      localStorage.setItem(
+        LEGACY_DRAFT_STORAGE_KEY,
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      // The legacy key was never scoped to any user, so "is this the current
+      // user's own key" doesn't apply to it — it's cleaned up separately by
+      // cleanupLegacyDraft (see saveDraft/loadDraft), not by this sweep.
+      useEntryDraft();
+      userRef.value = null;
+      await vue.nextTick();
+
+      expect(localStorage.getItem(LEGACY_DRAFT_STORAGE_KEY)).not.toBeNull();
+    });
+
+    it("does not touch unrelated localStorage keys when signing out with no draft saved", async () => {
+      localStorage.setItem("wanderist:theme", "dark");
+
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      useEntryDraft();
+      userRef.value = null;
+      await vue.nextTick();
+
+      expect(localStorage.getItem("wanderist:theme")).toBe("dark");
+      expect(localStorage.length).toBe(1);
+    });
+
+    it("logs rather than throws when the sign-out purge itself fails", async () => {
+      localStorage.setItem(
+        draftStorageKeyFor("user-1"),
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+
+      const consoleErrorSpy = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+      // Spies on the localStorage instance, not Storage.prototype: happy-dom
+      // shadows prototype methods with own properties on first real use, and
+      // earlier tests in this file already call the real removeItem — a
+      // prototype spy silently stops intercepting once that's happened.
+      const removeItemSpy = vi
+        .spyOn(localStorage, "removeItem")
+        .mockImplementation(() => {
+          throw new DOMException("denied", "SecurityError");
+        });
+
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      // Mounting while user-1 is current doesn't touch user-1's own key, so
+      // nothing throws yet; signing out makes it stale and the sweep tries
+      // (and fails) to remove it.
+      useEntryDraft();
+      userRef.value = null;
+
+      await vue.nextTick();
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        `useEntryDraft: failed to purge draft key "${draftStorageKeyFor("user-1")}"`,
+        expect.any(DOMException),
+      );
+
+      removeItemSpy.mockRestore();
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("purges a stale key left by a different user as soon as any session resolves", async () => {
+      localStorage.setItem(
+        draftStorageKeyFor("user-2"),
+        JSON.stringify(SAMPLE_DRAFT),
+      );
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      // user-2's draft predates this session and isn't the active user's own
+      // key, so it's purged immediately — the browser's current occupant is
+      // user-1, and nothing belonging to anyone else should remain on disk,
+      // not even a draft belonging to whoever uses the browser next.
+      const { saveDraft } = useEntryDraft();
+      expect(localStorage.getItem(draftStorageKeyFor("user-2"))).toBeNull();
+
+      saveDraft(SAMPLE_DRAFT);
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).not.toBeNull();
+    });
+
+    it("keeps the current user's own draft across repeated session resolves", async () => {
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      const { saveDraft } = useEntryDraft();
+      saveDraft(SAMPLE_DRAFT);
+
+      // Toggling isLoaded false and back true re-runs the sweep with the
+      // same id both times; the user's own key must survive both passes.
+      isLoadedRef.value = false;
+      await vue.nextTick();
+      isLoadedRef.value = true;
+      await vue.nextTick();
+
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).not.toBeNull();
+    });
+
+    it("purges the outgoing user's draft, not the incoming one's, on a direct account switch", async () => {
+      const userRef = vue.ref<{ id: string } | null>({ id: "user-1" });
+      const isLoadedRef = vue.ref(true);
+      vi.stubGlobal("useClerkUser", () => ({
+        user: userRef,
+        isLoaded: isLoadedRef,
+      }));
+
+      const { saveDraft } = useEntryDraft();
+      saveDraft(SAMPLE_DRAFT);
+
+      // No real Clerk flow hands off between two signed-in ids without an
+      // intermediate sign-out, but the sweep covers it anyway: whichever id
+      // becomes current keeps its own key, everything else goes.
+      userRef.value = { id: "user-2" };
+      await vue.nextTick();
+      // saveDraft resolves the storage key fresh on every call (via the
+      // reactive user ref), so the same handle now writes under user-2.
+      saveDraft(SAMPLE_DRAFT);
+
+      expect(localStorage.getItem(draftStorageKeyFor("user-1"))).toBeNull();
+      expect(localStorage.getItem(draftStorageKeyFor("user-2"))).not.toBeNull();
+    });
+  });
+
   describe("clearDraft", () => {
     it("removes the current user's draft from localStorage", () => {
       installClerkUserStub("user-1");
@@ -506,7 +722,13 @@ describe("useEntryDraft", () => {
     });
 
     it("does not remove a different user's draft", () => {
-      installClerkUserStub("user-1");
+      installClerkUserStub("user-2");
+      const { clearDraft } = useEntryDraft();
+
+      // Seeded after the composable exists (and its mount-time sweep has
+      // already run against empty storage) so this test isolates
+      // clearDraft()'s own key-scoping from the sign-out sweep — the sweep
+      // reacting to a *later* session change is covered separately above.
       localStorage.setItem(
         draftStorageKeyFor("user-1"),
         JSON.stringify(SAMPLE_DRAFT),
@@ -516,8 +738,6 @@ describe("useEntryDraft", () => {
         JSON.stringify(SAMPLE_DRAFT),
       );
 
-      installClerkUserStub("user-2");
-      const { clearDraft } = useEntryDraft();
       clearDraft();
 
       expect(localStorage.getItem(draftStorageKeyFor("user-1"))).not.toBeNull();
