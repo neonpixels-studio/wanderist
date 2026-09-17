@@ -500,10 +500,14 @@
           // confirm deletion
         </div>
         <h3 class="display">Delete your account?</h3>
-        <p>
+        <p v-if="deleteCountsAvailable">
           This removes <b>{{ deletePlacesLabel }}</b
           >, <b>{{ deleteTripsLabel }}</b> and all photos. Type <b>DELETE</b> to
           confirm.
+        </p>
+        <p v-else>
+          This removes all your places, trips and photos. Type
+          <b>DELETE</b> to confirm.
         </p>
         <InputText v-model="deleteConfirm" placeholder="DELETE" />
         <div
@@ -589,8 +593,16 @@ const {
   fetchSubscription,
 } = useBilling();
 
-const { stats, fetchStats } = useStats();
+const { stats, loadError: statsLoadError, fetchStats } = useStats();
 const tripsStore = useTripsStore();
+
+// Guards the delete-confirmation copy: if either count failed to load, fall
+// back to generic wording rather than asserting a fabricated "0 places, 0
+// trips" — a wrong reassurance on the one screen where the number is the
+// whole point of the warning.
+const deleteCountsAvailable = computed(
+  () => !statsLoadError.value && !tripsStore.listError,
+);
 
 const deletePlacesLabel = computed(() => {
   const placesCount = stats.value.placesCount;
@@ -767,10 +779,15 @@ onMounted(async () => {
   // Mark the flag here so the watcher stops overwriting user edits after load.
   hasPopulatedFromServer.value = true;
 
-  await fetchConnections();
-  await fetchSubscription();
-  await fetchStats();
-  await tripsStore.fetchTrips();
+  // Independent of each other and of preferences — run concurrently so one
+  // slow or failing fetch (e.g. tripsStore.fetchTrips, which rejects on
+  // error) doesn't block or skip the rest.
+  await Promise.allSettled([
+    fetchConnections(),
+    fetchSubscription(),
+    fetchStats(),
+    tripsStore.fetchTrips(),
+  ]);
 });
 
 function handleConnectInstagram(): void {

@@ -20,11 +20,13 @@ const DEFAULT_STATS_DATA = {
 };
 
 const mockStats = ref({ ...DEFAULT_STATS_DATA });
+const mockStatsLoadError = ref<string | null>(null);
 const mockFetchStats = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("~/composables/useStats", () => ({
   useStats: vi.fn(() => ({
     stats: mockStats,
+    loadError: mockStatsLoadError,
     fetchStats: mockFetchStats,
   })),
 }));
@@ -270,6 +272,7 @@ describe("Settings page (/settings)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStats.value = { ...DEFAULT_STATS_DATA };
+    mockStatsLoadError.value = null;
 
     const pinia = createPinia();
     setActivePinia(pinia);
@@ -484,8 +487,42 @@ describe("Settings page (/settings)", () => {
     const modalText = wrapper.find(".modal").text();
     expect(modalText).toContain("34 places");
     expect(modalText).toContain("3 trips");
-    expect(modalText).not.toContain("117");
-    expect(modalText).not.toContain("9 trips");
+  });
+
+  it("follows the real data when place/trip counts differ from the default mock, proving the counts are dynamic", async () => {
+    mockStats.value = { ...DEFAULT_STATS_DATA, placesCount: 200 };
+    const tripsStore = useTripsStore();
+    tripsStore.tripList = [
+      ...DEFAULT_TRIPS,
+      DEFAULT_TRIPS[0],
+      DEFAULT_TRIPS[1],
+    ];
+
+    const wrapper = mount(SettingsPage, globalConfig);
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).toContain("200 places");
+    expect(modalText).toContain("5 trips");
+  });
+
+  it("falls back to generic wording (no fabricated zero count) when stats fail to load", async () => {
+    const { useStats } = await import("~/composables/useStats");
+    vi.mocked(useStats).mockReturnValueOnce({
+      stats: ref({ ...DEFAULT_STATS_DATA, placesCount: 0 }),
+      loadError: ref("Failed to load stats"),
+      fetchStats: mockFetchStats,
+    } as unknown as ReturnType<typeof useStats>);
+
+    const wrapper = mount(SettingsPage, globalConfig);
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).not.toContain("0 places");
+    expect(modalText).not.toContain("0 trips");
+    expect(modalText).toContain(
+      "This removes all your places, trips and photos.",
+    );
   });
 
   it("uses singular wording for exactly one place and one trip", async () => {
