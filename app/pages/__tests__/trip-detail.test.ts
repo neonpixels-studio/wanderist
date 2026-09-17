@@ -826,11 +826,9 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(wrapper.find(".thero__acts").exists()).toBe(false);
   });
 
-  // Regression coverage for the anonymous-Clerk-blocked guarantee that
-  // predates #255: fetchTripDetail's gate (see useClerkGatedFetch) withholds
-  // the real store call while isClerkLoaded is false, so this proves that
-  // withholding is bounded rather than permanent — a public trip must still
-  // load for a share-link visitor if Clerk's script never resolves at all.
+  // Regression coverage for the pre-existing "public content loads even if
+  // Clerk is blocked" guarantee: the #255 gate withholds the fetch, but only
+  // up to CLERK_BOOTSTRAP_TIMEOUT_MS (see useClerkGatedFetch).
   it("still fetches a public trip anonymously once the Clerk bootstrap grace period lapses", async () => {
     vi.useFakeTimers();
     try {
@@ -852,15 +850,8 @@ describe("Trip Detail page (/trips/[id])", () => {
     }
   });
 
-  // Regression coverage for #255: the fetch used to fire immediately on mount,
-  // before Clerk had a chance to resolve. For a signed-in owner on a hard
-  // refresh that meant an anonymous request 404'd the private trip first,
-  // flashing "Trip not found" for a frame before the authenticated retry
-  // (driven by canRetryAuthenticated) landed. The fetch is now gated on
-  // isClerkLoaded, so it doesn't fire at all until Clerk resolves — and since
-  // Clerk resolves isLoaded and isSignedIn together, the very first request an
-  // owner's page makes is already authenticated, with no anonymous pass (and
-  // no "not found" flash) in between.
+  // Regression coverage for #255: the anonymous-then-retry race that used to
+  // flash "Trip not found" for a signed-in owner on a hard refresh.
   it("does not fetch until Clerk resolves, then fetches exactly once already authenticated for a signed-in owner (no anonymous-then-retry flash)", async () => {
     clerkLoadedRef.value = false;
     clerkSignedInRef.value = false;

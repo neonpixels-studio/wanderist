@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ref, nextTick } from "vue";
+import { ref, nextTick, effectScope } from "vue";
 import {
   useClerkGatedFetch,
   CLERK_BOOTSTRAP_TIMEOUT_MS,
@@ -95,6 +95,27 @@ describe("useClerkGatedFetch", () => {
     // Per the no-double-fetch contract, resolving isClerkLoaded does not call
     // fetchFn itself — but it must also cancel the pending timeout, so the
     // grace period elapsing afterward does not fire a second, redundant call.
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("clears a pending timer/watch on scope disposal so a torn-down page's fetch never fires later", async () => {
+    // Regression guard: without this cleanup, a gate() call left pending when
+    // a page unmounts (e.g. the visitor navigates away before Clerk resolves)
+    // would still fire fetchFn once the grace period lapses, writing into
+    // whatever shared store state a since-mounted, unrelated page now reads.
+    vi.useFakeTimers();
+    const isClerkLoaded = ref(false);
+    const fetchFn = vi.fn().mockResolvedValue("result");
+    const scope = effectScope();
+
+    scope.run(() => {
+      const { gate } = useClerkGatedFetch(isClerkLoaded);
+      gate(fetchFn);
+    });
+    scope.stop();
+
+    await vi.advanceTimersByTimeAsync(CLERK_BOOTSTRAP_TIMEOUT_MS);
+
     expect(fetchFn).not.toHaveBeenCalled();
   });
 

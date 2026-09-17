@@ -109,15 +109,10 @@ const canRetryAuthenticated = computed(
   () => isClerkLoaded.value && !!isSignedIn.value,
 );
 
-// Withholds the fetch entirely until Clerk's local bootstrap finishes (see
-// useClerkGatedFetch for the full rationale and its no-double-fetch
-// contract), rather than firing an anonymous request while it's still
-// resolving — that race is exactly what caused #255: a signed-in owner's
-// private guide 404s on the anonymous pass, and the page renders "Guide not
-// found" for the frame before the authenticated retry (driven by
-// canRetryAuthenticated above) lands. isClerkLoaded is in the watch array
-// below alongside canRetryAuthenticated so gate() gets re-invoked (and takes
-// its fast, already-resolved path) the moment isClerkLoaded flips true.
+// Gated on Clerk's bootstrap (#255) so an owner's first request already
+// carries a token instead of 404ing anonymously first — see
+// useClerkGatedFetch. isClerkLoaded is in the watch array below so gate()
+// gets re-invoked once it resolves.
 const { gate: gateOnClerkLoad } = useClerkGatedFetch(isClerkLoaded);
 
 function fetchGuideDetail(): Promise<void> {
