@@ -1,8 +1,75 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ref, readonly } from "vue";
 import { mount } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
 import SettingsPage from "../settings.vue";
 import type { UserSubscriptionDto } from "~/composables/useBilling";
+import { useTripsStore } from "~/stores/trips";
+import type { Trip } from "~/stores/trips";
+
+const DEFAULT_STATS_DATA = {
+  placesCount: 34,
+  countriesCount: 9,
+  totalDistanceMi: 48218,
+  totalDistanceKm: 77600,
+  currentStreak: 14,
+  placesThisWeek: 6,
+  distanceMiThisWeek: 1400,
+  distanceKmThisWeek: 2254,
+  distanceUnit: "mi" as const,
+};
+
+const mockStats = ref({ ...DEFAULT_STATS_DATA });
+const mockFetchStats = vi.fn().mockResolvedValue(undefined);
+
+vi.mock("~/composables/useStats", () => ({
+  useStats: vi.fn(() => ({
+    stats: mockStats,
+    fetchStats: mockFetchStats,
+  })),
+}));
+
+const DEFAULT_TRIPS: Trip[] = [
+  {
+    id: "trip-1",
+    userId: "user-1",
+    name: "Iceland, the ring road",
+    status: "past",
+    startDate: "2025-06-20T00:00:00.000Z",
+    endDate: "2025-06-29T00:00:00.000Z",
+    coverImageId: null,
+    distanceKm: 892,
+    visibility: "private",
+    createdAt: "2025-01-01T00:00:00.000Z",
+    updatedAt: "2025-01-01T00:00:00.000Z",
+  },
+  {
+    id: "trip-2",
+    userId: "user-1",
+    name: "Portugal, coast to coast",
+    status: "upcoming",
+    startDate: "2026-07-01T00:00:00.000Z",
+    endDate: "2026-07-10T00:00:00.000Z",
+    coverImageId: null,
+    distanceKm: null,
+    visibility: "private",
+    createdAt: "2025-01-02T00:00:00.000Z",
+    updatedAt: "2025-01-02T00:00:00.000Z",
+  },
+  {
+    id: "trip-3",
+    userId: "user-1",
+    name: "Norway in winter",
+    status: "upcoming",
+    startDate: null,
+    endDate: null,
+    coverImageId: null,
+    distanceKm: null,
+    visibility: "private",
+    createdAt: "2025-01-03T00:00:00.000Z",
+    updatedAt: "2025-01-03T00:00:00.000Z",
+  },
+];
 
 const mockChangePassword = vi.fn().mockResolvedValue(true);
 const mockUploadAvatar = vi.fn().mockResolvedValue(null);
@@ -179,8 +246,14 @@ const planManageButtonStub = {
   template: '<button class="plan-manage-btn"><slot /></button>',
 };
 
-const globalConfig = {
+const globalConfig: {
   global: {
+    plugins: unknown[];
+    stubs: Record<string, unknown>;
+  };
+} = {
+  global: {
+    plugins: [],
     stubs: {
       AppIcon: iconStub,
       AppTopbar: topbarStub,
@@ -196,6 +269,15 @@ const globalConfig = {
 describe("Settings page (/settings)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockStats.value = { ...DEFAULT_STATS_DATA };
+
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    globalConfig.global.plugins = [pinia];
+
+    const tripsStore = useTripsStore();
+    tripsStore.tripList = [...DEFAULT_TRIPS];
+    vi.spyOn(tripsStore, "fetchTrips").mockResolvedValue();
   });
 
   it("renders without crashing and matches snapshot", () => {
@@ -393,6 +475,32 @@ describe("Settings page (/settings)", () => {
     await wrapper.find(".danger .btn").trigger("click");
     await wrapper.find(".modal .btn--ghost").trigger("click");
     expect(wrapper.find(".modal-scrim").classes()).not.toContain("is-open");
+  });
+
+  it("shows the user's real place and trip counts in the delete confirmation, not hardcoded values", async () => {
+    const wrapper = mount(SettingsPage, globalConfig);
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).toContain("34 places");
+    expect(modalText).toContain("3 trips");
+    expect(modalText).not.toContain("117");
+    expect(modalText).not.toContain("9 trips");
+  });
+
+  it("uses singular wording for exactly one place and one trip", async () => {
+    mockStats.value = { ...DEFAULT_STATS_DATA, placesCount: 1 };
+    const tripsStore = useTripsStore();
+    tripsStore.tripList = [DEFAULT_TRIPS[0]];
+
+    const wrapper = mount(SettingsPage, globalConfig);
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).toContain("1 place");
+    expect(modalText).not.toContain("1 places");
+    expect(modalText).toContain("1 trip");
+    expect(modalText).not.toContain("1 trips");
   });
 
   it("shows saved toast after a successful save", async () => {

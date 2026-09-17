@@ -501,8 +501,9 @@
         </div>
         <h3 class="display">Delete your account?</h3>
         <p>
-          This removes <b>117 places</b>, <b>9 trips</b> and all photos. Type
-          <b>DELETE</b> to confirm.
+          This removes <b>{{ deletePlacesLabel }}</b
+          >, <b>{{ deleteTripsLabel }}</b> and all photos. Type <b>DELETE</b> to
+          confirm.
         </p>
         <InputText v-model="deleteConfirm" placeholder="DELETE" />
         <div
@@ -541,6 +542,8 @@ import {
 } from "~/composables/useConnections";
 import { useAccountActions } from "~/composables/useAccountActions";
 import { useBilling } from "~/composables/useBilling";
+import { useStats } from "~/composables/useStats";
+import { useTripsStore } from "~/stores/trips";
 
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Settings" });
@@ -585,6 +588,19 @@ const {
   loadError: billingLoadError,
   fetchSubscription,
 } = useBilling();
+
+const { stats, fetchStats } = useStats();
+const tripsStore = useTripsStore();
+
+const deletePlacesLabel = computed(() => {
+  const placesCount = stats.value.placesCount;
+  return `${placesCount} ${placesCount === 1 ? "place" : "places"}`;
+});
+
+const deleteTripsLabel = computed(() => {
+  const tripsCount = tripsStore.tripList.length;
+  return `${tripsCount} ${tripsCount === 1 ? "trip" : "trips"}`;
+});
 
 const PLAN_DISPLAY_NAMES: Record<string, string> = {
   drifter: "Drifter",
@@ -753,6 +769,8 @@ onMounted(async () => {
 
   await fetchConnections();
   await fetchSubscription();
+  await fetchStats();
+  await tripsStore.fetchTrips();
 });
 
 function handleConnectInstagram(): void {
