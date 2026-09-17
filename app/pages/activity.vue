@@ -1,5 +1,5 @@
 <template>
-  <div ref="focusFallbackRef" class="content content--wide" tabindex="-1">
+  <div class="content content--wide">
     <AppTopbar title="Activity" crumb="Updates" />
 
     <div v-if="isLoading && notifications.length === 0" class="activity__state">
@@ -23,19 +23,25 @@
         {{ error }}
       </div>
 
-      <div v-if="notifications.length === 0" class="activity__state">
-        No activity yet.
-      </div>
+      <!-- Fallback focus target when a dismiss empties the list: this
+           wrapper (not .activity__list) survives the toggle between the
+           empty state and the list below, since either branch can replace
+           the other as rows are dismissed. -->
+      <div ref="focusFallbackRef" class="activity__region" tabindex="-1">
+        <div v-if="notifications.length === 0" class="activity__state">
+          No activity yet.
+        </div>
 
-      <div v-else class="activity__list">
-        <ActivityNotificationItem
-          v-for="notification in notifications"
-          :key="notification.id"
-          :ref="(instance) => setItemRef(notification.id, instance)"
-          :notification="notification"
-          :dismissing="dismissingIds.has(notification.id)"
-          @dismiss="handleDismiss"
-        />
+        <div v-else class="activity__list">
+          <ActivityNotificationItem
+            v-for="notification in notifications"
+            :key="notification.id"
+            :ref="(instance) => setItemRef(notification.id, instance)"
+            :notification="notification"
+            :dismissing="dismissingIds.has(notification.id)"
+            @dismiss="handleDismiss"
+          />
+        </div>
       </div>
     </template>
   </div>
@@ -59,12 +65,11 @@ const {
   dismissNotification,
 } = useNotifications();
 
-// List-level fallback focus target when a dismiss empties the list. Placed
-// on the page's outer content wrapper (rather than .activity__list) because
-// that element is replaced by the empty state once the last row is removed.
 const focusFallbackRef = ref<HTMLElement | null>(null);
-const { setItemRef, isRowFocused, findRemovedIndex, restoreFocusAfterDismiss } =
-  useDismissFocusRestore(() => notifications.value, focusFallbackRef);
+const { setItemRef, dismissWithFocusRestore } = useDismissFocusRestore(
+  () => notifications.value,
+  focusFallbackRef,
+);
 
 onMounted(() => {
   fetchAllNotifications().catch((fetchError: unknown) => {
@@ -73,21 +78,12 @@ onMounted(() => {
 });
 
 // After a dismiss removes the focused row, moves keyboard focus to the
-// adjacent dismiss button (or the page container as a last resort) instead
+// adjacent dismiss button (or the fallback wrapper as a last resort) instead
 // of letting it fall back to <body>. See useDismissFocusRestore for the
 // shared restore logic (also used by AppNotifications.vue, the header
 // drawer).
 async function handleDismiss(id: string): Promise<void> {
-  const wasFocused = isRowFocused(id);
-  const removedIndex = findRemovedIndex(id);
-
-  await dismissNotification(id);
-
-  if (!wasFocused || removedIndex === -1) {
-    return;
-  }
-  await nextTick();
-  restoreFocusAfterDismiss(removedIndex);
+  await dismissWithFocusRestore(id, () => dismissNotification(id));
 }
 </script>
 

@@ -462,9 +462,14 @@ describe("AppNotifications", () => {
       expect(document.activeElement).toBe(outsideButton);
     });
 
-    it("focuses a row that slides in from beyond the drawer's preview limit when the last visible row is dismissed", async () => {
+    it("focuses the previous visible row (not a row sliding in from beyond the preview limit) when the last visible row is dismissed", async () => {
       // DRAWER_PREVIEW_LIMIT is 12; a 13th notification sits just outside the
-      // preview until the visible last row is removed and it slides in.
+      // preview and slides in once the last visible row is removed. Focus
+      // restore is identity-based (see useDismissFocusRestore) and only
+      // considers the dismissed row's immediate neighbors *as captured
+      // before the dismiss* — the row beyond the preview wasn't a neighbor
+      // at that point, so it's correctly never a focus target even though
+      // it becomes visible afterward.
       const overflowNotifications: AppNotification[] = Array.from(
         { length: 13 },
         (_, index) => ({
@@ -497,7 +502,7 @@ describe("AppNotifications", () => {
         (document.activeElement as HTMLElement | null)?.getAttribute(
           "aria-label",
         ),
-      ).toContain("Notification 12");
+      ).toContain("Notification 10");
     });
   });
 });

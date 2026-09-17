@@ -257,7 +257,7 @@ describe("Activity page (/activity)", () => {
       ).toContain(survivingNotification.body);
     });
 
-    it("falls back to the page container when dismissing the only (focused) row", async () => {
+    it("falls back to the region wrapper when dismissing the only (focused) row", async () => {
       notificationsRef.value = [SAMPLE_NOTIFICATIONS[0] as AppNotification];
 
       wrapper = mount(ActivityPage, {
@@ -271,7 +271,9 @@ describe("Activity page (/activity)", () => {
       await flushPromises();
 
       expect(document.activeElement).not.toBe(document.body);
-      expect(document.activeElement).toBe(wrapper.find(".content").element);
+      expect(document.activeElement).toBe(
+        wrapper.find(".activity__region").element,
+      );
     });
 
     it("does not steal focus when the dismissed row's button was not focused", async () => {

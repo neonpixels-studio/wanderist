@@ -81,8 +81,10 @@ const previewNotifications = computed(() =>
 
 // List-level fallback focus target when a dismiss empties the preview list.
 const listRef = ref<HTMLElement | null>(null);
-const { setItemRef, isRowFocused, findRemovedIndex, restoreFocusAfterDismiss } =
-  useDismissFocusRestore(() => previewNotifications.value, listRef);
+const { setItemRef, dismissWithFocusRestore } = useDismissFocusRestore(
+  () => previewNotifications.value,
+  listRef,
+);
 
 watch(
   () => props.open,
@@ -114,15 +116,8 @@ async function handleItemClick(notification: AppNotification): Promise<void> {
 // of letting it fall back to <body>. See useDismissFocusRestore for the
 // shared restore logic (also used by app/pages/activity.vue).
 async function handleDismiss(notification: AppNotification): Promise<void> {
-  const wasFocused = isRowFocused(notification.id);
-  const removedIndex = findRemovedIndex(notification.id);
-
-  await dismissNotification(notification.id);
-
-  if (!wasFocused || removedIndex === -1) {
-    return;
-  }
-  await nextTick();
-  restoreFocusAfterDismiss(removedIndex);
+  await dismissWithFocusRestore(notification.id, () =>
+    dismissNotification(notification.id),
+  );
 }
 </script>

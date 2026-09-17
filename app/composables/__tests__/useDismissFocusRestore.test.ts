@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { ref } from "vue";
 import {
   useDismissFocusRestore,
@@ -45,6 +45,7 @@ describe("useDismissFocusRestore", () => {
   afterEach(() => {
     (document.activeElement as HTMLElement | null)?.blur();
     elementsToClean.splice(0).forEach((element) => element.remove());
+    vi.restoreAllMocks();
   });
 
   function trackElement<T extends HTMLElement>(element: T): T {
@@ -59,97 +60,209 @@ describe("useDismissFocusRestore", () => {
     return fallback;
   }
 
-  it("reports a row as focused only while its dismiss button holds document focus", () => {
-    const { handle, button } = createFocusableHandle();
-    trackElement(button);
-    const { setItemRef, isRowFocused } = useDismissFocusRestore<Item>(
-      () => [],
-      ref(null),
-    );
-    setItemRef("a", handle);
+  it("does nothing when the dismissed row didn't have focus", async () => {
+    const other = createFocusableHandle();
+    trackElement(other.button);
+    const fallback = mountFallback();
+    let items: Item[] = [{ id: "a" }, { id: "b" }];
+    const { setItemRef, dismissWithFocusRestore } =
+      useDismissFocusRestore<Item>(() => items, ref(fallback));
+    setItemRef("b", other.handle);
+    const dismiss = vi.fn(async () => {
+      items = items.filter((item) => item.id !== "a");
+    });
 
-    expect(isRowFocused("a")).toBe(false);
-    button.focus();
-    expect(isRowFocused("a")).toBe(true);
+    await dismissWithFocusRestore("a", dismiss);
+
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).not.toBe(other.button);
+    expect(document.activeElement).not.toBe(fallback);
   });
 
-  it("findRemovedIndex resolves a row's position in the current list", () => {
-    const items: Item[] = [{ id: "a" }, { id: "b" }, { id: "c" }];
-    const { findRemovedIndex } = useDismissFocusRestore<Item>(
-      () => items,
-      ref(null),
-    );
-
-    expect(findRemovedIndex("b")).toBe(1);
-    expect(findRemovedIndex("missing")).toBe(-1);
-  });
-
-  it("moves focus to the row that slid into the removed slot", () => {
+  it("moves focus to the row that was next when a focused row is removed", async () => {
+    const focused = createFocusableHandle();
     const next = createFocusableHandle();
+    trackElement(focused.button);
     trackElement(next.button);
-    let items: Item[] = [{ id: "b" }];
-    const { setItemRef, restoreFocusAfterDismiss } =
+    let items: Item[] = [{ id: "a" }, { id: "b" }];
+    const { setItemRef, dismissWithFocusRestore } =
       useDismissFocusRestore<Item>(() => items, ref(mountFallback()));
+    setItemRef("a", focused.handle);
     setItemRef("b", next.handle);
+    focused.button.focus();
 
-    restoreFocusAfterDismiss(0);
+    await dismissWithFocusRestore("a", async () => {
+      items = items.filter((item) => item.id !== "a");
+      // A real dismiss unmounts the row, which blurs its focused button to
+      // <body> — mirror that so the guard in restoreFocus sees focus as
+      // stranded, the same way it would after the real DOM update.
+      focused.button.remove();
+    });
 
     expect(document.activeElement).toBe(next.button);
   });
 
-  it("falls back to the fallback element when the dismiss emptied the list", () => {
-    const fallback = mountFallback();
-    const fallbackRef = ref(fallback);
-    const { restoreFocusAfterDismiss } = useDismissFocusRestore<Item>(
-      () => [],
-      fallbackRef,
-    );
+  it("moves focus to the row that was previous when the focused last row is removed", async () => {
+    const previous = createFocusableHandle();
+    const focused = createFocusableHandle();
+    trackElement(previous.button);
+    trackElement(focused.button);
+    let items: Item[] = [{ id: "a" }, { id: "b" }];
+    const { setItemRef, dismissWithFocusRestore } =
+      useDismissFocusRestore<Item>(() => items, ref(mountFallback()));
+    setItemRef("a", previous.handle);
+    setItemRef("b", focused.handle);
+    focused.button.focus();
 
-    restoreFocusAfterDismiss(0);
+    await dismissWithFocusRestore("b", async () => {
+      items = items.filter((item) => item.id !== "b");
+      focused.button.remove();
+    });
 
-    expect(document.activeElement).toBe(fallback);
+    expect(document.activeElement).toBe(previous.button);
   });
 
-  it("falls back to the fallback element when the adjacent row's button can't take focus (e.g. disabled by its own in-flight dismiss)", () => {
-    const items: Item[] = [{ id: "b" }];
+  it("falls back to the fallback element when the dismiss emptied the list", async () => {
+    const focused = createFocusableHandle();
+    trackElement(focused.button);
+    let items: Item[] = [{ id: "a" }];
     const fallback = mountFallback();
-    const { setItemRef, restoreFocusAfterDismiss } =
+    const { setItemRef, dismissWithFocusRestore } =
       useDismissFocusRestore<Item>(() => items, ref(fallback));
-    setItemRef("b", createDisabledHandle());
+    setItemRef("a", focused.handle);
+    focused.button.focus();
 
-    restoreFocusAfterDismiss(0);
+    await dismissWithFocusRestore("a", async () => {
+      items = [];
+      focused.button.remove();
+    });
 
     expect(document.activeElement).toBe(fallback);
   });
 
-  it("does not steal focus if it has already moved off <body> by the time restore runs", () => {
+  it("falls back when the adjacent row's button can't take focus (e.g. disabled by its own in-flight dismiss)", async () => {
+    const focused = createFocusableHandle();
+    trackElement(focused.button);
+    let items: Item[] = [{ id: "a" }, { id: "b" }];
+    const fallback = mountFallback();
+    const { setItemRef, dismissWithFocusRestore } =
+      useDismissFocusRestore<Item>(() => items, ref(fallback));
+    setItemRef("a", focused.handle);
+    setItemRef("b", createDisabledHandle());
+    focused.button.focus();
+
+    await dismissWithFocusRestore("a", async () => {
+      items = items.filter((item) => item.id !== "a");
+      focused.button.remove();
+    });
+
+    expect(document.activeElement).toBe(fallback);
+  });
+
+  it("returns focus to the same row when the dismiss fails and the row stays", async () => {
+    const focused = createFocusableHandle();
+    trackElement(focused.button);
+    const items: Item[] = [{ id: "a" }];
+    const { setItemRef, dismissWithFocusRestore } =
+      useDismissFocusRestore<Item>(() => items, ref(mountFallback()));
+    setItemRef("a", focused.handle);
+    focused.button.focus();
+
+    await dismissWithFocusRestore("a", async () => {
+      // Simulates a real browser blurring the button once it's disabled for
+      // the in-flight request, then the request failing with the row left
+      // in place (the real composable swallows the error into `error.value`
+      // rather than removing the row).
+      focused.button.blur();
+    });
+
+    expect(document.activeElement).toBe(focused.button);
+  });
+
+  it("resolves neighbors by identity, not position, so a list mutated during the request still lands correctly", async () => {
+    // Simulates a background refetch reshaping the list while the dismiss
+    // request is in flight: "a" (focused, index 0) is dismissed, but by the
+    // time the request resolves an unrelated notification has been
+    // prepended, shifting "b" from index 1 to index 2. A position-based
+    // restore would target whatever now sits at index 1; identity-based
+    // restore still finds "b".
+    const focused = createFocusableHandle();
+    const surviving = createFocusableHandle();
+    trackElement(focused.button);
+    trackElement(surviving.button);
+    let items: Item[] = [{ id: "a" }, { id: "b" }];
+    const { setItemRef, dismissWithFocusRestore } =
+      useDismissFocusRestore<Item>(() => items, ref(mountFallback()));
+    setItemRef("a", focused.handle);
+    setItemRef("b", surviving.handle);
+    focused.button.focus();
+
+    await dismissWithFocusRestore("a", async () => {
+      items = [{ id: "prepended" }, { id: "b" }];
+      focused.button.remove();
+    });
+
+    expect(document.activeElement).toBe(surviving.button);
+  });
+
+  it("does not steal focus if it has already moved elsewhere by the time restore runs", async () => {
     const elsewhere = trackElement(document.createElement("button"));
     document.body.appendChild(elsewhere);
-    elsewhere.focus();
-
+    const focused = createFocusableHandle();
     const next = createFocusableHandle();
+    trackElement(focused.button);
     trackElement(next.button);
-    const items: Item[] = [{ id: "b" }];
-    const { setItemRef, restoreFocusAfterDismiss } =
+    let items: Item[] = [{ id: "a" }, { id: "b" }];
+    const { setItemRef, dismissWithFocusRestore } =
       useDismissFocusRestore<Item>(() => items, ref(mountFallback()));
+    setItemRef("a", focused.handle);
     setItemRef("b", next.handle);
+    focused.button.focus();
 
-    restoreFocusAfterDismiss(0);
+    await dismissWithFocusRestore("a", async () => {
+      items = items.filter((item) => item.id !== "a");
+      elsewhere.focus();
+    });
 
     expect(document.activeElement).toBe(elsewhere);
   });
 
-  it("removes an item's ref when the row unmounts, so a stale instance is never reused", () => {
-    const next = createFocusableHandle();
-    trackElement(next.button);
-    const items: Item[] = [{ id: "b" }];
+  it("ignores a row instance that doesn't expose a valid dismiss-focus handle, without throwing", async () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    let items: Item[] = [{ id: "a" }];
     const fallback = mountFallback();
-    const { setItemRef, restoreFocusAfterDismiss } =
+    const { setItemRef, dismissWithFocusRestore } =
       useDismissFocusRestore<Item>(() => items, ref(fallback));
+    setItemRef("a", { someOtherMethod: () => {} });
+
+    await expect(
+      dismissWithFocusRestore("a", async () => {
+        items = [];
+      }),
+    ).resolves.toBeUndefined();
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
+  it("removes an item's ref when the row unmounts, so a stale instance is never reused", async () => {
+    const focused = createFocusableHandle();
+    const next = createFocusableHandle();
+    trackElement(focused.button);
+    trackElement(next.button);
+    let items: Item[] = [{ id: "a" }, { id: "b" }];
+    const fallback = mountFallback();
+    const { setItemRef, dismissWithFocusRestore } =
+      useDismissFocusRestore<Item>(() => items, ref(fallback));
+    setItemRef("a", focused.handle);
     setItemRef("b", next.handle);
     setItemRef("b", null);
+    focused.button.focus();
 
-    restoreFocusAfterDismiss(0);
+    await dismissWithFocusRestore("a", async () => {
+      items = items.filter((item) => item.id !== "a");
+      focused.button.remove();
+    });
 
     expect(document.activeElement).toBe(fallback);
   });
