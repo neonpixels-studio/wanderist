@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildSecurityRouteRules,
   CONTENT_SECURITY_POLICY_REPORT_ONLY,
@@ -6,7 +6,9 @@ import {
 } from "../security-headers.config";
 
 function getDirective(policy: string, name: string): string | undefined {
-  return policy.split("; ").find((directive) => directive.startsWith(name));
+  return policy
+    .split("; ")
+    .find((directive) => directive.split(" ")[0] === name);
 }
 
 describe("SECURITY_HEADERS", () => {
@@ -62,7 +64,7 @@ describe("CONTENT_SECURITY_POLICY_REPORT_ONLY", () => {
       "https://*.clerk.accounts.dev",
     );
     expect(CONTENT_SECURITY_POLICY_REPORT_ONLY).toContain(
-      "https://img.clerk.com",
+      "https://*.clerk.com",
     );
   });
 
@@ -115,18 +117,52 @@ describe("CONTENT_SECURITY_POLICY_REPORT_ONLY", () => {
 });
 
 describe("buildSecurityRouteRules", () => {
-  it("applies SECURITY_HEADERS to every route in production", () => {
-    expect(buildSecurityRouteRules("production")).toEqual({
-      "/**": { headers: SECURITY_HEADERS },
-    });
+  it("applies every SECURITY_HEADERS entry to every route outside local dev", () => {
+    const rules = buildSecurityRouteRules("production");
+
+    expect(Object.keys(rules)).toEqual(["/**"]);
+    expect(rules["/**"].headers["X-Frame-Options"]).toBe("DENY");
+    expect(rules["/**"].headers["Strict-Transport-Security"]).toContain(
+      "max-age=63072000",
+    );
+    expect(rules["/**"].headers["Content-Security-Policy-Report-Only"]).toBe(
+      CONTENT_SECURITY_POLICY_REPORT_ONLY,
+    );
   });
 
-  it("skips the enforcing headers outside production", () => {
+  it("also applies outside NODE_ENV=production, since Nuxt's CLI sets that for every `nuxt build`, not only the real production one", () => {
+    expect(Object.keys(buildSecurityRouteRules("test"))).toEqual(["/**"]);
+    expect(Object.keys(buildSecurityRouteRules(undefined))).toEqual(["/**"]);
+  });
+
+  it("skips the enforcing headers in the Nuxt dev server", () => {
     // X-Frame-Options: DENY would block Nuxt devtools' same-origin iframe,
     // and HSTS is host+port-agnostic, so it would force every other local
     // HTTPS dev server on the machine onto HTTPS too.
     expect(buildSecurityRouteRules("development")).toEqual({});
-    expect(buildSecurityRouteRules("test")).toEqual({});
-    expect(buildSecurityRouteRules(undefined)).toEqual({});
+  });
+});
+
+describe("nuxt.config.ts wiring", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+
+  it("passes process.env.NODE_ENV into buildSecurityRouteRules and assigns the result to routeRules", async () => {
+    vi.stubGlobal("defineNuxtConfig", (config: unknown) => config);
+    vi.resetModules();
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+
+    try {
+      const { default: nuxtConfig } = (await import("../nuxt.config")) as {
+        default: { routeRules?: Record<string, { headers?: unknown }> };
+      };
+
+      expect(nuxtConfig.routeRules?.["/**"]?.headers).toEqual(SECURITY_HEADERS);
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
   });
 });
