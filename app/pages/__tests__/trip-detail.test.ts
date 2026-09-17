@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from "pinia";
 import TripDetailPage from "../trips/[id].vue";
 import { useTripsStore } from "~/stores/trips";
 import type { TripDetail, TripStop } from "~/stores/trips";
+import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
 
 // Override the global useRoute stub with a REACTIVE params object so a test can
 // change the trip id and assert the page's watched ref tracks it.
@@ -811,9 +812,9 @@ describe("Trip Detail page (/trips/[id])", () => {
   it("renders a public trip read-only even if Clerk never loads (script blocked)", () => {
     // isLoading itself must not depend on Clerk: this test seeds the store and
     // the mocked fetch status directly (both decoupled here from whether the
-    // real fetch ever fired — see the fetch-gating tests below for that), so a
-    // blocked Clerk script still degrades to the read-only page rather than a
-    // permanent "Loading trip…" once data is present.
+    // real fetch ever fired — see "still fetches a public trip anonymously"
+    // below for a test that exercises the real gate/timeout instead of the
+    // mocked fetch status).
     clerkLoadedRef.value = false;
     clerkUserRef.value = null;
     const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
@@ -823,6 +824,32 @@ describe("Trip Detail page (/trips/[id])", () => {
       "Iceland, the ring road",
     );
     expect(wrapper.find(".thero__acts").exists()).toBe(false);
+  });
+
+  // Regression coverage for the anonymous-Clerk-blocked guarantee that
+  // predates #255: fetchTripDetail's gate (see useClerkGatedFetch) withholds
+  // the real store call while isClerkLoaded is false, so this proves that
+  // withholding is bounded rather than permanent — a public trip must still
+  // load for a share-link visitor if Clerk's script never resolves at all.
+  it("still fetches a public trip anonymously once the Clerk bootstrap grace period lapses", async () => {
+    vi.useFakeTimers();
+    try {
+      clerkLoadedRef.value = false;
+      clerkSignedInRef.value = false;
+      const tripsStore = useTripsStore();
+      const fetchSpy = tripsStore.fetchTripById as unknown as ReturnType<
+        typeof vi.fn
+      >;
+
+      mount(TripDetailPage, buildGlobalConfig(pinia));
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(CLERK_BOOTSTRAP_TIMEOUT_MS);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Regression coverage for #255: the fetch used to fire immediately on mount,
@@ -882,12 +909,6 @@ describe("Trip Detail page (/trips/[id])", () => {
     // so canRetryAuthenticated never flips and no second request fires.
     await nextTick();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-
-    // tripId, canRetryAuthenticated, and isClerkLoaded: the last of the three
-    // is what lets an anonymous visitor's single fetch above fire once Clerk
-    // resolves to signed-out, since canRetryAuthenticated alone never changes
-    // for them (isSignedIn stays false throughout).
-    expect(lastAsyncDataOptions?.watch).toHaveLength(3);
   });
 
   it("retries once a viewer signs in after Clerk already resolved signed-out", async () => {

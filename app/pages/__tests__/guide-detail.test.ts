@@ -6,6 +6,7 @@ import GuideDetailPage from "../guides/[id].vue";
 import { nuxtLinkStub } from "~/components/__tests__/input-stubs";
 import { useGuidesStore } from "~/stores/guides";
 import type { Guide } from "~/stores/guides";
+import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
 
 // Override the global useRoute stub with a REACTIVE params object so a test can
 // change the guide id and assert the page's watched ref tracks it.
@@ -376,6 +377,33 @@ describe("Guide Detail page (/guides/[id])", () => {
     // so canRetryAuthenticated never flips and no second request fires.
     await nextTick();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression coverage for the anonymous-Clerk-blocked guarantee that
+  // predates #255: fetchGuideDetail's gate (see useClerkGatedFetch) withholds
+  // the real store call while isClerkLoaded is false, so this proves that
+  // withholding is bounded rather than permanent — a public guide must still
+  // load for a share-link visitor if Clerk's script never resolves at all.
+  it("still fetches a public guide anonymously once the Clerk bootstrap grace period lapses", async () => {
+    vi.useFakeTimers();
+    try {
+      clerkLoadedRef.value = false;
+      clerkSignedInRef.value = false;
+      const guidesStore = useGuidesStore();
+      guidesStore.currentGuide = null;
+      guidesStore.guideNotFound = false;
+      const fetchSpy = getFetchGuideByIdSpy();
+      fetchSpy.mockResolvedValue(undefined);
+
+      mount(GuideDetailPage, buildGlobalConfig(pinia));
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(CLERK_BOOTSTRAP_TIMEOUT_MS);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retries once a viewer signs in after Clerk already resolved signed-out", async () => {

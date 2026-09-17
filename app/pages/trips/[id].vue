@@ -383,6 +383,7 @@ import type { Trip, TripStop } from "~/stores/trips";
 import { useMediaUpload } from "~/composables/useMediaUpload";
 import { moveIdUp, moveIdDown, moveIdToDropTarget } from "~/utils/stopOrder";
 import type { StopOrderMutator } from "~/utils/stopOrder";
+import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
 
 // No auth middleware: a public trip must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private trip returns
@@ -459,38 +460,19 @@ const canRetryAuthenticated = computed(
   () => isClerkLoaded.value && !!isSignedIn.value,
 );
 
-// Withholds the fetch entirely until Clerk's local bootstrap finishes, rather
-// than firing an anonymous request while it's still resolving — that race is
-// exactly what caused #255: a signed-in owner's private trip 404s on the
-// anonymous pass, and the page renders "Trip not found" for the frame before
-// the authenticated retry (driven by canRetryAuthenticated above) lands.
-// isClerkLoaded is in the watch array below alongside canRetryAuthenticated,
-// so the moment it flips true this re-runs — and because Clerk resolves
-// isLoaded and isSignedIn together, canRetryAuthenticated already reflects
-// the real signed-in state by then. Vue batches a multi-source watch into a
-// single callback per flush, so a signed-in owner whose isLoaded and
-// isSignedIn resolve in the same tick gets exactly one call here, already
-// authenticated — no separate anonymous-then-retry pass to race against.
-//
-// Returns a promise that never settles while waiting, not one that resolves
-// immediately: useAsyncData reads this call's own settlement to decide
-// fetchStatus, so resolving early would flip status to "success" (with
-// tripDetail still null) before Clerk — and the real fetch — have had a
-// chance to run, which is the same "not found" flash this fix removes, just
-// relocated. The abandoned pending promise is harmless once superseded: the
-// watch above re-invokes this function once isClerkLoaded flips, and
-// useAsyncData tracks that newer call's settlement instead.
-//
-// No timeout fallback: same as middleware/auth.ts's own `!isLoaded.value`
-// guard and useEntryDraft's onDraftReady, isLoaded is trusted to always
-// eventually resolve rather than hanging forever — this codebase has no
-// precedent for treating a stuck Clerk bootstrap as recoverable, and
-// inventing one here would diverge from both.
+// Withholds the fetch entirely until Clerk's local bootstrap finishes (see
+// useClerkGatedFetch for the full rationale and its no-double-fetch
+// contract), rather than firing an anonymous request while it's still
+// resolving — that race is exactly what caused #255: a signed-in owner's
+// private trip 404s on the anonymous pass, and the page renders "Trip not
+// found" for the frame before the authenticated retry (driven by
+// canRetryAuthenticated above) lands. isClerkLoaded is in the watch array
+// below alongside canRetryAuthenticated so gate() gets re-invoked (and takes
+// its fast, already-resolved path) the moment isClerkLoaded flips true.
+const { gate: gateOnClerkLoad } = useClerkGatedFetch(isClerkLoaded);
+
 function fetchTripDetail(): Promise<void> {
-  if (!isClerkLoaded.value) {
-    return new Promise<void>(() => {});
-  }
-  return tripsStore.fetchTripById(tripId.value);
+  return gateOnClerkLoad(() => tripsStore.fetchTripById(tripId.value));
 }
 
 // `server: false` keeps the fetch client-only, mirroring guides/[id].vue and
@@ -522,12 +504,12 @@ async function onRetryLoad(): Promise<void> {
 // yet. Treat that window as loading so a valid trip never flashes "Trip not
 // found" before its data arrives. isLoading itself does not read isClerkLoaded
 // directly — it only cares whether the fetch above has settled — but
-// fetchTripDetail's own wait for isClerkLoaded (see its comment above) means
-// this stays true until Clerk resolves one way or the other. That is the
-// accepted trade for #255: an owner's private trip no longer flashes
-// "not found" while Clerk is bootstrapping, at the cost of trusting isLoaded to
-// eventually resolve rather than hanging forever, the same trust middleware/
-// auth.ts and useEntryDraft's onDraftReady already place in it.
+// fetchTripDetail's gate (see useClerkGatedFetch) means this stays true until
+// Clerk resolves one way or the other, or CLERK_BOOTSTRAP_TIMEOUT_MS lapses if
+// it never does. That bound is what still lets an anonymous visitor following
+// a shared link see a public trip even if Clerk's script is fully blocked,
+// same as before #255 — this fix only changes when the anonymous fetch fires
+// while Clerk resolves normally, not what happens if it never does.
 const hasResolvedFetch = computed(
   () => fetchStatus.value === "success" || fetchStatus.value === "error",
 );
