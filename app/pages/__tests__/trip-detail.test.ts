@@ -809,9 +809,11 @@ describe("Trip Detail page (/trips/[id])", () => {
   });
 
   it("renders a public trip read-only even if Clerk never loads (script blocked)", () => {
-    // isLoading must not depend on Clerk: an anonymous visitor following a
-    // shared link needs nothing from Clerk, so a blocked Clerk script degrades
-    // to the read-only page, never a permanent "Loading trip…".
+    // isLoading itself must not depend on Clerk: this test seeds the store and
+    // the mocked fetch status directly (both decoupled here from whether the
+    // real fetch ever fired — see the fetch-gating tests below for that), so a
+    // blocked Clerk script still degrades to the read-only page rather than a
+    // permanent "Loading trip…" once data is present.
     clerkLoadedRef.value = false;
     clerkUserRef.value = null;
     const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
@@ -823,31 +825,94 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(wrapper.find(".thero__acts").exists()).toBe(false);
   });
 
-  it("fetches once for an anonymous visitor and retries once the owner's session resolves", async () => {
-    // Start anonymous with Clerk still loading.
+  // Regression coverage for #255: the fetch used to fire immediately on mount,
+  // before Clerk had a chance to resolve. For a signed-in owner on a hard
+  // refresh that meant an anonymous request 404'd the private trip first,
+  // flashing "Trip not found" for a frame before the authenticated retry
+  // (driven by canRetryAuthenticated) landed. The fetch is now gated on
+  // isClerkLoaded, so it doesn't fire at all until Clerk resolves — and since
+  // Clerk resolves isLoaded and isSignedIn together, the very first request an
+  // owner's page makes is already authenticated, with no anonymous pass (and
+  // no "not found" flash) in between.
+  it("does not fetch until Clerk resolves, then fetches exactly once already authenticated for a signed-in owner (no anonymous-then-retry flash)", async () => {
     clerkLoadedRef.value = false;
     clerkSignedInRef.value = false;
     const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    const fetchSpy = tripsStore.fetchTripById as unknown as ReturnType<
+      typeof vi.fn
+    >;
+    fetchSpy.mockImplementation(async () => {
+      tripsStore.currentTripDetail = { ...SAMPLE_DETAIL };
+    });
+
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // Clerk resolves isLoaded and isSignedIn together (see the production
+    // comment above fetchTripDetail), so both flip in the same tick here.
+    clerkSignedInRef.value = true;
+    clerkLoadedRef.value = true;
+    await nextTick();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.find(".empty-state").exists()).toBe(false);
+    expect(wrapper.find(".thero h1").text()).toContain(
+      "Iceland, the ring road",
+    );
+  });
+
+  it("fetches exactly once for an anonymous visitor once Clerk resolves to signed-out", async () => {
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
     const fetchSpy = tripsStore.fetchTripById as unknown as ReturnType<
       typeof vi.fn
     >;
 
     mount(TripDetailPage, buildGlobalConfig(pinia));
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
 
-    // Clerk finishing its load for an anonymous visitor must NOT retry: they
-    // never gain a token, so a second identical request is wasted.
     clerkLoadedRef.value = true;
     await nextTick();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-    // A resolved, signed-in session triggers exactly one authenticated retry so
-    // the owner's own private trip loads after the anonymous first pass 404'd.
+    // Nothing about the viewer's ability to carry a token changes afterward,
+    // so canRetryAuthenticated never flips and no second request fires.
+    await nextTick();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // tripId, canRetryAuthenticated, and isClerkLoaded: the last of the three
+    // is what lets an anonymous visitor's single fetch above fire once Clerk
+    // resolves to signed-out, since canRetryAuthenticated alone never changes
+    // for them (isSignedIn stays false throughout).
+    expect(lastAsyncDataOptions?.watch).toHaveLength(3);
+  });
+
+  it("retries once a viewer signs in after Clerk already resolved signed-out", async () => {
+    // Distinct from the hard-refresh race above: here Clerk has already
+    // finished loading (e.g. the visitor signs in from this same page), so
+    // canRetryAuthenticated is what drives the retry, exactly as before.
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = false;
+    const tripsStore = useTripsStore();
+    tripsStore.currentTripDetail = null;
+    const fetchSpy = tripsStore.fetchTripById as unknown as ReturnType<
+      typeof vi.fn
+    >;
+
+    mount(TripDetailPage, buildGlobalConfig(pinia));
+    await nextTick();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    fetchSpy.mockImplementationOnce(async () => {
+      tripsStore.currentTripDetail = { ...SAMPLE_DETAIL };
+    });
     clerkSignedInRef.value = true;
     await nextTick();
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
 
-    expect(lastAsyncDataOptions?.watch).toHaveLength(2);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it("offers a sign-in link in the not-found state for a signed-out visitor", () => {

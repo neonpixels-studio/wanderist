@@ -97,16 +97,51 @@ const loadError = computed(() => guidesStore.guideError);
 
 // isLoaded gates nothing rendered on this page (unlike trips/[id].vue, which
 // has an owner-only UI split), but the fetch below still needs it: mirrors
-// trips/[id].vue's canRetryAuthenticated so a signed-in owner opening their own
-// private guide isn't stuck on the anonymous-first-fetch 404. A refetch only
-// changes the answer once the viewer is signed in and can carry a token; an
-// anonymous visitor never gains one, so watching this (not isClerkLoaded)
-// gives them a single fetch while still re-issuing the owner's request once
-// their session resolves.
+// trips/[id].vue's canRetryAuthenticated. A refetch only changes the answer
+// once the viewer is signed in and can carry a token, so watching this (rather
+// than re-watching isClerkLoaded, which only ever flips once) is what
+// re-issues a signed-in owner's request if their session resolves after the
+// first pass, or clears a private guide on sign-out; an anonymous visitor
+// never gains a token, so this never fires a second time for them.
 const { isLoaded: isClerkLoaded, isSignedIn } = useClerkAuth();
 const canRetryAuthenticated = computed(
   () => isClerkLoaded.value && !!isSignedIn.value,
 );
+
+// Withholds the fetch entirely until Clerk's local bootstrap finishes, rather
+// than firing an anonymous request while it's still resolving — that race is
+// exactly what caused #255: a signed-in owner's private guide 404s on the
+// anonymous pass, and the page renders "Guide not found" for the frame
+// before the authenticated retry (driven by canRetryAuthenticated above)
+// lands. isClerkLoaded is in the watch array below alongside
+// canRetryAuthenticated, so the moment it flips true this re-runs — and
+// because Clerk resolves isLoaded and isSignedIn together, canRetryAuthenticated
+// already reflects the real signed-in state by then. Vue batches a
+// multi-source watch into a single callback per flush, so a signed-in owner
+// whose isLoaded and isSignedIn resolve in the same tick gets exactly one
+// call here, already authenticated — no separate anonymous-then-retry pass to
+// race against.
+//
+// Returns a promise that never settles while waiting, not one that resolves
+// immediately: useAsyncData reads this call's own settlement to decide
+// fetchStatus, so resolving early would flip status to "success" (with guide
+// still null) before Clerk — and the real fetch — have had a chance to run,
+// which is the same "not found" flash this fix removes, just relocated. The
+// abandoned pending promise is harmless once superseded: the watch above
+// re-invokes this function once isClerkLoaded flips, and useAsyncData tracks
+// that newer call's settlement instead.
+//
+// No timeout fallback: same as middleware/auth.ts's own `!isLoaded.value`
+// guard and useEntryDraft's onDraftReady, isLoaded is trusted to always
+// eventually resolve rather than hanging forever — this codebase has no
+// precedent for treating a stuck Clerk bootstrap as recoverable, and
+// inventing one here would diverge from both.
+function fetchGuideDetail(): Promise<void> {
+  if (!isClerkLoaded.value) {
+    return new Promise<void>(() => {});
+  }
+  return guidesStore.fetchGuideById(guideId.value);
+}
 
 // `server: false` keeps the fetch client-only, mirroring u/[id].vue: the request
 // carries the Clerk session token, which only exists on the client (Clerk runs
@@ -120,8 +155,8 @@ const canRetryAuthenticated = computed(
 // on the codebase's client-only-auth pattern.
 const { status: fetchStatus, refresh: refreshGuide } = useAsyncData(
   () => `guide-detail-${guideId.value}`,
-  () => guidesStore.fetchGuideById(guideId.value),
-  { server: false, watch: [guideId, canRetryAuthenticated] },
+  fetchGuideDetail,
+  { server: false, watch: [guideId, canRetryAuthenticated, isClerkLoaded] },
 );
 
 async function onRetryLoad(): Promise<void> {
