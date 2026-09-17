@@ -1,10 +1,15 @@
 import tailwindcss from "@tailwindcss/vite";
+import { SECURITY_HEADERS } from "./security-headers.config";
 
 export default defineNuxtConfig({
   compatibilityDate: "2024-11-01",
   future: { compatibilityVersion: 4 },
   modules: ["@clerk/nuxt", "@sentry/nuxt/module", "@pinia/nuxt"],
   sourcemap: { client: "hidden" },
+  // See security-headers.config.ts for the full rationale (issue #253).
+  routeRules: {
+    "/**": { headers: SECURITY_HEADERS },
+  },
   sentry: {
     sourceMapsUploadOptions: {
       org: process.env.SENTRY_ORG,
