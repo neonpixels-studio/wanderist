@@ -1,5 +1,5 @@
 import tailwindcss from "@tailwindcss/vite";
-import { SECURITY_HEADERS } from "./security-headers.config";
+import { buildSecurityRouteRules } from "./security-headers.config";
 
 export default defineNuxtConfig({
   compatibilityDate: "2024-11-01",
@@ -7,9 +7,7 @@ export default defineNuxtConfig({
   modules: ["@clerk/nuxt", "@sentry/nuxt/module", "@pinia/nuxt"],
   sourcemap: { client: "hidden" },
   // See security-headers.config.ts for the full rationale (issue #253).
-  routeRules: {
-    "/**": { headers: SECURITY_HEADERS },
-  },
+  routeRules: buildSecurityRouteRules(process.env.NODE_ENV),
   sentry: {
     sourceMapsUploadOptions: {
       org: process.env.SENTRY_ORG,

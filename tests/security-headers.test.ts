@@ -1,8 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
+  buildSecurityRouteRules,
   CONTENT_SECURITY_POLICY_REPORT_ONLY,
   SECURITY_HEADERS,
 } from "../security-headers.config";
+
+function getDirective(policy: string, name: string): string | undefined {
+  return policy.split("; ").find((directive) => directive.startsWith(name));
+}
 
 describe("SECURITY_HEADERS", () => {
   it("enforces HSTS, frame, content-type-sniffing, referrer, and permissions protections", () => {
@@ -40,10 +45,16 @@ describe("CONTENT_SECURITY_POLICY_REPORT_ONLY", () => {
     expect(CONTENT_SECURITY_POLICY_REPORT_ONLY).toContain("form-action 'self'");
   });
 
-  it("allows same-origin framing (Nuxt devtools) plus Cloudflare Turnstile", () => {
-    expect(CONTENT_SECURITY_POLICY_REPORT_ONLY).toContain(
+  it("allows same-origin framing plus Cloudflare Turnstile", () => {
+    expect(getDirective(CONTENT_SECURITY_POLICY_REPORT_ONLY, "frame-src")).toBe(
       "frame-src 'self' https://challenges.cloudflare.com",
     );
+  });
+
+  it("carries the 'unsafe-inline' script-src carve-out Nuxt's SSR hydration script needs", () => {
+    expect(
+      getDirective(CONTENT_SECURITY_POLICY_REPORT_ONLY, "script-src"),
+    ).toContain("'unsafe-inline'");
   });
 
   it("allowlists the Clerk origins the embedded SignIn component and avatars need", () => {
@@ -62,18 +73,27 @@ describe("CONTENT_SECURITY_POLICY_REPORT_ONLY", () => {
   });
 
   it("allowlists Mapbox tiles/API in both connect-src and img-src", () => {
-    const [connectSrcDirective] = CONTENT_SECURITY_POLICY_REPORT_ONLY.split(
-      "; ",
-    ).filter((directive) => directive.startsWith("connect-src"));
-    const [imgSrcDirective] = CONTENT_SECURITY_POLICY_REPORT_ONLY.split(
-      "; ",
-    ).filter((directive) => directive.startsWith("img-src"));
+    const connectSrc = getDirective(
+      CONTENT_SECURITY_POLICY_REPORT_ONLY,
+      "connect-src",
+    );
+    const imgSrc = getDirective(CONTENT_SECURITY_POLICY_REPORT_ONLY, "img-src");
 
-    expect(connectSrcDirective).toContain("https://api.mapbox.com");
-    expect(connectSrcDirective).toContain("https://events.mapbox.com");
-    expect(connectSrcDirective).toContain("https://*.tiles.mapbox.com");
-    expect(imgSrcDirective).toContain("https://api.mapbox.com");
-    expect(imgSrcDirective).toContain("https://*.tiles.mapbox.com");
+    expect(connectSrc).toContain("https://api.mapbox.com");
+    expect(connectSrc).toContain("https://events.mapbox.com");
+    expect(connectSrc).toContain("https://*.tiles.mapbox.com");
+    expect(imgSrc).toContain("https://api.mapbox.com");
+    expect(imgSrc).toContain("https://*.tiles.mapbox.com");
+  });
+
+  it("allowlists both Sentry ingest host shapes in connect-src", () => {
+    const connectSrc = getDirective(
+      CONTENT_SECURITY_POLICY_REPORT_ONLY,
+      "connect-src",
+    );
+
+    expect(connectSrc).toContain("https://*.ingest.sentry.io");
+    expect(connectSrc).toContain("https://*.ingest.us.sentry.io");
   });
 
   it("allowlists Google Fonts, which app/assets/css/main.css @imports", () => {
@@ -94,16 +114,19 @@ describe("CONTENT_SECURITY_POLICY_REPORT_ONLY", () => {
   });
 });
 
-describe("nuxt.config.ts wiring", () => {
-  it("applies SECURITY_HEADERS to every route via routeRules", async () => {
-    vi.stubGlobal("defineNuxtConfig", (config: unknown) => config);
+describe("buildSecurityRouteRules", () => {
+  it("applies SECURITY_HEADERS to every route in production", () => {
+    expect(buildSecurityRouteRules("production")).toEqual({
+      "/**": { headers: SECURITY_HEADERS },
+    });
+  });
 
-    const { default: nuxtConfig } = (await import("../nuxt.config")) as {
-      default: { routeRules?: Record<string, { headers?: unknown }> };
-    };
-
-    expect(nuxtConfig.routeRules?.["/**"]?.headers).toBe(SECURITY_HEADERS);
-
-    vi.unstubAllGlobals();
+  it("skips the enforcing headers outside production", () => {
+    // X-Frame-Options: DENY would block Nuxt devtools' same-origin iframe,
+    // and HSTS is host+port-agnostic, so it would force every other local
+    // HTTPS dev server on the machine onto HTTPS too.
+    expect(buildSecurityRouteRules("development")).toEqual({});
+    expect(buildSecurityRouteRules("test")).toEqual({});
+    expect(buildSecurityRouteRules(undefined)).toEqual({});
   });
 });
