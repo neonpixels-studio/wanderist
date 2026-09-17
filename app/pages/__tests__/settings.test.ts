@@ -20,13 +20,11 @@ const DEFAULT_STATS_DATA = {
 };
 
 const mockStats = ref({ ...DEFAULT_STATS_DATA });
-const mockStatsLoadError = ref<string | null>(null);
 const mockFetchStats = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("~/composables/useStats", () => ({
   useStats: vi.fn(() => ({
     stats: mockStats,
-    loadError: mockStatsLoadError,
     fetchStats: mockFetchStats,
   })),
 }));
@@ -272,7 +270,7 @@ describe("Settings page (/settings)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStats.value = { ...DEFAULT_STATS_DATA };
-    mockStatsLoadError.value = null;
+    mockFetchStats.mockResolvedValue(undefined);
 
     const pinia = createPinia();
     setActivePinia(pinia);
@@ -482,9 +480,20 @@ describe("Settings page (/settings)", () => {
   });
 
   it("shows a generic message (no fabricated zero count) while counts are still loading", async () => {
+    // A deferred fetchStats that we control explicitly, rather than relying
+    // on how many microtask hops onMounted happens to take — flushPromises()
+    // only drains what's already pending, so this stays pending until we
+    // resolve it below regardless of the fetch chain's shape.
+    let resolveFetchStats: () => void = () => {};
+    mockFetchStats.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFetchStats = resolve;
+        }),
+    );
+
     const wrapper = mount(SettingsPage, globalConfig);
-    // Deliberately not flushing promises — the delete button is clickable
-    // immediately, before the onMounted fetch chain resolves.
+    await flushPromises();
     await wrapper.find(".danger .btn").trigger("click");
 
     const modalText = wrapper.find(".modal").text();
@@ -493,6 +502,9 @@ describe("Settings page (/settings)", () => {
     expect(modalText).toContain(
       "This removes all your places, trips and photos.",
     );
+
+    resolveFetchStats();
+    await flushPromises();
   });
 
   it("shows the user's real place and trip counts in the delete confirmation, not hardcoded values", async () => {
@@ -524,12 +536,7 @@ describe("Settings page (/settings)", () => {
   });
 
   it("falls back to generic wording (no fabricated zero count) when stats fail to load", async () => {
-    const { useStats } = await import("~/composables/useStats");
-    vi.mocked(useStats).mockReturnValueOnce({
-      stats: ref({ ...DEFAULT_STATS_DATA, placesCount: 0 }),
-      loadError: ref("Failed to load stats"),
-      fetchStats: mockFetchStats,
-    } as unknown as ReturnType<typeof useStats>);
+    mockFetchStats.mockRejectedValueOnce(new Error("Failed to load stats"));
 
     const wrapper = mount(SettingsPage, globalConfig);
     await flushPromises();
@@ -545,10 +552,9 @@ describe("Settings page (/settings)", () => {
 
   it("falls back to generic wording (no fabricated zero count) when the trips list fails to load", async () => {
     const tripsStore = useTripsStore();
-    vi.spyOn(tripsStore, "fetchTrips").mockImplementation(async () => {
-      tripsStore.listError = "Failed to load trips";
-      throw new Error("Failed to load trips");
-    });
+    vi.spyOn(tripsStore, "fetchTrips").mockRejectedValue(
+      new Error("Failed to load trips"),
+    );
 
     const wrapper = mount(SettingsPage, globalConfig);
     await flushPromises();

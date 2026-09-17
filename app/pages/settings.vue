@@ -593,20 +593,17 @@ const {
   fetchSubscription,
 } = useBilling();
 
-const { stats, loadError: statsLoadError, fetchStats } = useStats();
+const { stats, fetchStats } = useStats();
 const tripsStore = useTripsStore();
 
-// Guards the delete-confirmation copy: until the counts have actually
-// finished loading (or if either failed to load), fall back to generic
-// wording rather than asserting a fabricated "0 places, 0 trips" — a wrong
-// reassurance on the one screen where the number is the whole point of the
-// warning. `stats`/`tripList` both start at their zero/empty defaults before
-// the fetches below resolve, so absence of an error isn't enough on its own.
-const deleteCountsLoaded = ref(false);
-const deleteCountsAvailable = computed(
-  () =>
-    deleteCountsLoaded.value && !statsLoadError.value && !tripsStore.listError,
-);
+// Guards the delete-confirmation copy: until both counts have actually
+// finished loading *successfully*, fall back to generic wording rather than
+// asserting a fabricated "0 places, 0 trips" — a wrong reassurance on the one
+// screen where the number is the whole point of the warning. Set directly
+// from the settle results in onMounted (not from `stats`/`tripList` being
+// non-zero, and not from a separate error ref) so it can't drift out of sync
+// with what actually resolved.
+const deleteCountsAvailable = ref(false);
 
 const deletePlacesLabel = computed(() => {
   const placesCount = stats.value.placesCount;
@@ -786,16 +783,14 @@ onMounted(async () => {
   // Independent of each other and of preferences — run concurrently so one
   // slow or failing fetch (e.g. tripsStore.fetchTrips, which rejects on
   // error) doesn't block or skip the rest.
-  await Promise.allSettled([
+  const [, , statsResult, tripsResult] = await Promise.allSettled([
     fetchConnections(),
     fetchSubscription(),
     fetchStats(),
     tripsStore.fetchTrips(),
   ]);
-  // Settled (not necessarily succeeded) — the error refs above cover failure,
-  // this just stops the delete-confirmation copy from showing zero counts
-  // while the fetches are still in flight.
-  deleteCountsLoaded.value = true;
+  deleteCountsAvailable.value =
+    statsResult.status === "fulfilled" && tripsResult.status === "fulfilled";
 });
 
 function handleConnectInstagram(): void {
