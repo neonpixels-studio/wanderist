@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ref } from "vue";
 import { mount, flushPromises } from "@vue/test-utils";
 import AppNotifications from "../AppNotifications.vue";
+import { resolveNotificationText } from "~/utils/notificationDisplay";
 import type { AppNotification } from "~/composables/useNotifications";
 
 // Mutable refs so per-test overrides work without re-stubbing the global
@@ -362,51 +363,73 @@ describe("AppNotifications", () => {
   });
 
   describe("keyboard focus after dismiss", () => {
+    // attachTo: document.body is required for jsdom/happy-dom to track
+    // document.activeElement across these focus assertions. The wrapper is
+    // unmounted in afterEach (not inline at the end of each `it`) so a
+    // failed assertion still detaches it — otherwise a stale mounted tree
+    // would linger in document.body and contaminate later tests' DOM queries
+    // and activeElement checks.
+    let wrapper: ReturnType<typeof mount> | undefined;
+    let outsideButton: HTMLButtonElement | undefined;
+
+    afterEach(() => {
+      wrapper?.unmount();
+      wrapper = undefined;
+      outsideButton?.remove();
+      outsideButton = undefined;
+    });
+
     it("moves focus to the next row's dismiss button when a focused middle row is dismissed", async () => {
-      const wrapper = mount(AppNotifications, {
+      wrapper = mount(AppNotifications, {
         props: { open: true },
         attachTo: document.body,
         ...globalConfig,
       });
+      // SAMPLE_NOTIFICATIONS has 3 rows; index 1 is a genuine middle row
+      // with both a previous and a next neighbor.
       const dismissButtons = wrapper.findAll(".notif__dismiss");
-      dismissButtons[0]?.element.focus();
-      expect(document.activeElement).toBe(dismissButtons[0]?.element);
+      const middleButton = dismissButtons[1];
+      const survivingNotification = SAMPLE_NOTIFICATIONS[2] as AppNotification;
+      middleButton?.element.focus();
+      expect(document.activeElement).toBe(middleButton?.element);
 
-      await dismissButtons[0]?.trigger("click");
+      await middleButton?.trigger("click");
       await flushPromises();
 
       expect(document.activeElement).not.toBe(document.body);
-      expect(document.activeElement).toBe(
-        wrapper.findAll(".notif__dismiss")[0]?.element,
-      );
-      wrapper.unmount();
+      expect(
+        (document.activeElement as HTMLElement | null)?.getAttribute(
+          "aria-label",
+        ),
+      ).toContain(resolveNotificationText(survivingNotification));
     });
 
     it("moves focus to the previous row's dismiss button when the focused last row is dismissed", async () => {
-      const wrapper = mount(AppNotifications, {
+      wrapper = mount(AppNotifications, {
         props: { open: true },
         attachTo: document.body,
         ...globalConfig,
       });
       const dismissButtons = wrapper.findAll(".notif__dismiss");
       const lastButton = dismissButtons[dismissButtons.length - 1];
+      const survivingNotification = SAMPLE_NOTIFICATIONS[1] as AppNotification;
       lastButton?.element.focus();
 
       await lastButton?.trigger("click");
       await flushPromises();
 
-      const remainingButtons = wrapper.findAll(".notif__dismiss");
       expect(document.activeElement).not.toBe(document.body);
-      expect(document.activeElement).toBe(
-        remainingButtons[remainingButtons.length - 1]?.element,
-      );
-      wrapper.unmount();
+      expect(
+        (document.activeElement as HTMLElement | null)?.getAttribute(
+          "aria-label",
+        ),
+      ).toContain(resolveNotificationText(survivingNotification));
     });
 
     it("falls back to the list container when dismissing the only (focused) row", async () => {
       notificationsRef.value = [SAMPLE_NOTIFICATIONS[0] as AppNotification];
 
-      const wrapper = mount(AppNotifications, {
+      wrapper = mount(AppNotifications, {
         props: { open: true },
         attachTo: document.body,
         ...globalConfig,
@@ -419,15 +442,14 @@ describe("AppNotifications", () => {
 
       expect(document.activeElement).not.toBe(document.body);
       expect(document.activeElement).toBe(wrapper.find(".notif__list").element);
-      wrapper.unmount();
     });
 
     it("does not steal focus when the dismissed row's button was not focused", async () => {
-      const outsideButton = document.createElement("button");
+      outsideButton = document.createElement("button");
       document.body.appendChild(outsideButton);
       outsideButton.focus();
 
-      const wrapper = mount(AppNotifications, {
+      wrapper = mount(AppNotifications, {
         props: { open: true },
         attachTo: document.body,
         ...globalConfig,
@@ -438,8 +460,6 @@ describe("AppNotifications", () => {
       await flushPromises();
 
       expect(document.activeElement).toBe(outsideButton);
-      wrapper.unmount();
-      outsideButton.remove();
     });
   });
 });

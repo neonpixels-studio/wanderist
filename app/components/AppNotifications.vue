@@ -144,17 +144,20 @@ async function handleDismiss(notification: AppNotification): Promise<void> {
 // Moves focus to the dismiss button that slid into the removed row's slot
 // (the "next" row), or the new last row if the removed row was last, so a
 // keyboard user's focus never falls back to <body>. Falls back to the list
-// container itself when the dismiss emptied the preview entirely.
+// container itself when the dismiss emptied the preview entirely, or when
+// the target button couldn't take focus (e.g. it's disabled because that
+// row's own dismiss is concurrently in flight).
 function restoreFocusAfterDismiss(removedIndex: number): void {
   const targetIndex = resolveAdjacentFocusIndex(
     previewNotifications.value.length,
     removedIndex,
   );
-  if (targetIndex === null) {
-    listRef.value?.focus();
-    return;
+  if (targetIndex !== null) {
+    const targetNotification = previewNotifications.value[targetIndex];
+    itemRefs.get(targetNotification.id)?.focusDismissButton();
   }
-  const targetNotification = previewNotifications.value[targetIndex];
-  itemRefs.get(targetNotification.id)?.focusDismissButton();
+  if (document.activeElement === document.body) {
+    listRef.value?.focus();
+  }
 }
 </script>
