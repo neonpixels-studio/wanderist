@@ -20,11 +20,13 @@ const DEFAULT_STATS_DATA = {
 };
 
 const mockStats = ref({ ...DEFAULT_STATS_DATA });
+const mockStatsLoadError = ref<string | null>(null);
 const mockFetchStats = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("~/composables/useStats", () => ({
   useStats: vi.fn(() => ({
     stats: mockStats,
+    loadError: mockStatsLoadError,
     fetchStats: mockFetchStats,
   })),
 }));
@@ -270,6 +272,7 @@ describe("Settings page (/settings)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockStats.value = { ...DEFAULT_STATS_DATA };
+    mockStatsLoadError.value = null;
     mockFetchStats.mockResolvedValue(undefined);
 
     const pinia = createPinia();
@@ -536,7 +539,14 @@ describe("Settings page (/settings)", () => {
   });
 
   it("falls back to generic wording (no fabricated zero count) when stats fail to load", async () => {
-    mockFetchStats.mockRejectedValueOnce(new Error("Failed to load stats"));
+    // Mirrors the real useStats().fetchStats contract: it never rejects — on
+    // failure it resolves after resetting stats to zero and setting
+    // loadError, which is exactly the "0 places" trap this guard exists to
+    // avoid falling into.
+    mockFetchStats.mockImplementationOnce(async () => {
+      mockStats.value = { ...DEFAULT_STATS_DATA, placesCount: 0 };
+      mockStatsLoadError.value = "Failed to load stats";
+    });
 
     const wrapper = mount(SettingsPage, globalConfig);
     await flushPromises();
