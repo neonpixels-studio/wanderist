@@ -21,4 +21,10 @@ describe("resolveAdjacentFocusIndex", () => {
   it("returns null when the removal emptied the list", () => {
     expect(resolveAdjacentFocusIndex(0, 0)).toBeNull();
   });
+
+  it("clamps to the new last index rather than an out-of-range one, even for the boundary case of a two-item list losing its last item", () => {
+    // A 2-item list with its last item (index 1) removed leaves 1 item;
+    // index 1 no longer exists, so this must clamp to index 0.
+    expect(resolveAdjacentFocusIndex(1, 1)).toBe(0);
+  });
 });

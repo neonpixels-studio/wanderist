@@ -382,8 +382,8 @@ describe("AppNotifications", () => {
     it("moves focus to the next row's dismiss button when a focused middle row is dismissed", async () => {
       wrapper = mount(AppNotifications, {
         props: { open: true },
-        attachTo: document.body,
         ...globalConfig,
+        attachTo: document.body,
       });
       // SAMPLE_NOTIFICATIONS has 3 rows; index 1 is a genuine middle row
       // with both a previous and a next neighbor.
@@ -407,8 +407,8 @@ describe("AppNotifications", () => {
     it("moves focus to the previous row's dismiss button when the focused last row is dismissed", async () => {
       wrapper = mount(AppNotifications, {
         props: { open: true },
-        attachTo: document.body,
         ...globalConfig,
+        attachTo: document.body,
       });
       const dismissButtons = wrapper.findAll(".notif__dismiss");
       const lastButton = dismissButtons[dismissButtons.length - 1];
@@ -431,8 +431,8 @@ describe("AppNotifications", () => {
 
       wrapper = mount(AppNotifications, {
         props: { open: true },
-        attachTo: document.body,
         ...globalConfig,
+        attachTo: document.body,
       });
       const dismissButton = wrapper.find(".notif__dismiss");
       dismissButton.element.focus();
@@ -451,8 +451,8 @@ describe("AppNotifications", () => {
 
       wrapper = mount(AppNotifications, {
         props: { open: true },
-        attachTo: document.body,
         ...globalConfig,
+        attachTo: document.body,
       });
       const dismissButton = wrapper.find(".notif__dismiss");
 
@@ -460,6 +460,44 @@ describe("AppNotifications", () => {
       await flushPromises();
 
       expect(document.activeElement).toBe(outsideButton);
+    });
+
+    it("focuses a row that slides in from beyond the drawer's preview limit when the last visible row is dismissed", async () => {
+      // DRAWER_PREVIEW_LIMIT is 12; a 13th notification sits just outside the
+      // preview until the visible last row is removed and it slides in.
+      const overflowNotifications: AppNotification[] = Array.from(
+        { length: 13 },
+        (_, index) => ({
+          id: `overflow-${index}`,
+          type: "like",
+          tone: "accent",
+          body: `Notification ${index}`,
+          isRead: true,
+          createdAt: new Date().toISOString(),
+          actor: null,
+        }),
+      );
+      notificationsRef.value = overflowNotifications;
+
+      wrapper = mount(AppNotifications, {
+        props: { open: true },
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButtons = wrapper.findAll(".notif__dismiss");
+      expect(dismissButtons).toHaveLength(12);
+      const lastVisibleButton = dismissButtons[11];
+      lastVisibleButton?.element.focus();
+
+      await lastVisibleButton?.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(
+        (document.activeElement as HTMLElement | null)?.getAttribute(
+          "aria-label",
+        ),
+      ).toContain("Notification 12");
     });
   });
 });

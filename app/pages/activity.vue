@@ -43,14 +43,7 @@
 
 <script setup lang="ts">
 import ActivityNotificationItem from "~/components/ActivityNotificationItem.vue";
-import { resolveAdjacentFocusIndex } from "~/utils/notificationFocus";
-
-// The subset of an ActivityNotificationItem's exposed instance this page
-// relies on to restore keyboard focus after a dismiss.
-interface DismissFocusHandle {
-  isDismissButtonFocused: () => boolean;
-  focusDismissButton: () => void;
-}
+import { useDismissFocusRestore } from "~/composables/useDismissFocusRestore";
 
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Activity" });
@@ -70,17 +63,8 @@ const {
 // on the page's outer content wrapper (rather than .activity__list) because
 // that element is replaced by the empty state once the last row is removed.
 const focusFallbackRef = ref<HTMLElement | null>(null);
-// Not reactive on purpose — this only tracks live component instances for
-// imperative focus calls, never rendered.
-const itemRefs = new Map<string, DismissFocusHandle>();
-
-function setItemRef(id: string, instance: unknown): void {
-  if (!instance) {
-    itemRefs.delete(id);
-    return;
-  }
-  itemRefs.set(id, instance as DismissFocusHandle);
-}
+const { setItemRef, isRowFocused, findRemovedIndex, restoreFocusAfterDismiss } =
+  useDismissFocusRestore(() => notifications.value, focusFallbackRef);
 
 onMounted(() => {
   fetchAllNotifications().catch((fetchError: unknown) => {
@@ -88,12 +72,14 @@ onMounted(() => {
   });
 });
 
+// After a dismiss removes the focused row, moves keyboard focus to the
+// adjacent dismiss button (or the page container as a last resort) instead
+// of letting it fall back to <body>. See useDismissFocusRestore for the
+// shared restore logic (also used by AppNotifications.vue, the header
+// drawer).
 async function handleDismiss(id: string): Promise<void> {
-  const dismissedItem = itemRefs.get(id);
-  const wasFocused = dismissedItem?.isDismissButtonFocused() ?? false;
-  const removedIndex = notifications.value.findIndex(
-    (candidate) => candidate.id === id,
-  );
+  const wasFocused = isRowFocused(id);
+  const removedIndex = findRemovedIndex(id);
 
   await dismissNotification(id);
 
@@ -102,26 +88,6 @@ async function handleDismiss(id: string): Promise<void> {
   }
   await nextTick();
   restoreFocusAfterDismiss(removedIndex);
-}
-
-// Moves focus to the dismiss button that slid into the removed row's slot
-// (the "next" row), or the new last row if the removed row was last, so a
-// keyboard user's focus never falls back to <body>. Falls back to the page
-// container when the dismiss emptied the list entirely, or when the target
-// button couldn't take focus (e.g. it's disabled because that row's own
-// dismiss is concurrently in flight).
-function restoreFocusAfterDismiss(removedIndex: number): void {
-  const targetIndex = resolveAdjacentFocusIndex(
-    notifications.value.length,
-    removedIndex,
-  );
-  if (targetIndex !== null) {
-    const targetNotification = notifications.value[targetIndex];
-    itemRefs.get(targetNotification.id)?.focusDismissButton();
-  }
-  if (document.activeElement === document.body) {
-    focusFallbackRef.value?.focus();
-  }
 }
 </script>
 
