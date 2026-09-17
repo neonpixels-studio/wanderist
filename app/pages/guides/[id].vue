@@ -98,12 +98,9 @@ const loadError = computed(() => guidesStore.guideError);
 
 // isLoaded gates nothing rendered on this page (unlike trips/[id].vue, which
 // has an owner-only UI split), but the fetch below still needs it: mirrors
-// trips/[id].vue's canRetryAuthenticated. A refetch only changes the answer
-// once the viewer is signed in and can carry a token, so watching this (rather
-// than re-watching isClerkLoaded, which only ever flips once) is what
-// re-issues a signed-in owner's request if their session resolves after the
-// first pass, or clears a private guide on sign-out; an anonymous visitor
-// never gains a token, so this never fires a second time for them.
+// trips/[id].vue's canRetryAuthenticated, which useClerkGatedFetch below
+// turns into retryGeneration — an anonymous visitor never gains a token, so
+// this never advances a second time for them.
 const { isLoaded: isClerkLoaded, isSignedIn } = useClerkAuth();
 const canRetryAuthenticated = computed(
   () => isClerkLoaded.value && !!isSignedIn.value,
@@ -111,9 +108,11 @@ const canRetryAuthenticated = computed(
 
 // Gated on Clerk's bootstrap (#255) so an owner's first request already
 // carries a token instead of 404ing anonymously first — see
-// useClerkGatedFetch. isClerkLoaded is in the watch array below so gate()
-// gets re-invoked once it resolves.
-const { gate: gateOnClerkLoad } = useClerkGatedFetch(isClerkLoaded);
+// useClerkGatedFetch.
+const { gate: gateOnClerkLoad, retryGeneration } = useClerkGatedFetch(
+  isClerkLoaded,
+  canRetryAuthenticated,
+);
 
 function fetchGuideDetail(): Promise<void> {
   return gateOnClerkLoad(() => guidesStore.fetchGuideById(guideId.value));
@@ -132,7 +131,7 @@ function fetchGuideDetail(): Promise<void> {
 const { status: fetchStatus, refresh: refreshGuide } = useAsyncData(
   () => `guide-detail-${guideId.value}`,
   fetchGuideDetail,
-  { server: false, watch: [guideId, canRetryAuthenticated, isClerkLoaded] },
+  { server: false, watch: [guideId, retryGeneration] },
 );
 
 async function onRetryLoad(): Promise<void> {

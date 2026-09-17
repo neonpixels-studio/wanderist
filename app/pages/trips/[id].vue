@@ -452,19 +452,21 @@ const isOwner = computed(
 );
 
 // A refetch only changes the answer once the viewer is a signed-in user who can
-// carry a token; an anonymous visitor never gains one, so once the fetch below
-// has fired, watching this (rather than re-watching isClerkLoaded, which only
-// ever flips once) is what re-issues the owner's request if their session
-// resolves after the first pass, or clears a private trip on sign-out.
+// carry a token; an anonymous visitor never gains one, so this (turned into
+// retryGeneration by useClerkGatedFetch below) never advances a second time
+// for them, but does re-issue the owner's request if their session resolves
+// after the first pass, or clear a private trip on sign-out.
 const canRetryAuthenticated = computed(
   () => isClerkLoaded.value && !!isSignedIn.value,
 );
 
 // Gated on Clerk's bootstrap (#255) so an owner's first request already
 // carries a token instead of 404ing anonymously first — see
-// useClerkGatedFetch. isClerkLoaded is in the watch array below so gate()
-// gets re-invoked once it resolves.
-const { gate: gateOnClerkLoad } = useClerkGatedFetch(isClerkLoaded);
+// useClerkGatedFetch.
+const { gate: gateOnClerkLoad, retryGeneration } = useClerkGatedFetch(
+  isClerkLoaded,
+  canRetryAuthenticated,
+);
 
 function fetchTripDetail(): Promise<void> {
   return gateOnClerkLoad(() => tripsStore.fetchTripById(tripId.value));
@@ -475,15 +477,15 @@ function fetchTripDetail(): Promise<void> {
 // the client (Clerk runs with skipServerMiddleware). Running it during SSR would
 // hang, since Clerk's getToken never resolves on the server.
 //
-// Watch canRetryAuthenticated and isClerkLoaded as well as the id: a signed-in
-// owner's session resolving after the fetch above already fired (e.g. signing
-// in without a full page reload) re-issues the request with a token so the
-// owner gets their private trip; signing out re-issues it anonymously so a
-// private trip clears from the screen.
+// Watch retryGeneration as well as the id: a signed-in owner's session
+// resolving after the fetch above already fired (e.g. signing in without a
+// full page reload) re-issues the request with a token so the owner gets
+// their private trip; signing out re-issues it anonymously so a private trip
+// clears from the screen.
 const { status: fetchStatus, refresh: refreshTripDetail } = useAsyncData(
   () => `trip-detail-${tripId.value}`,
   fetchTripDetail,
-  { server: false, watch: [tripId, canRetryAuthenticated, isClerkLoaded] },
+  { server: false, watch: [tripId, retryGeneration] },
 );
 
 // A 404 means the trip is missing or private — rendered as "Trip not found"

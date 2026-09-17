@@ -8,41 +8,68 @@
  * by an ad blocker, a flaky CDN) — exactly the immediate anonymous fetch
  * this fix defers, just capped rather than instant.
  *
- * Usage — pass `isClerkLoaded` from the caller's own `useClerkAuth()`, and
- * include it in `useAsyncData`'s `watch` array so a later resolution
- * re-invokes `gate()`:
+ * Usage — pass `isClerkLoaded` and the caller's own `canRetryAuthenticated`
+ * (both from its `useClerkAuth()`), and watch `retryGeneration` instead of
+ * `canRetryAuthenticated` directly:
  *
- *   const { gate } = useClerkGatedFetch(isClerkLoaded);
+ *   const { gate, retryGeneration } = useClerkGatedFetch(isClerkLoaded, canRetryAuthenticated);
  *   useAsyncData(key, () => gate(() => store.fetchById(id.value)),
- *     { server: false, watch: [id, canRetryAuthenticated, isClerkLoaded] });
+ *     { server: false, watch: [id, retryGeneration] });
  *
- * `gate()` does not itself call `fetchFn` once isClerkLoaded resolves — the
- * caller's watch does that by re-invoking `gate()`, which then takes the
- * fast path below. Settling here too would fire the request twice for one
- * resolution; the pending promise from the withheld call is simply
- * abandoned once superseded (safe: `useAsyncData`'s default `dedupe: "cancel"`
- * ignores a stale execution's result once a newer one has started).
+ * `gate()` always calls `fetchFn` itself and settles the promise it returns
+ * with the real result — the caller never needs to re-invoke it, so
+ * `useAsyncData` never sees a promise that goes permanently unresolved.
+ * `retryGeneration` only increments for a `canRetryAuthenticated` change
+ * *after* the gate has already concluded once: the gate doesn't start
+ * watching for retries until it settles, so the very same auth resolution
+ * that produced the gate's own (already-correct) request never also
+ * increments `retryGeneration` and triggers a redundant duplicate.
  */
 export const CLERK_BOOTSTRAP_TIMEOUT_MS = 2000;
 
-export function useClerkGatedFetch(isClerkLoaded: Ref<boolean>) {
+export function useClerkGatedFetch(
+  isClerkLoaded: Ref<boolean>,
+  canRetryAuthenticated: Ref<boolean> | ComputedRef<boolean>,
+) {
   // Every withheld gate() call registers its timer/watch pair here so a
-  // component teardown can clear all of them — otherwise an orphaned timer
-  // outlives the page that started it and, once it fires, calls fetchFn for
-  // an id/resource the app has already navigated away from, overwriting
-  // shared store state a since-mounted, unrelated page then reads.
+  // component teardown — or a newer gate() call superseding an older one
+  // (e.g. the route id changing while Clerk is still resolving) — can clear
+  // it. Left unhandled, an orphaned timer outlives the page/id that started
+  // it and, once it fires, calls fetchFn for a resource the app has already
+  // navigated away from, overwriting shared store state a since-mounted,
+  // unrelated page then reads.
   const pendingCleanups = new Set<() => void>();
+
+  const retryGeneration = ref(0);
+  let stopWatchingForRetries: (() => void) | null = null;
+
   if (getCurrentScope()) {
     onScopeDispose(() => {
       pendingCleanups.forEach((cleanup) => cleanup());
       pendingCleanups.clear();
+      stopWatchingForRetries?.();
+    });
+  }
+
+  // Starts (once) only after the gate this call belongs to has concluded, so
+  // the auth state that just produced this gate's own request can't also be
+  // the "change" that triggers a retry of it.
+  function startWatchingForRetries(): void {
+    if (stopWatchingForRetries) {
+      return;
+    }
+    stopWatchingForRetries = watch(canRetryAuthenticated, () => {
+      retryGeneration.value += 1;
     });
   }
 
   function gate<FetchResult>(
     fetchFn: () => Promise<FetchResult>,
   ): Promise<FetchResult> {
+    pendingCleanups.forEach((cleanup) => cleanup());
+
     if (isClerkLoaded.value) {
+      startWatchingForRetries();
       return fetchFn();
     }
 
@@ -53,21 +80,24 @@ export function useClerkGatedFetch(isClerkLoaded: Ref<boolean>) {
         pendingCleanups.delete(cleanup);
       };
 
-      const timeoutId = setTimeout(() => {
+      const settle = (): void => {
         cleanup();
+        startWatchingForRetries();
         fetchFn().then(resolve, reject);
-      }, CLERK_BOOTSTRAP_TIMEOUT_MS);
+      };
+
+      const timeoutId = setTimeout(settle, CLERK_BOOTSTRAP_TIMEOUT_MS);
 
       const stopWatchingClerkLoaded = watch(isClerkLoaded, (loaded) => {
         if (!loaded) {
           return;
         }
-        cleanup();
+        settle();
       });
 
       pendingCleanups.add(cleanup);
     });
   }
 
-  return { gate };
+  return { gate, retryGeneration };
 }

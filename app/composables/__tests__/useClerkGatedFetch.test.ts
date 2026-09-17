@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ref, nextTick, effectScope } from "vue";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { ref, nextTick, effectScope, computed } from "vue";
 import {
   useClerkGatedFetch,
   CLERK_BOOTSTRAP_TIMEOUT_MS,
@@ -12,7 +12,8 @@ describe("useClerkGatedFetch", () => {
 
   it("calls fetchFn synchronously when Clerk has already resolved", () => {
     const isClerkLoaded = ref(true);
-    const { gate } = useClerkGatedFetch(isClerkLoaded);
+    const canRetryAuthenticated = ref(true);
+    const { gate } = useClerkGatedFetch(isClerkLoaded, canRetryAuthenticated);
     const fetchFn = vi.fn().mockResolvedValue("result");
 
     const resultPromise = gate(fetchFn);
@@ -27,7 +28,8 @@ describe("useClerkGatedFetch", () => {
 
   it("does not call fetchFn while Clerk has not resolved yet", () => {
     const isClerkLoaded = ref(false);
-    const { gate } = useClerkGatedFetch(isClerkLoaded);
+    const canRetryAuthenticated = ref(false);
+    const { gate } = useClerkGatedFetch(isClerkLoaded, canRetryAuthenticated);
     const fetchFn = vi.fn().mockResolvedValue("result");
 
     gate(fetchFn);
@@ -35,41 +37,25 @@ describe("useClerkGatedFetch", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
-  it("does not call fetchFn itself once isClerkLoaded resolves (that is the caller's job)", async () => {
-    // Regression guard for the no-double-fetch contract documented on gate():
-    // if this resolved isClerkLoaded's flip by calling fetchFn directly, a
-    // caller that ALSO reacts to isClerkLoaded (as guides/[id].vue and
-    // trips/[id].vue both do, via their useAsyncData watch array) would fire
-    // the same request twice for one resolution.
+  it("calls fetchFn and settles the same promise once isClerkLoaded resolves", async () => {
     const isClerkLoaded = ref(false);
-    const { gate } = useClerkGatedFetch(isClerkLoaded);
+    const canRetryAuthenticated = ref(false);
+    const { gate } = useClerkGatedFetch(isClerkLoaded, canRetryAuthenticated);
     const fetchFn = vi.fn().mockResolvedValue("result");
 
-    gate(fetchFn);
+    const resultPromise = gate(fetchFn);
     isClerkLoaded.value = true;
     await nextTick();
 
-    expect(fetchFn).not.toHaveBeenCalled();
-  });
-
-  it("lets a fresh call fire fetchFn immediately once isClerkLoaded has resolved", () => {
-    const isClerkLoaded = ref(false);
-    const { gate } = useClerkGatedFetch(isClerkLoaded);
-    const fetchFn = vi.fn().mockResolvedValue("result");
-
-    gate(fetchFn);
-    isClerkLoaded.value = true;
-    // This mirrors the caller re-invoking gate() from its own watch, the
-    // second half of the contract the previous test checks the first half of.
-    gate(fetchFn);
-
     expect(fetchFn).toHaveBeenCalledTimes(1);
+    await expect(resultPromise).resolves.toBe("result");
   });
 
   it("fires fetchFn anonymously after the bootstrap grace period if isClerkLoaded never resolves", async () => {
     vi.useFakeTimers();
     const isClerkLoaded = ref(false);
-    const { gate } = useClerkGatedFetch(isClerkLoaded);
+    const canRetryAuthenticated = ref(false);
+    const { gate } = useClerkGatedFetch(isClerkLoaded, canRetryAuthenticated);
     const fetchFn = vi.fn().mockResolvedValue("result");
 
     const resultPromise = gate(fetchFn);
@@ -84,7 +70,8 @@ describe("useClerkGatedFetch", () => {
   it("does not fire the grace-period fallback once isClerkLoaded resolves first", async () => {
     vi.useFakeTimers();
     const isClerkLoaded = ref(false);
-    const { gate } = useClerkGatedFetch(isClerkLoaded);
+    const canRetryAuthenticated = ref(false);
+    const { gate } = useClerkGatedFetch(isClerkLoaded, canRetryAuthenticated);
     const fetchFn = vi.fn().mockResolvedValue("result");
 
     gate(fetchFn);
@@ -92,10 +79,76 @@ describe("useClerkGatedFetch", () => {
     await nextTick();
     await vi.advanceTimersByTimeAsync(CLERK_BOOTSTRAP_TIMEOUT_MS);
 
-    // Per the no-double-fetch contract, resolving isClerkLoaded does not call
-    // fetchFn itself — but it must also cancel the pending timeout, so the
-    // grace period elapsing afterward does not fire a second, redundant call.
-    expect(fetchFn).not.toHaveBeenCalled();
+    // The gate's own resolution already fired fetchFn once (see the previous
+    // test); the grace period lapsing afterward must not fire it again.
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("supersedes a still-pending gate rather than letting both eventually fire", async () => {
+    // Regression guard: navigating between two ids while Clerk is still
+    // resolving (e.g. guide A -> guide B) must not leave guide A's gate
+    // pending — its eventual timeout would otherwise call fetchFnA for a
+    // resource the app has already navigated away from.
+    vi.useFakeTimers();
+    const isClerkLoaded = ref(false);
+    const canRetryAuthenticated = ref(false);
+    const { gate } = useClerkGatedFetch(isClerkLoaded, canRetryAuthenticated);
+    const fetchFnA = vi.fn().mockResolvedValue("a");
+    const fetchFnB = vi.fn().mockResolvedValue("b");
+
+    gate(fetchFnA);
+    gate(fetchFnB);
+
+    await vi.advanceTimersByTimeAsync(CLERK_BOOTSTRAP_TIMEOUT_MS);
+
+    expect(fetchFnA).not.toHaveBeenCalled();
+    expect(fetchFnB).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not count the auth resolution that produced the gate's own fetch as a retry", async () => {
+    // The gate only starts watching for retries once it settles, specifically
+    // so the same canRetryAuthenticated change that just resolved the gate
+    // (a signed-in owner's isLoaded/isSignedIn flipping together) doesn't
+    // also increment retryGeneration and trigger a redundant duplicate fetch.
+    const isClerkLoaded = ref(false);
+    const isSignedIn = ref(false);
+    const canRetryAuthenticated = computed(
+      () => isClerkLoaded.value && isSignedIn.value,
+    );
+    const { gate, retryGeneration } = useClerkGatedFetch(
+      isClerkLoaded,
+      canRetryAuthenticated,
+    );
+    const fetchFn = vi.fn().mockResolvedValue("result");
+
+    gate(fetchFn);
+    isSignedIn.value = true;
+    isClerkLoaded.value = true;
+    await nextTick();
+
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(retryGeneration.value).toBe(0);
+  });
+
+  it("increments retryGeneration for a canRetryAuthenticated change after the gate has already settled", async () => {
+    const isClerkLoaded = ref(true);
+    const isSignedIn = ref(false);
+    const canRetryAuthenticated = computed(
+      () => isClerkLoaded.value && isSignedIn.value,
+    );
+    const { gate, retryGeneration } = useClerkGatedFetch(
+      isClerkLoaded,
+      canRetryAuthenticated,
+    );
+    const fetchFn = vi.fn().mockResolvedValue("result");
+
+    gate(fetchFn);
+    expect(retryGeneration.value).toBe(0);
+
+    isSignedIn.value = true;
+    await nextTick();
+
+    expect(retryGeneration.value).toBe(1);
   });
 
   it("clears a pending timer/watch on scope disposal so a torn-down page's fetch never fires later", async () => {
@@ -105,11 +158,12 @@ describe("useClerkGatedFetch", () => {
     // whatever shared store state a since-mounted, unrelated page now reads.
     vi.useFakeTimers();
     const isClerkLoaded = ref(false);
+    const canRetryAuthenticated = ref(false);
     const fetchFn = vi.fn().mockResolvedValue("result");
     const scope = effectScope();
 
     scope.run(() => {
-      const { gate } = useClerkGatedFetch(isClerkLoaded);
+      const { gate } = useClerkGatedFetch(isClerkLoaded, canRetryAuthenticated);
       gate(fetchFn);
     });
     scope.stop();
@@ -122,7 +176,8 @@ describe("useClerkGatedFetch", () => {
   it("propagates a rejection from the grace-period fallback", async () => {
     vi.useFakeTimers();
     const isClerkLoaded = ref(false);
-    const { gate } = useClerkGatedFetch(isClerkLoaded);
+    const canRetryAuthenticated = ref(false);
+    const { gate } = useClerkGatedFetch(isClerkLoaded, canRetryAuthenticated);
     const fetchFn = vi.fn().mockRejectedValue(new Error("network error"));
 
     const resultPromise = gate(fetchFn);
