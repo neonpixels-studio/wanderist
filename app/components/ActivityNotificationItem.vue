@@ -16,6 +16,7 @@
     </div>
     <span v-if="!notification.isRead" class="activity__dot" />
     <button
+      ref="dismissButtonRef"
       type="button"
       class="activity__dismiss"
       :aria-label="`Dismiss notification: ${resolveNotificationText(notification)}`"
@@ -43,6 +44,16 @@ defineProps<{
   dismissing: boolean;
 }>();
 defineEmits<{ dismiss: [id: string] }>();
+
+const dismissButtonRef = ref<HTMLButtonElement | null>(null);
+
+// Exposed so the parent list can tell whether this row's dismiss button held
+// focus at dismiss time, and restore keyboard focus to it afterward.
+defineExpose({
+  isDismissButtonFocused: () =>
+    document.activeElement === dismissButtonRef.value,
+  focusDismissButton: () => dismissButtonRef.value?.focus(),
+});
 </script>
 
 <style scoped>

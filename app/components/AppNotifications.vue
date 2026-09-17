@@ -11,7 +11,7 @@
         mark all read
       </button>
     </div>
-    <div class="notif__list">
+    <div ref="listRef" class="notif__list" tabindex="-1">
       <div v-if="isLoading && notifications.length === 0" class="notif__empty">
         Loading…
       </div>
@@ -36,6 +36,7 @@
       <NotificationDrawerItem
         v-for="notification in previewNotifications"
         :key="notification.id"
+        :ref="(instance) => setItemRef(notification.id, instance)"
         :notification="notification"
         :dismissing="dismissingIds.has(notification.id)"
         @activate="handleItemClick"
@@ -53,7 +54,15 @@
 // Vue APIs are Nuxt auto-imports (accessed as globals so tests can substitute
 // them via vi.stubGlobal). Components/composables are imported explicitly.
 import NotificationDrawerItem from "~/components/NotificationDrawerItem.vue";
+import { resolveAdjacentFocusIndex } from "~/utils/notificationFocus";
 import type { AppNotification } from "~/composables/useNotifications";
+
+// The subset of a NotificationDrawerItem's exposed instance this component
+// relies on to restore keyboard focus after a dismiss.
+interface DismissFocusHandle {
+  isDismissButtonFocused: () => boolean;
+  focusDismissButton: () => void;
+}
 
 const props = defineProps<{ open: boolean }>();
 defineEmits<{ close: [] }>();
@@ -76,6 +85,20 @@ const DRAWER_PREVIEW_LIMIT = 12;
 const previewNotifications = computed(() =>
   notifications.value.slice(0, DRAWER_PREVIEW_LIMIT),
 );
+
+// List-level fallback focus target when a dismiss empties the preview list.
+const listRef = ref<HTMLElement | null>(null);
+// Not reactive on purpose — this only tracks live component instances for
+// imperative focus calls, never rendered.
+const itemRefs = new Map<string, DismissFocusHandle>();
+
+function setItemRef(id: string, instance: unknown): void {
+  if (!instance) {
+    itemRefs.delete(id);
+    return;
+  }
+  itemRefs.set(id, instance as DismissFocusHandle);
+}
 
 watch(
   () => props.open,
@@ -103,6 +126,35 @@ async function handleItemClick(notification: AppNotification): Promise<void> {
 }
 
 async function handleDismiss(notification: AppNotification): Promise<void> {
+  const dismissedItem = itemRefs.get(notification.id);
+  const wasFocused = dismissedItem?.isDismissButtonFocused() ?? false;
+  const removedIndex = previewNotifications.value.findIndex(
+    (candidate) => candidate.id === notification.id,
+  );
+
   await dismissNotification(notification.id);
+
+  if (!wasFocused || removedIndex === -1) {
+    return;
+  }
+  await nextTick();
+  restoreFocusAfterDismiss(removedIndex);
+}
+
+// Moves focus to the dismiss button that slid into the removed row's slot
+// (the "next" row), or the new last row if the removed row was last, so a
+// keyboard user's focus never falls back to <body>. Falls back to the list
+// container itself when the dismiss emptied the preview entirely.
+function restoreFocusAfterDismiss(removedIndex: number): void {
+  const targetIndex = resolveAdjacentFocusIndex(
+    previewNotifications.value.length,
+    removedIndex,
+  );
+  if (targetIndex === null) {
+    listRef.value?.focus();
+    return;
+  }
+  const targetNotification = previewNotifications.value[targetIndex];
+  itemRefs.get(targetNotification.id)?.focusDismissButton();
 }
 </script>

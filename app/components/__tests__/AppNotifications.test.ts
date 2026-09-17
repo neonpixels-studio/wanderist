@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ref } from "vue";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import AppNotifications from "../AppNotifications.vue";
 import type { AppNotification } from "~/composables/useNotifications";
 
@@ -79,7 +79,13 @@ describe("AppNotifications", () => {
     vi.clearAllMocks();
     mockMarkAllRead.mockResolvedValue(undefined);
     mockMarkRead.mockResolvedValue(undefined);
-    mockDismissNotification.mockResolvedValue(undefined);
+    // Mirrors the real composable's effect (filters the dismissed id out of
+    // the shared list) so focus-restore assertions see the post-dismiss DOM.
+    mockDismissNotification.mockImplementation(async (id: string) => {
+      notificationsRef.value = notificationsRef.value.filter(
+        (notification) => notification.id !== id,
+      );
+    });
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
@@ -353,5 +359,87 @@ describe("AppNotifications", () => {
     const dismissButtons = wrapper.findAll(".notif__dismiss");
     expect(dismissButtons[0]?.attributes("disabled")).toBeDefined();
     expect(dismissButtons[1]?.attributes("disabled")).toBeUndefined();
+  });
+
+  describe("keyboard focus after dismiss", () => {
+    it("moves focus to the next row's dismiss button when a focused middle row is dismissed", async () => {
+      const wrapper = mount(AppNotifications, {
+        props: { open: true },
+        attachTo: document.body,
+        ...globalConfig,
+      });
+      const dismissButtons = wrapper.findAll(".notif__dismiss");
+      dismissButtons[0]?.element.focus();
+      expect(document.activeElement).toBe(dismissButtons[0]?.element);
+
+      await dismissButtons[0]?.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(
+        wrapper.findAll(".notif__dismiss")[0]?.element,
+      );
+      wrapper.unmount();
+    });
+
+    it("moves focus to the previous row's dismiss button when the focused last row is dismissed", async () => {
+      const wrapper = mount(AppNotifications, {
+        props: { open: true },
+        attachTo: document.body,
+        ...globalConfig,
+      });
+      const dismissButtons = wrapper.findAll(".notif__dismiss");
+      const lastButton = dismissButtons[dismissButtons.length - 1];
+      lastButton?.element.focus();
+
+      await lastButton?.trigger("click");
+      await flushPromises();
+
+      const remainingButtons = wrapper.findAll(".notif__dismiss");
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(
+        remainingButtons[remainingButtons.length - 1]?.element,
+      );
+      wrapper.unmount();
+    });
+
+    it("falls back to the list container when dismissing the only (focused) row", async () => {
+      notificationsRef.value = [SAMPLE_NOTIFICATIONS[0] as AppNotification];
+
+      const wrapper = mount(AppNotifications, {
+        props: { open: true },
+        attachTo: document.body,
+        ...globalConfig,
+      });
+      const dismissButton = wrapper.find(".notif__dismiss");
+      dismissButton.element.focus();
+
+      await dismissButton.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(wrapper.find(".notif__list").element);
+      wrapper.unmount();
+    });
+
+    it("does not steal focus when the dismissed row's button was not focused", async () => {
+      const outsideButton = document.createElement("button");
+      document.body.appendChild(outsideButton);
+      outsideButton.focus();
+
+      const wrapper = mount(AppNotifications, {
+        props: { open: true },
+        attachTo: document.body,
+        ...globalConfig,
+      });
+      const dismissButton = wrapper.find(".notif__dismiss");
+
+      await dismissButton.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).toBe(outsideButton);
+      wrapper.unmount();
+      outsideButton.remove();
+    });
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ref } from "vue";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import ActivityPage from "../activity.vue";
 import { pageGlobalConfig as globalConfig } from "./test-utils";
 import type { AppNotification } from "~/composables/useNotifications";
@@ -51,7 +51,13 @@ describe("Activity page (/activity)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetchAllNotifications.mockResolvedValue(undefined);
-    mockDismissNotification.mockResolvedValue(undefined);
+    // Mirrors the real composable's effect (filters the dismissed id out of
+    // the shared list) so focus-restore assertions see the post-dismiss DOM.
+    mockDismissNotification.mockImplementation(async (id: string) => {
+      notificationsRef.value = notificationsRef.value.filter(
+        (notification) => notification.id !== id,
+      );
+    });
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
@@ -174,5 +180,98 @@ describe("Activity page (/activity)", () => {
     const dismissButtons = wrapper.findAll(".activity__dismiss");
     expect(dismissButtons[0]?.attributes("disabled")).toBeDefined();
     expect(dismissButtons[1]?.attributes("disabled")).toBeUndefined();
+  });
+
+  describe("keyboard focus after dismiss", () => {
+    beforeEach(() => {
+      notificationsRef.value = [
+        ...SAMPLE_NOTIFICATIONS,
+        {
+          id: "n-3",
+          type: "like",
+          tone: "accent",
+          body: "Someone else liked your entry",
+          isRead: true,
+          createdAt: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
+          actor: null,
+        },
+      ];
+    });
+
+    it("moves focus to the next row's dismiss button when a focused middle row is dismissed", async () => {
+      const wrapper = mount(ActivityPage, {
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButtons = wrapper.findAll(".activity__dismiss");
+      dismissButtons[0]?.element.focus();
+      expect(document.activeElement).toBe(dismissButtons[0]?.element);
+
+      await dismissButtons[0]?.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(
+        wrapper.findAll(".activity__dismiss")[0]?.element,
+      );
+      wrapper.unmount();
+    });
+
+    it("moves focus to the previous row's dismiss button when the focused last row is dismissed", async () => {
+      const wrapper = mount(ActivityPage, {
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButtons = wrapper.findAll(".activity__dismiss");
+      const lastButton = dismissButtons[dismissButtons.length - 1];
+      lastButton?.element.focus();
+
+      await lastButton?.trigger("click");
+      await flushPromises();
+
+      const remainingButtons = wrapper.findAll(".activity__dismiss");
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(
+        remainingButtons[remainingButtons.length - 1]?.element,
+      );
+      wrapper.unmount();
+    });
+
+    it("falls back to the list container when dismissing the only (focused) row", async () => {
+      notificationsRef.value = [SAMPLE_NOTIFICATIONS[0] as AppNotification];
+
+      const wrapper = mount(ActivityPage, {
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButton = wrapper.find(".activity__dismiss");
+      dismissButton.element.focus();
+
+      await dismissButton.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(wrapper.find(".content").element);
+      wrapper.unmount();
+    });
+
+    it("does not steal focus when the dismissed row's button was not focused", async () => {
+      const outsideButton = document.createElement("button");
+      document.body.appendChild(outsideButton);
+      outsideButton.focus();
+
+      const wrapper = mount(ActivityPage, {
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButton = wrapper.find(".activity__dismiss");
+
+      await dismissButton.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).toBe(outsideButton);
+      wrapper.unmount();
+      outsideButton.remove();
+    });
   });
 });

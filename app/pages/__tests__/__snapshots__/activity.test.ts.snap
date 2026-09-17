@@ -1,7 +1,7 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`Activity page (/activity) > renders without crashing and matches snapshot 1`] = `
-"<div data-v-570ac06b="" class="content content--wide">
+"<div data-v-570ac06b="" class="content content--wide" tabindex="-1">
   <header data-v-570ac06b="" class="topbar"></header>
   <!--v-if-->
   <div data-v-570ac06b="" class="activity__list">
