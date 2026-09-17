@@ -596,12 +596,16 @@ const {
 const { stats, loadError: statsLoadError, fetchStats } = useStats();
 const tripsStore = useTripsStore();
 
-// Guards the delete-confirmation copy: if either count failed to load, fall
-// back to generic wording rather than asserting a fabricated "0 places, 0
-// trips" — a wrong reassurance on the one screen where the number is the
-// whole point of the warning.
+// Guards the delete-confirmation copy: until the counts have actually
+// finished loading (or if either failed to load), fall back to generic
+// wording rather than asserting a fabricated "0 places, 0 trips" — a wrong
+// reassurance on the one screen where the number is the whole point of the
+// warning. `stats`/`tripList` both start at their zero/empty defaults before
+// the fetches below resolve, so absence of an error isn't enough on its own.
+const deleteCountsLoaded = ref(false);
 const deleteCountsAvailable = computed(
-  () => !statsLoadError.value && !tripsStore.listError,
+  () =>
+    deleteCountsLoaded.value && !statsLoadError.value && !tripsStore.listError,
 );
 
 const deletePlacesLabel = computed(() => {
@@ -788,6 +792,10 @@ onMounted(async () => {
     fetchStats(),
     tripsStore.fetchTrips(),
   ]);
+  // Settled (not necessarily succeeded) — the error refs above cover failure,
+  // this just stops the delete-confirmation copy from showing zero counts
+  // while the fetches are still in flight.
+  deleteCountsLoaded.value = true;
 });
 
 function handleConnectInstagram(): void {

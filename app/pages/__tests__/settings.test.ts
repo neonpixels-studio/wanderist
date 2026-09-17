@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ref, readonly } from "vue";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import SettingsPage from "../settings.vue";
 import type { UserSubscriptionDto } from "~/composables/useBilling";
@@ -283,8 +283,9 @@ describe("Settings page (/settings)", () => {
     vi.spyOn(tripsStore, "fetchTrips").mockResolvedValue();
   });
 
-  it("renders without crashing and matches snapshot", () => {
+  it("renders without crashing and matches snapshot", async () => {
     const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
     expect(wrapper.find(".set-layout").exists()).toBe(true);
     expect(wrapper.html()).toMatchSnapshot();
   });
@@ -480,8 +481,23 @@ describe("Settings page (/settings)", () => {
     expect(wrapper.find(".modal-scrim").classes()).not.toContain("is-open");
   });
 
+  it("shows a generic message (no fabricated zero count) while counts are still loading", async () => {
+    const wrapper = mount(SettingsPage, globalConfig);
+    // Deliberately not flushing promises — the delete button is clickable
+    // immediately, before the onMounted fetch chain resolves.
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).not.toContain("0 places");
+    expect(modalText).not.toContain("0 trips");
+    expect(modalText).toContain(
+      "This removes all your places, trips and photos.",
+    );
+  });
+
   it("shows the user's real place and trip counts in the delete confirmation, not hardcoded values", async () => {
     const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
     await wrapper.find(".danger .btn").trigger("click");
 
     const modalText = wrapper.find(".modal").text();
@@ -494,11 +510,12 @@ describe("Settings page (/settings)", () => {
     const tripsStore = useTripsStore();
     tripsStore.tripList = [
       ...DEFAULT_TRIPS,
-      DEFAULT_TRIPS[0],
-      DEFAULT_TRIPS[1],
+      { ...DEFAULT_TRIPS[0], id: "trip-4" },
+      { ...DEFAULT_TRIPS[1], id: "trip-5" },
     ];
 
     const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
     await wrapper.find(".danger .btn").trigger("click");
 
     const modalText = wrapper.find(".modal").text();
@@ -515,6 +532,26 @@ describe("Settings page (/settings)", () => {
     } as unknown as ReturnType<typeof useStats>);
 
     const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).not.toContain("0 places");
+    expect(modalText).not.toContain("0 trips");
+    expect(modalText).toContain(
+      "This removes all your places, trips and photos.",
+    );
+  });
+
+  it("falls back to generic wording (no fabricated zero count) when the trips list fails to load", async () => {
+    const tripsStore = useTripsStore();
+    vi.spyOn(tripsStore, "fetchTrips").mockImplementation(async () => {
+      tripsStore.listError = "Failed to load trips";
+      throw new Error("Failed to load trips");
+    });
+
+    const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
     await wrapper.find(".danger .btn").trigger("click");
 
     const modalText = wrapper.find(".modal").text();
@@ -531,6 +568,7 @@ describe("Settings page (/settings)", () => {
     tripsStore.tripList = [DEFAULT_TRIPS[0]];
 
     const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
     await wrapper.find(".danger .btn").trigger("click");
 
     const modalText = wrapper.find(".modal").text();
