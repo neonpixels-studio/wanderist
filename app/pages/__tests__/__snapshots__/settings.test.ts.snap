@@ -160,7 +160,7 @@ exports[`Settings page (/settings) > renders without crashing and matches snapsh
           </div>
           <div data-v-a376170b="" class="opt-row" style="border-bottom-width: initial; border-bottom-style: none; border-bottom-color: none;">
             <div data-v-a376170b="" class="lbl"><b data-v-a376170b="">Delete this account</b>
-              <p data-v-a376170b=""> You'll have 14 days to change your mind before data is erased. </p>
+              <p data-v-a376170b=""> Your account closes and you're signed out right away — this can't be undone and you won't be able to sign back in. Your remaining data is permanently erased 14 days later. </p>
             </div><button data-v-a376170b="" class="btn btn--sm" style="background: var(--error); color: #fff;"><svg data-v-a376170b="" data-icon="" name="trash" size="14"></svg> delete account </button>
           </div>
         </section>
@@ -175,7 +175,7 @@ exports[`Settings page (/settings) > renders without crashing and matches snapsh
     <div data-v-a376170b="" class="modal">
       <div data-v-a376170b="" class="label" style="color: var(--error-ink); margin-bottom: 10px;"> // confirm deletion </div>
       <h3 data-v-a376170b="" class="display">Delete your account?</h3>
-      <p data-v-a376170b=""> This removes <b data-v-a376170b="">117 places</b>, <b data-v-a376170b="">9 trips</b> and all photos. Type <b data-v-a376170b="">DELETE</b> to confirm. </p><input data-v-a376170b="">
+      <p data-v-a376170b=""> You'll be signed out right away and can't sign back in. All places, trips and photos are permanently erased 14 days later. Type <b data-v-a376170b="">DELETE</b> to confirm. </p><input data-v-a376170b="">
       <!--v-if-->
       <div data-v-a376170b="" class="hstack gap-12" style="justify-content: flex-end; margin-top: 8px;"><button data-v-a376170b="" class="btn btn--ghost"> cancel </button><button data-v-a376170b="" class="btn" disabled="" style="background: var(--error); color: #fff;"> delete forever </button></div>
     </div>

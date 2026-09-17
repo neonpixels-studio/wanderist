@@ -81,6 +81,12 @@ export function useAccountActions() {
     return runAction(
       async () => {
         await apiFetch("/api/account", { method: "DELETE" });
+        // The server has already deleted the Clerk user, so the client's
+        // cached session is already dead — sign out locally too so the UI
+        // reflects that right away instead of showing stale signed-in
+        // chrome until the next token refresh fails.
+        const clerk = useClerk();
+        await clerk.signOut({ redirectUrl: "/" });
         return true;
       },
       deleteError,

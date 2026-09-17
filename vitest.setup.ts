@@ -49,6 +49,7 @@ Object.assign(globalThis, {
     getToken: vi.fn().mockResolvedValue(null),
   })),
   useClerkUser: vi.fn(() => ({ user: vue.ref(null) })),
+  useClerk: vi.fn(() => ({ signOut: vi.fn().mockResolvedValue(undefined) })),
   // Nuxt page macros
   definePageMeta: vi.fn(),
   // Pinia — use the real defineStore so stores work in component tests

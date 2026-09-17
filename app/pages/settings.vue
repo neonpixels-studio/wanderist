@@ -462,7 +462,10 @@
               <div class="lbl">
                 <b>Delete this account</b>
                 <p>
-                  You'll have 14 days to change your mind before data is erased.
+                  Your account closes and you're signed out right away — this
+                  can't be undone and you won't be able to sign back in. Your
+                  remaining data is permanently erased
+                  {{ DELETION_GRACE_PERIOD_DAYS }} days later.
                 </p>
               </div>
               <button
@@ -501,8 +504,10 @@
         </div>
         <h3 class="display">Delete your account?</h3>
         <p>
-          This removes <b>117 places</b>, <b>9 trips</b> and all photos. Type
-          <b>DELETE</b> to confirm.
+          You'll be signed out right away and can't sign back in. All places,
+          trips and photos are permanently erased
+          {{ DELETION_GRACE_PERIOD_DAYS }} days later. Type <b>DELETE</b> to
+          confirm.
         </p>
         <InputText v-model="deleteConfirm" placeholder="DELETE" />
         <div
@@ -541,6 +546,7 @@ import {
 } from "~/composables/useConnections";
 import { useAccountActions } from "~/composables/useAccountActions";
 import { useBilling } from "~/composables/useBilling";
+import { DELETION_GRACE_PERIOD_DAYS } from "~/utils/accountDeletion";
 
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Settings" });
@@ -954,12 +960,12 @@ async function handleRemoveAvatar(): Promise<void> {
 async function handleDeleteAccount(): Promise<void> {
   const succeeded = await deleteAccount();
 
+  // deleteAccount() already signs the client out and redirects to "/" on
+  // success (see useAccountActions), so there's nothing left to do here.
+  // Keep the modal open on failure so deleteError is visible to the user.
   if (!succeeded) {
-    // Keep the modal open so deleteError is visible to the user.
     return;
   }
-
-  await navigateTo("/");
 }
 
 function scrollTo(id: string) {

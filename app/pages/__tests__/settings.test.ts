@@ -3,6 +3,7 @@ import { ref, readonly } from "vue";
 import { mount } from "@vue/test-utils";
 import SettingsPage from "../settings.vue";
 import type { UserSubscriptionDto } from "~/composables/useBilling";
+import { DELETION_GRACE_PERIOD_DAYS } from "~/utils/accountDeletion";
 
 const mockChangePassword = vi.fn().mockResolvedValue(true);
 const mockUploadAvatar = vi.fn().mockResolvedValue(null);
@@ -386,6 +387,24 @@ describe("Settings page (/settings)", () => {
     expect(wrapper.find(".modal-scrim").classes()).not.toContain("is-open");
     await wrapper.find(".danger .btn").trigger("click");
     expect(wrapper.find(".modal-scrim").classes()).toContain("is-open");
+  });
+
+  it("does not promise a change-of-mind window for account deletion", () => {
+    const wrapper = mount(SettingsPage, globalConfig);
+    const copy = wrapper.find(".danger .opt-row .lbl p").text();
+    expect(copy).not.toMatch(/change your mind/i);
+    expect(copy).toMatch(/right away/i);
+    expect(copy).toMatch(/can't be undone/i);
+    expect(copy).toContain(`${DELETION_GRACE_PERIOD_DAYS} days later`);
+  });
+
+  it("does not promise a change-of-mind window in the delete confirmation modal", async () => {
+    const wrapper = mount(SettingsPage, globalConfig);
+    await wrapper.find(".danger .btn").trigger("click");
+    const modalCopy = wrapper.find(".modal p").text();
+    expect(modalCopy).not.toMatch(/change your mind/i);
+    expect(modalCopy).toMatch(/right away/i);
+    expect(modalCopy).toContain(`${DELETION_GRACE_PERIOD_DAYS} days later`);
   });
 
   it("closes delete modal when cancel is clicked", async () => {

@@ -7,14 +7,21 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useAccountActions } from "../useAccountActions";
 
 const mockApiFetch = vi.fn();
+const mockSignOut = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("~/composables/useApiClient", () => ({
   useApiClient: vi.fn(() => ({ apiFetch: mockApiFetch })),
 }));
 
+vi.stubGlobal(
+  "useClerk",
+  vi.fn(() => ({ signOut: mockSignOut })),
+);
+
 describe("useAccountActions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSignOut.mockResolvedValue(undefined);
   });
 
   describe("changePassword", () => {
@@ -113,6 +120,15 @@ describe("useAccountActions", () => {
       });
     });
 
+    it("signs the client out and redirects home after a successful delete", async () => {
+      mockApiFetch.mockResolvedValue({ ok: true });
+      const { deleteAccount } = useAccountActions();
+
+      await deleteAccount();
+
+      expect(mockSignOut).toHaveBeenCalledWith({ redirectUrl: "/" });
+    });
+
     it("returns false and sets deleteError on failure", async () => {
       mockApiFetch.mockRejectedValue(
         Object.assign(new Error("Failed"), {
@@ -125,6 +141,15 @@ describe("useAccountActions", () => {
 
       expect(result).toBe(false);
       expect(deleteError.value).toBe("Account not found");
+    });
+
+    it("does not sign the client out when the delete request fails", async () => {
+      mockApiFetch.mockRejectedValue(new Error("Failed"));
+      const { deleteAccount } = useAccountActions();
+
+      await deleteAccount();
+
+      expect(mockSignOut).not.toHaveBeenCalled();
     });
   });
 
