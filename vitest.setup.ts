@@ -49,9 +49,6 @@ Object.assign(globalThis, {
     getToken: vi.fn().mockResolvedValue(null),
   })),
   useClerkUser: vi.fn(() => ({ user: vue.ref(null) })),
-  useClerk: vi.fn(() =>
-    vue.shallowRef({ signOut: vi.fn().mockResolvedValue(undefined) }),
-  ),
   useClerkInstance: vi.fn(() =>
     vue.shallowRef({ signOut: vi.fn().mockResolvedValue(undefined) }),
   ),

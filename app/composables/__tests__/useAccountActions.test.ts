@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { shallowRef } from "vue";
+import { flushPromises } from "@vue/test-utils";
 import { useAccountActions } from "../useAccountActions";
 
 const mockApiFetch = vi.fn();
@@ -169,6 +170,23 @@ describe("useAccountActions", () => {
       expect(navigateTo).toHaveBeenCalledWith("/");
     });
 
+    it("still reports success even if the fallback redirect itself rejects", async () => {
+      // signOut() fails, so signOutLocally() falls back to navigateTo("/").
+      // If that redirect also rejects (e.g. a route middleware throwing),
+      // the rejection must not escape into runAction's catch — the account
+      // deletion already succeeded server-side by this point, so nothing
+      // past that should be able to flip the reported result to false.
+      mockApiFetch.mockResolvedValue({ ok: true });
+      mockSignOut.mockRejectedValueOnce(new Error("network"));
+      vi.mocked(navigateTo).mockRejectedValueOnce(new Error("aborted"));
+      const { deleteAccount, deleteError } = useAccountActions();
+
+      const result = await deleteAccount();
+
+      expect(result).toBe(true);
+      expect(deleteError.value).toBeNull();
+    });
+
     it("returns false and sets deleteError on failure", async () => {
       mockApiFetch.mockRejectedValue(
         Object.assign(new Error("Failed"), {
@@ -226,9 +244,15 @@ describe("useAccountActions", () => {
 
       const { deleteAccount, isLoading } = useAccountActions();
       const promise = deleteAccount();
-      await Promise.resolve(); // let the DELETE call's microtask settle
+      await flushPromises();
 
+      // Proves execution actually reached the sign-out call (and is
+      // suspended waiting on it) before trusting the isLoading assertion —
+      // otherwise this could pass for the wrong reason if a future change
+      // shifted how many microtask hops the DELETE call takes.
+      expect(mockSignOut).toHaveBeenCalled();
       expect(isLoading.value).toBe(true);
+
       resolveSignOut();
       await promise;
       expect(isLoading.value).toBe(false);

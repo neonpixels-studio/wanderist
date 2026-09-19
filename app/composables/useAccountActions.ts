@@ -89,16 +89,28 @@ export function useAccountActions() {
   // loaded yet, when clerk.value is still null) and falls back to a plain
   // navigation home, since by the time it runs the account deletion has
   // already succeeded and nothing here should be able to report otherwise.
+  // Wraps navigateTo() so a redirect failure (e.g. a middleware guard
+  // throwing) can never escape signOutLocally() and be mistaken by
+  // runAction for the account deletion itself having failed.
+  async function redirectHome(): Promise<void> {
+    try {
+      await navigateTo("/");
+    } catch {
+      // Best-effort: the deletion already succeeded server-side, so there's
+      // nothing left to recover from here.
+    }
+  }
+
   async function signOutLocally(): Promise<void> {
     const clerkInstance = clerk.value;
     if (!clerkInstance) {
-      await navigateTo("/");
+      await redirectHome();
       return;
     }
     try {
       await clerkInstance.signOut({ redirectUrl: "/" });
     } catch {
-      await navigateTo("/");
+      await redirectHome();
     }
   }
 
