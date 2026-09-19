@@ -462,7 +462,10 @@
               <div class="lbl">
                 <b>Delete this account</b>
                 <p>
-                  You'll have 14 days to change your mind before data is erased.
+                  Your account closes and you're signed out right away — this
+                  can't be undone and you won't be able to sign back in. Your
+                  remaining data is permanently erased
+                  {{ DELETION_GRACE_PERIOD_DAYS }} days later.
                 </p>
               </div>
               <button
@@ -500,14 +503,18 @@
           // confirm deletion
         </div>
         <h3 class="display">Delete your account?</h3>
-        <p v-if="deleteCountsAvailable">
-          This removes <b>{{ deletePlacesLabel }}</b
-          >, <b>{{ deleteTripsLabel }}</b> and all photos. Type <b>DELETE</b> to
+        <p>
+          You'll be signed out right away and can't sign back in.
+          <template v-if="deleteCountsAvailable">
+            <b>{{ deletePlacesLabel }}</b
+            >, <b>{{ deleteTripsLabel }}</b> and all photos are permanently
+            erased
+          </template>
+          <template v-else>
+            All places, trips and photos are permanently erased
+          </template>
+          {{ DELETION_GRACE_PERIOD_DAYS }} days later. Type <b>DELETE</b> to
           confirm.
-        </p>
-        <p v-else>
-          This removes all your places, trips and photos. Type
-          <b>DELETE</b> to confirm.
         </p>
         <InputText v-model="deleteConfirm" placeholder="DELETE" />
         <div
@@ -546,6 +553,7 @@ import {
 } from "~/composables/useConnections";
 import { useAccountActions } from "~/composables/useAccountActions";
 import { useBilling } from "~/composables/useBilling";
+import { DELETION_GRACE_PERIOD_DAYS } from "~/utils/accountDeletion";
 import { useStats } from "~/composables/useStats";
 import { useTripsStore } from "~/stores/trips";
 
@@ -1000,14 +1008,10 @@ async function handleRemoveAvatar(): Promise<void> {
 }
 
 async function handleDeleteAccount(): Promise<void> {
-  const succeeded = await deleteAccount();
-
-  if (!succeeded) {
-    // Keep the modal open so deleteError is visible to the user.
-    return;
-  }
-
-  await navigateTo("/");
+  // deleteAccount() already signs the client out and redirects to "/" on
+  // success (see useAccountActions). On failure it does nothing here,
+  // leaving the modal open so deleteError is visible to the user.
+  await deleteAccount();
 }
 
 function scrollTo(id: string) {

@@ -10,6 +10,10 @@ import { extractErrorMessage } from "~/utils/extractErrorMessage";
 
 export function useAccountActions() {
   const { apiFetch } = useApiClient();
+  // Must be read synchronously here, during setup — useClerkInstance() (like
+  // any Clerk composable) relies on Vue's injection context, which is gone
+  // by the time an async action like deleteAccount() resumes after an await.
+  const clerk = useClerkInstance();
   const isLoading = ref(false);
   const passwordError = ref<string | null>(null);
   const avatarError = ref<string | null>(null);
@@ -77,10 +81,49 @@ export function useAccountActions() {
     );
   }
 
+  // The server has already deleted the Clerk user by the time this runs, so
+  // the client's cached session is already dead — sign out locally too so
+  // the UI reflects that right away instead of showing stale signed-in
+  // chrome until the next token refresh fails. This is best-effort client
+  // cleanup only: it swallows its own failures (including Clerk not having
+  // loaded yet, when clerk.value is still null) and falls back to a plain
+  // navigation home, since by the time it runs the account deletion has
+  // already succeeded and nothing here should be able to report otherwise.
+  // Wraps navigateTo() so a redirect failure (e.g. a middleware guard
+  // throwing) can never escape signOutLocally() and be mistaken by
+  // runAction for the account deletion itself having failed.
+  async function redirectHome(): Promise<void> {
+    try {
+      await navigateTo("/");
+    } catch {
+      // Best-effort: the deletion already succeeded server-side, so there's
+      // nothing left to recover from here.
+    }
+  }
+
+  async function signOutLocally(): Promise<void> {
+    const clerkInstance = clerk.value;
+    if (!clerkInstance) {
+      await redirectHome();
+      return;
+    }
+    try {
+      await clerkInstance.signOut({ redirectUrl: "/" });
+    } catch {
+      await redirectHome();
+    }
+  }
+
   async function deleteAccount(): Promise<boolean> {
     return runAction(
       async () => {
         await apiFetch("/api/account", { method: "DELETE" });
+        // Kept inside this action (and therefore inside runAction's
+        // isLoading window) so the delete button/modal stay disabled for
+        // the full round trip, not just the initial DELETE — otherwise a
+        // second click during the sign-out call would fire a second DELETE
+        // against an account that's already gone.
+        await signOutLocally();
         return true;
       },
       deleteError,
