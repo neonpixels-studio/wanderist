@@ -65,6 +65,7 @@ import { computed } from "vue";
 import { useGuidesStore } from "~/stores/guides";
 import type { GuideVisibility } from "~/stores/guides";
 import { formatAuthorByline } from "~/utils/travelerLabels";
+import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
 
 // No auth middleware: a public guide must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private or
@@ -97,16 +98,25 @@ const loadError = computed(() => guidesStore.guideError);
 
 // isLoaded gates nothing rendered on this page (unlike trips/[id].vue, which
 // has an owner-only UI split), but the fetch below still needs it: mirrors
-// trips/[id].vue's canRetryAuthenticated so a signed-in owner opening their own
-// private guide isn't stuck on the anonymous-first-fetch 404. A refetch only
-// changes the answer once the viewer is signed in and can carry a token; an
-// anonymous visitor never gains one, so watching this (not isClerkLoaded)
-// gives them a single fetch while still re-issuing the owner's request once
-// their session resolves.
+// trips/[id].vue's canRetryAuthenticated, which useClerkGatedFetch below
+// turns into retryGeneration — an anonymous visitor never gains a token, so
+// this never advances a second time for them.
 const { isLoaded: isClerkLoaded, isSignedIn } = useClerkAuth();
 const canRetryAuthenticated = computed(
   () => isClerkLoaded.value && !!isSignedIn.value,
 );
+
+// Gated on Clerk's bootstrap (#255) so an owner's first request already
+// carries a token instead of 404ing anonymously first — see
+// useClerkGatedFetch.
+const { gate: gateOnClerkLoad, retryGeneration } = useClerkGatedFetch(
+  isClerkLoaded,
+  canRetryAuthenticated,
+);
+
+function fetchGuideDetail(): Promise<void> {
+  return gateOnClerkLoad(() => guidesStore.fetchGuideById(guideId.value));
+}
 
 // `server: false` keeps the fetch client-only, mirroring u/[id].vue: the request
 // carries the Clerk session token, which only exists on the client (Clerk runs
@@ -120,8 +130,8 @@ const canRetryAuthenticated = computed(
 // on the codebase's client-only-auth pattern.
 const { status: fetchStatus, refresh: refreshGuide } = useAsyncData(
   () => `guide-detail-${guideId.value}`,
-  () => guidesStore.fetchGuideById(guideId.value),
-  { server: false, watch: [guideId, canRetryAuthenticated] },
+  fetchGuideDetail,
+  { server: false, watch: [guideId, retryGeneration] },
 );
 
 async function onRetryLoad(): Promise<void> {

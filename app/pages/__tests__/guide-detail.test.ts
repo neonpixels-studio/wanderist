@@ -6,6 +6,7 @@ import GuideDetailPage from "../guides/[id].vue";
 import { nuxtLinkStub } from "~/components/__tests__/input-stubs";
 import { useGuidesStore } from "~/stores/guides";
 import type { Guide } from "~/stores/guides";
+import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
 
 // Override the global useRoute stub with a REACTIVE params object so a test can
 // change the guide id and assert the page's watched ref tracks it.
@@ -321,10 +322,86 @@ describe("Guide Detail page (/guides/[id])", () => {
     expect(wrapper.text()).toContain("This guide has no content yet.");
   });
 
-  it("fetches once for an anonymous visitor and retries once the owner's session resolves, replacing the not-found guide with the owner's guide", async () => {
-    // Start anonymous with Clerk still loading. The store starts as a real
-    // anonymous-first-pass 404 would leave it: no guide, not-found set.
+  // Regression coverage for #255: the anonymous-then-retry race that used to
+  // flash "Guide not found" for a signed-in owner on a hard refresh.
+  it("does not fetch until Clerk resolves, then fetches exactly once already authenticated for a signed-in owner (no anonymous-then-retry flash)", async () => {
     clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = null;
+    guidesStore.guideNotFound = false;
+    const fetchSpy = getFetchGuideByIdSpy();
+    fetchSpy.mockImplementation(async () => {
+      guidesStore.currentGuide = { ...SAMPLE_GUIDE };
+      guidesStore.guideNotFound = false;
+    });
+
+    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // Clerk resolves isLoaded and isSignedIn together (see the production
+    // comment above fetchGuideDetail), so both flip in the same tick here.
+    clerkSignedInRef.value = true;
+    clerkLoadedRef.value = true;
+    await nextTick();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).not.toContain("Guide not found.");
+    expect(wrapper.text()).toContain("Tokyo on foot");
+  });
+
+  it("fetches exactly once for an anonymous visitor once Clerk resolves to signed-out", async () => {
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+    const guidesStore = useGuidesStore();
+    guidesStore.currentGuide = null;
+    guidesStore.guideNotFound = false;
+    const fetchSpy = getFetchGuideByIdSpy();
+    fetchSpy.mockResolvedValue(undefined);
+
+    mount(GuideDetailPage, buildGlobalConfig(pinia));
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    clerkLoadedRef.value = true;
+    await nextTick();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // Nothing about the viewer's ability to carry a token changes afterward,
+    // so canRetryAuthenticated never flips and no second request fires.
+    await nextTick();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression coverage for the pre-existing "public content loads even if
+  // Clerk is blocked" guarantee: the #255 gate withholds the fetch, but only
+  // up to CLERK_BOOTSTRAP_TIMEOUT_MS (see useClerkGatedFetch).
+  it("still fetches a public guide anonymously once the Clerk bootstrap grace period lapses", async () => {
+    vi.useFakeTimers();
+    try {
+      clerkLoadedRef.value = false;
+      clerkSignedInRef.value = false;
+      const guidesStore = useGuidesStore();
+      guidesStore.currentGuide = null;
+      guidesStore.guideNotFound = false;
+      const fetchSpy = getFetchGuideByIdSpy();
+      fetchSpy.mockResolvedValue(undefined);
+
+      mount(GuideDetailPage, buildGlobalConfig(pinia));
+      expect(fetchSpy).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(CLERK_BOOTSTRAP_TIMEOUT_MS);
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries once a viewer signs in after Clerk already resolved signed-out", async () => {
+    // Distinct from the hard-refresh race above: here Clerk has already
+    // finished loading (e.g. the visitor signs in from this same page), so
+    // canRetryAuthenticated is what drives the retry, exactly as before.
+    clerkLoadedRef.value = true;
     clerkSignedInRef.value = false;
     const guidesStore = useGuidesStore();
     guidesStore.currentGuide = null;
@@ -332,30 +409,18 @@ describe("Guide Detail page (/guides/[id])", () => {
     const fetchSpy = getFetchGuideByIdSpy();
     fetchSpy.mockResolvedValue(undefined);
 
-    const wrapper = mount(GuideDetailPage, buildGlobalConfig(pinia));
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-
-    // Clerk finishing its load for an anonymous visitor must NOT retry: they
-    // never gain a token, so a second identical request is wasted.
-    clerkLoadedRef.value = true;
+    mount(GuideDetailPage, buildGlobalConfig(pinia));
     await nextTick();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
-    // A resolved, signed-in session triggers exactly one authenticated retry so
-    // the owner's own private guide loads after the anonymous first pass 404'd.
-    // Simulate that retry actually succeeding, the way the real store would, so
-    // this test proves the guide replaces "not found" rather than only
-    // counting fetch calls.
     fetchSpy.mockImplementationOnce(async () => {
       guidesStore.currentGuide = { ...SAMPLE_GUIDE };
       guidesStore.guideNotFound = false;
     });
     clerkSignedInRef.value = true;
     await nextTick();
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
 
-    expect(wrapper.text()).not.toContain("Guide not found.");
-    expect(wrapper.text()).toContain("Tokyo on foot");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it("fetches exactly once when the viewer is already signed in at mount", async () => {

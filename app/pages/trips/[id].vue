@@ -383,6 +383,7 @@ import type { Trip, TripStop } from "~/stores/trips";
 import { useMediaUpload } from "~/composables/useMediaUpload";
 import { moveIdUp, moveIdDown, moveIdToDropTarget } from "~/utils/stopOrder";
 import type { StopOrderMutator } from "~/utils/stopOrder";
+import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
 
 // No auth middleware: a public trip must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private trip returns
@@ -451,27 +452,40 @@ const isOwner = computed(
 );
 
 // A refetch only changes the answer once the viewer is a signed-in user who can
-// carry a token; an anonymous visitor never gains one, so watching this instead
-// of isClerkLoaded gives them a single fetch while still re-issuing the owner's
-// request once their session resolves.
+// carry a token; an anonymous visitor never gains one, so this (turned into
+// retryGeneration by useClerkGatedFetch below) never advances a second time
+// for them, but does re-issue the owner's request if their session resolves
+// after the first pass, or clear a private trip on sign-out.
 const canRetryAuthenticated = computed(
   () => isClerkLoaded.value && !!isSignedIn.value,
 );
+
+// Gated on Clerk's bootstrap (#255) so an owner's first request already
+// carries a token instead of 404ing anonymously first — see
+// useClerkGatedFetch.
+const { gate: gateOnClerkLoad, retryGeneration } = useClerkGatedFetch(
+  isClerkLoaded,
+  canRetryAuthenticated,
+);
+
+function fetchTripDetail(): Promise<void> {
+  return gateOnClerkLoad(() => tripsStore.fetchTripById(tripId.value));
+}
 
 // `server: false` keeps the fetch client-only, mirroring guides/[id].vue and
 // u/[id].vue: the request carries the Clerk session token, which only exists on
 // the client (Clerk runs with skipServerMiddleware). Running it during SSR would
 // hang, since Clerk's getToken never resolves on the server.
 //
-// Watch canRetryAuthenticated as well as the id: the first pass can run before
-// Clerk is ready, sending an anonymous request that 404s the owner's own private
-// trip. Re-running once the session resolves re-issues the request with a token
-// so the owner gets their private trip; a public trip already resolved on the
-// anonymous pass.
+// Watch retryGeneration as well as the id: a signed-in owner's session
+// resolving after the fetch above already fired (e.g. signing in without a
+// full page reload) re-issues the request with a token so the owner gets
+// their private trip; signing out re-issues it anonymously so a private trip
+// clears from the screen.
 const { status: fetchStatus, refresh: refreshTripDetail } = useAsyncData(
   () => `trip-detail-${tripId.value}`,
-  () => tripsStore.fetchTripById(tripId.value),
-  { server: false, watch: [tripId, canRetryAuthenticated] },
+  fetchTripDetail,
+  { server: false, watch: [tripId, retryGeneration] },
 );
 
 // A 404 means the trip is missing or private — rendered as "Trip not found"
@@ -485,10 +499,14 @@ async function onRetryLoad(): Promise<void> {
 
 // Until the client fetch resolves, the SSR pass and hydration frame have no trip
 // yet. Treat that window as loading so a valid trip never flashes "Trip not
-// found" before its data arrives. This is deliberately NOT gated on
-// isClerkLoaded: an anonymous visitor following a shared link needs nothing from
-// Clerk, so if the Clerk script is blocked the page still renders the public
-// trip read-only rather than hanging on "Loading trip…" forever.
+// found" before its data arrives. isLoading itself does not read isClerkLoaded
+// directly — it only cares whether the fetch above has settled — but
+// fetchTripDetail's gate (see useClerkGatedFetch) means this stays true until
+// Clerk resolves one way or the other, or CLERK_BOOTSTRAP_TIMEOUT_MS lapses if
+// it never does. That bound is what still lets an anonymous visitor following
+// a shared link see a public trip even if Clerk's script is fully blocked,
+// same as before #255 — this fix only changes when the anonymous fetch fires
+// while Clerk resolves normally, not what happens if it never does.
 const hasResolvedFetch = computed(
   () => fetchStatus.value === "success" || fetchStatus.value === "error",
 );
