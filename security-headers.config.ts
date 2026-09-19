@@ -33,6 +33,17 @@ const SENTRY_INGEST_ORIGINS = [
 // app/assets/css/main.css @imports this stylesheet, which references files here.
 const GOOGLE_FONTS_STYLESHEET_ORIGIN = "https://fonts.googleapis.com";
 const GOOGLE_FONTS_FILE_ORIGIN = "https://fonts.gstatic.com";
+// Google Analytics (gtag.js, loaded by app/plugins/google-analytics.client.ts):
+// the tag script is served from googletagmanager.com, while collect beacons go
+// to google-analytics.com and region-sharded (region1.*) / analytics.google.com
+// hosts, hence the wildcards in connect-src and img-src (some beacons are img
+// pixels, some are fetch/sendBeacon calls).
+const GOOGLE_TAG_MANAGER_ORIGIN = "https://www.googletagmanager.com";
+const GOOGLE_ANALYTICS_COLLECT_ORIGINS = [
+  "https://www.google-analytics.com",
+  "https://*.google-analytics.com",
+  "https://*.analytics.google.com",
+];
 
 const CONTENT_SECURITY_POLICY_DIRECTIVES: readonly string[] = [
   "default-src 'self'",
@@ -44,13 +55,13 @@ const CONTENT_SECURITY_POLICY_DIRECTIVES: readonly string[] = [
   // every response. Remove once CSP nonces are adopted (see file header).
   // blob:: Safari < 15.4 has no worker-src support and falls back to
   // script-src to gate the Web Worker mapbox-gl creates from a blob: URL.
-  `script-src 'self' 'unsafe-inline' blob: ${CLERK_FRONTEND_API_ORIGIN} ${CLOUDFLARE_TURNSTILE_ORIGIN}`,
+  `script-src 'self' 'unsafe-inline' blob: ${CLERK_FRONTEND_API_ORIGIN} ${CLOUDFLARE_TURNSTILE_ORIGIN} ${GOOGLE_TAG_MANAGER_ORIGIN}`,
   `style-src 'self' 'unsafe-inline' ${GOOGLE_FONTS_STYLESHEET_ORIGIN}`,
-  `img-src 'self' data: blob: ${CLERK_IMAGE_ORIGIN} ${MAPBOX_API_ORIGIN} ${MAPBOX_TILES_ORIGIN}`,
+  `img-src 'self' data: blob: ${CLERK_IMAGE_ORIGIN} ${MAPBOX_API_ORIGIN} ${MAPBOX_TILES_ORIGIN} ${GOOGLE_ANALYTICS_COLLECT_ORIGINS.join(" ")}`,
   `font-src 'self' data: ${GOOGLE_FONTS_FILE_ORIGIN}`,
   // api.clerk.com (Clerk's Backend API) is deliberately omitted — it's only
   // ever called from server/, never the browser.
-  `connect-src 'self' ${CLERK_FRONTEND_API_ORIGIN} ${CLERK_TELEMETRY_ORIGIN} ${MAPBOX_API_ORIGIN} ${MAPBOX_EVENTS_ORIGIN} ${MAPBOX_TILES_ORIGIN} ${SENTRY_INGEST_ORIGINS.join(" ")}`,
+  `connect-src 'self' ${CLERK_FRONTEND_API_ORIGIN} ${CLERK_TELEMETRY_ORIGIN} ${MAPBOX_API_ORIGIN} ${MAPBOX_EVENTS_ORIGIN} ${MAPBOX_TILES_ORIGIN} ${SENTRY_INGEST_ORIGINS.join(" ")} ${GOOGLE_TAG_MANAGER_ORIGIN} ${GOOGLE_ANALYTICS_COLLECT_ORIGINS.join(" ")}`,
   "worker-src 'self' blob:",
   `frame-src 'self' ${CLOUDFLARE_TURNSTILE_ORIGIN}`,
   "manifest-src 'self'",
