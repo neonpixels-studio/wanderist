@@ -98,6 +98,23 @@ describe("CONTENT_SECURITY_POLICY_REPORT_ONLY", () => {
     expect(connectSrc).toContain("https://*.ingest.us.sentry.io");
   });
 
+  it("allowlists Google Analytics: gtag script in script-src, collect beacons in connect-src/img-src", () => {
+    const scriptSrc = getDirective(
+      CONTENT_SECURITY_POLICY_REPORT_ONLY,
+      "script-src",
+    );
+    const connectSrc = getDirective(
+      CONTENT_SECURITY_POLICY_REPORT_ONLY,
+      "connect-src",
+    );
+    const imgSrc = getDirective(CONTENT_SECURITY_POLICY_REPORT_ONLY, "img-src");
+
+    expect(scriptSrc).toContain("https://www.googletagmanager.com");
+    expect(connectSrc).toContain("https://www.google-analytics.com");
+    expect(connectSrc).toContain("https://*.analytics.google.com");
+    expect(imgSrc).toContain("https://www.google-analytics.com");
+  });
+
   it("allowlists Google Fonts, which app/assets/css/main.css @imports", () => {
     expect(CONTENT_SECURITY_POLICY_REPORT_ONLY).toContain(
       "https://fonts.googleapis.com",

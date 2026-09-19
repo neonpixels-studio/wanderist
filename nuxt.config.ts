@@ -47,6 +47,10 @@ export default defineNuxtConfig({
       sentryDsn: "",
       siteOrigin: "",
       mapboxToken: "",
+      // GA4 measurement ID, injected via NUXT_PUBLIC_GOOGLE_ANALYTICS_ID (set
+      // only in .env.production). Blank everywhere else, and the client plugin
+      // no-ops when blank, so analytics loads in production builds alone.
+      googleAnalyticsId: "",
     },
   },
   css: ["~/assets/css/main.css", "mapbox-gl/dist/mapbox-gl.css"],
