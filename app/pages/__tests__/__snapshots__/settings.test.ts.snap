@@ -175,7 +175,7 @@ exports[`Settings page (/settings) > renders without crashing and matches snapsh
     <div data-v-a376170b="" class="modal">
       <div data-v-a376170b="" class="label" style="color: var(--error-ink); margin-bottom: 10px;"> // confirm deletion </div>
       <h3 data-v-a376170b="" class="display">Delete your account?</h3>
-      <p data-v-a376170b=""> You'll be signed out right away and can't sign back in. All places, trips and photos are permanently erased 14 days later. Type <b data-v-a376170b="">DELETE</b> to confirm. </p><input data-v-a376170b="">
+      <p data-v-a376170b=""> You'll be signed out right away and can't sign back in. <b data-v-a376170b="">34 places</b>, <b data-v-a376170b="">3 trips</b> and all photos are permanently erased 14 days later. Type <b data-v-a376170b="">DELETE</b> to confirm. </p><input data-v-a376170b="">
       <!--v-if-->
       <div data-v-a376170b="" class="hstack gap-12" style="justify-content: flex-end; margin-top: 8px;"><button data-v-a376170b="" class="btn btn--ghost"> cancel </button><button data-v-a376170b="" class="btn" disabled="" style="background: var(--error); color: #fff;"> delete forever </button></div>
     </div>

@@ -11,7 +11,7 @@
         mark all read
       </button>
     </div>
-    <div class="notif__list">
+    <div ref="listRef" class="notif__list" tabindex="-1">
       <div v-if="isLoading && notifications.length === 0" class="notif__empty">
         Loading…
       </div>
@@ -36,6 +36,7 @@
       <NotificationDrawerItem
         v-for="notification in previewNotifications"
         :key="notification.id"
+        :ref="(instance) => setItemRef(notification.id, instance)"
         :notification="notification"
         :dismissing="dismissingIds.has(notification.id)"
         @activate="handleItemClick"
@@ -53,6 +54,7 @@
 // Vue APIs are Nuxt auto-imports (accessed as globals so tests can substitute
 // them via vi.stubGlobal). Components/composables are imported explicitly.
 import NotificationDrawerItem from "~/components/NotificationDrawerItem.vue";
+import { useDismissFocusRestore } from "~/composables/useDismissFocusRestore";
 import type { AppNotification } from "~/composables/useNotifications";
 
 const props = defineProps<{ open: boolean }>();
@@ -75,6 +77,13 @@ const {
 const DRAWER_PREVIEW_LIMIT = 12;
 const previewNotifications = computed(() =>
   notifications.value.slice(0, DRAWER_PREVIEW_LIMIT),
+);
+
+// List-level fallback focus target when a dismiss empties the preview list.
+const listRef = ref<HTMLElement | null>(null);
+const { setItemRef, dismissWithFocusRestore } = useDismissFocusRestore(
+  () => previewNotifications.value,
+  listRef,
 );
 
 watch(
@@ -102,7 +111,13 @@ async function handleItemClick(notification: AppNotification): Promise<void> {
   await markRead(notification.id);
 }
 
+// After a dismiss removes the focused row, moves keyboard focus to the
+// adjacent dismiss button (or the list container as a last resort) instead
+// of letting it fall back to <body>. See useDismissFocusRestore for the
+// shared restore logic (also used by app/pages/activity.vue).
 async function handleDismiss(notification: AppNotification): Promise<void> {
-  await dismissNotification(notification.id);
+  await dismissWithFocusRestore(notification.id, () =>
+    dismissNotification(notification.id),
+  );
 }
 </script>

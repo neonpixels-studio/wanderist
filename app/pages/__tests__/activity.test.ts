@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ref } from "vue";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import ActivityPage from "../activity.vue";
 import { pageGlobalConfig as globalConfig } from "./test-utils";
 import type { AppNotification } from "~/composables/useNotifications";
@@ -51,7 +51,13 @@ describe("Activity page (/activity)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetchAllNotifications.mockResolvedValue(undefined);
-    mockDismissNotification.mockResolvedValue(undefined);
+    // Mirrors the real composable's effect (filters the dismissed id out of
+    // the shared list) so focus-restore assertions see the post-dismiss DOM.
+    mockDismissNotification.mockImplementation(async (id: string) => {
+      notificationsRef.value = notificationsRef.value.filter(
+        (notification) => notification.id !== id,
+      );
+    });
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
@@ -174,5 +180,117 @@ describe("Activity page (/activity)", () => {
     const dismissButtons = wrapper.findAll(".activity__dismiss");
     expect(dismissButtons[0]?.attributes("disabled")).toBeDefined();
     expect(dismissButtons[1]?.attributes("disabled")).toBeUndefined();
+  });
+
+  describe("keyboard focus after dismiss", () => {
+    const THIRD_NOTIFICATION: AppNotification = {
+      id: "n-3",
+      type: "like",
+      tone: "accent",
+      body: "Someone else liked your entry",
+      isRead: true,
+      createdAt: new Date(Date.now() - 6 * 3600 * 1000).toISOString(),
+      actor: null,
+    };
+
+    // attachTo: document.body is required for jsdom/happy-dom to track
+    // document.activeElement across these focus assertions. The wrapper is
+    // unmounted in afterEach (not inline at the end of each `it`) so a
+    // failed assertion still detaches it — otherwise a stale mounted tree
+    // would linger in document.body and contaminate later tests' DOM queries
+    // and activeElement checks.
+    let wrapper: ReturnType<typeof mount> | undefined;
+    let outsideButton: HTMLButtonElement | undefined;
+
+    beforeEach(() => {
+      notificationsRef.value = [...SAMPLE_NOTIFICATIONS, THIRD_NOTIFICATION];
+    });
+
+    afterEach(() => {
+      wrapper?.unmount();
+      wrapper = undefined;
+      outsideButton?.remove();
+      outsideButton = undefined;
+    });
+
+    it("moves focus to the next row's dismiss button when a focused middle row is dismissed", async () => {
+      wrapper = mount(ActivityPage, {
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      // Three rows are loaded; index 1 is a genuine middle row with both a
+      // previous and a next neighbor.
+      const dismissButtons = wrapper.findAll(".activity__dismiss");
+      const middleButton = dismissButtons[1];
+      middleButton?.element.focus();
+      expect(document.activeElement).toBe(middleButton?.element);
+
+      await middleButton?.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(
+        (document.activeElement as HTMLElement | null)?.getAttribute(
+          "aria-label",
+        ),
+      ).toContain(THIRD_NOTIFICATION.body);
+    });
+
+    it("moves focus to the previous row's dismiss button when the focused last row is dismissed", async () => {
+      wrapper = mount(ActivityPage, {
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButtons = wrapper.findAll(".activity__dismiss");
+      const lastButton = dismissButtons[dismissButtons.length - 1];
+      const survivingNotification = SAMPLE_NOTIFICATIONS[1] as AppNotification;
+      lastButton?.element.focus();
+
+      await lastButton?.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(
+        (document.activeElement as HTMLElement | null)?.getAttribute(
+          "aria-label",
+        ),
+      ).toContain(survivingNotification.body);
+    });
+
+    it("falls back to the region wrapper when dismissing the only (focused) row", async () => {
+      notificationsRef.value = [SAMPLE_NOTIFICATIONS[0] as AppNotification];
+
+      wrapper = mount(ActivityPage, {
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButton = wrapper.find(".activity__dismiss");
+      dismissButton.element.focus();
+
+      await dismissButton.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(
+        wrapper.find(".activity__region").element,
+      );
+    });
+
+    it("does not steal focus when the dismissed row's button was not focused", async () => {
+      outsideButton = document.createElement("button");
+      document.body.appendChild(outsideButton);
+      outsideButton.focus();
+
+      wrapper = mount(ActivityPage, {
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButton = wrapper.find(".activity__dismiss");
+
+      await dismissButton.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).toBe(outsideButton);
+    });
   });
 });

@@ -1,9 +1,78 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ref, readonly } from "vue";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
 import SettingsPage from "../settings.vue";
 import type { UserSubscriptionDto } from "~/composables/useBilling";
 import { DELETION_GRACE_PERIOD_DAYS } from "~/utils/accountDeletion";
+import { useTripsStore } from "~/stores/trips";
+import type { Trip } from "~/stores/trips";
+
+const DEFAULT_STATS_DATA = {
+  placesCount: 34,
+  countriesCount: 9,
+  totalDistanceMi: 48218,
+  totalDistanceKm: 77600,
+  currentStreak: 14,
+  placesThisWeek: 6,
+  distanceMiThisWeek: 1400,
+  distanceKmThisWeek: 2254,
+  distanceUnit: "mi" as const,
+};
+
+const mockStats = ref({ ...DEFAULT_STATS_DATA });
+const mockStatsLoadError = ref<string | null>(null);
+const mockFetchStats = vi.fn().mockResolvedValue(undefined);
+
+vi.mock("~/composables/useStats", () => ({
+  useStats: vi.fn(() => ({
+    stats: mockStats,
+    loadError: mockStatsLoadError,
+    fetchStats: mockFetchStats,
+  })),
+}));
+
+const DEFAULT_TRIPS: Trip[] = [
+  {
+    id: "trip-1",
+    userId: "user-1",
+    name: "Iceland, the ring road",
+    status: "past",
+    startDate: "2025-06-20T00:00:00.000Z",
+    endDate: "2025-06-29T00:00:00.000Z",
+    coverImageId: null,
+    distanceKm: 892,
+    visibility: "private",
+    createdAt: "2025-01-01T00:00:00.000Z",
+    updatedAt: "2025-01-01T00:00:00.000Z",
+  },
+  {
+    id: "trip-2",
+    userId: "user-1",
+    name: "Portugal, coast to coast",
+    status: "upcoming",
+    startDate: "2026-07-01T00:00:00.000Z",
+    endDate: "2026-07-10T00:00:00.000Z",
+    coverImageId: null,
+    distanceKm: null,
+    visibility: "private",
+    createdAt: "2025-01-02T00:00:00.000Z",
+    updatedAt: "2025-01-02T00:00:00.000Z",
+  },
+  {
+    id: "trip-3",
+    userId: "user-1",
+    name: "Norway in winter",
+    status: "upcoming",
+    startDate: null,
+    endDate: null,
+    coverImageId: null,
+    distanceKm: null,
+    visibility: "private",
+    createdAt: "2025-01-03T00:00:00.000Z",
+    updatedAt: "2025-01-03T00:00:00.000Z",
+  },
+];
 
 const mockChangePassword = vi.fn().mockResolvedValue(true);
 const mockUploadAvatar = vi.fn().mockResolvedValue(null);
@@ -180,8 +249,14 @@ const planManageButtonStub = {
   template: '<button class="plan-manage-btn"><slot /></button>',
 };
 
-const globalConfig = {
+const globalConfig: {
   global: {
+    plugins: unknown[];
+    stubs: Record<string, unknown>;
+  };
+} = {
+  global: {
+    plugins: [],
     stubs: {
       AppIcon: iconStub,
       AppTopbar: topbarStub,
@@ -197,10 +272,22 @@ const globalConfig = {
 describe("Settings page (/settings)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockStats.value = { ...DEFAULT_STATS_DATA };
+    mockStatsLoadError.value = null;
+    mockFetchStats.mockResolvedValue(undefined);
+
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    globalConfig.global.plugins = [pinia];
+
+    const tripsStore = useTripsStore();
+    tripsStore.tripList = [...DEFAULT_TRIPS];
+    vi.spyOn(tripsStore, "fetchTrips").mockResolvedValue();
   });
 
-  it("renders without crashing and matches snapshot", () => {
+  it("renders without crashing and matches snapshot", async () => {
     const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
     expect(wrapper.find(".set-layout").exists()).toBe(true);
     expect(wrapper.html()).toMatchSnapshot();
   });
@@ -412,6 +499,118 @@ describe("Settings page (/settings)", () => {
     await wrapper.find(".danger .btn").trigger("click");
     await wrapper.find(".modal .btn--ghost").trigger("click");
     expect(wrapper.find(".modal-scrim").classes()).not.toContain("is-open");
+  });
+
+  it("shows a generic message (no fabricated zero count) while counts are still loading", async () => {
+    // A deferred fetchStats that we control explicitly, rather than relying
+    // on how many microtask hops onMounted happens to take — flushPromises()
+    // only drains what's already pending, so this stays pending until we
+    // resolve it below regardless of the fetch chain's shape.
+    let resolveFetchStats: () => void = () => {};
+    mockFetchStats.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveFetchStats = resolve;
+        }),
+    );
+
+    const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).not.toContain("0 places");
+    expect(modalText).not.toContain("0 trips");
+    expect(modalText).toContain(
+      "All places, trips and photos are permanently erased",
+    );
+
+    resolveFetchStats();
+    await flushPromises();
+  });
+
+  it("shows the user's real place and trip counts in the delete confirmation, not hardcoded values", async () => {
+    const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).toContain("34 places");
+    expect(modalText).toContain("3 trips");
+  });
+
+  it("follows the real data when place/trip counts differ from the default mock, proving the counts are dynamic", async () => {
+    mockStats.value = { ...DEFAULT_STATS_DATA, placesCount: 200 };
+    const tripsStore = useTripsStore();
+    tripsStore.tripList = [
+      ...DEFAULT_TRIPS,
+      { ...DEFAULT_TRIPS[0], id: "trip-4" },
+      { ...DEFAULT_TRIPS[1], id: "trip-5" },
+    ];
+
+    const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).toContain("200 places");
+    expect(modalText).toContain("5 trips");
+  });
+
+  it("falls back to generic wording (no fabricated zero count) when stats fail to load", async () => {
+    // Mirrors the real useStats().fetchStats contract: it never rejects — on
+    // failure it resolves after resetting stats to zero and setting
+    // loadError, which is exactly the "0 places" trap this guard exists to
+    // avoid falling into.
+    mockFetchStats.mockImplementationOnce(async () => {
+      mockStats.value = { ...DEFAULT_STATS_DATA, placesCount: 0 };
+      mockStatsLoadError.value = "Failed to load stats";
+    });
+
+    const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).not.toContain("0 places");
+    expect(modalText).not.toContain("0 trips");
+    expect(modalText).toContain(
+      "All places, trips and photos are permanently erased",
+    );
+  });
+
+  it("falls back to generic wording (no fabricated zero count) when the trips list fails to load", async () => {
+    const tripsStore = useTripsStore();
+    vi.spyOn(tripsStore, "fetchTrips").mockRejectedValue(
+      new Error("Failed to load trips"),
+    );
+
+    const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).not.toContain("0 places");
+    expect(modalText).not.toContain("0 trips");
+    expect(modalText).toContain(
+      "All places, trips and photos are permanently erased",
+    );
+  });
+
+  it("uses singular wording for exactly one place and one trip", async () => {
+    mockStats.value = { ...DEFAULT_STATS_DATA, placesCount: 1 };
+    const tripsStore = useTripsStore();
+    tripsStore.tripList = [DEFAULT_TRIPS[0]];
+
+    const wrapper = mount(SettingsPage, globalConfig);
+    await flushPromises();
+    await wrapper.find(".danger .btn").trigger("click");
+
+    const modalText = wrapper.find(".modal").text();
+    expect(modalText).toContain("1 place");
+    expect(modalText).not.toContain("1 places");
+    expect(modalText).toContain("1 trip");
+    expect(modalText).not.toContain("1 trips");
   });
 
   it("shows saved toast after a successful save", async () => {

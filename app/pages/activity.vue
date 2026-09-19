@@ -23,18 +23,25 @@
         {{ error }}
       </div>
 
-      <div v-if="notifications.length === 0" class="activity__state">
-        No activity yet.
-      </div>
+      <!-- Fallback focus target when a dismiss empties the list: this
+           wrapper (not .activity__list) survives the toggle between the
+           empty state and the list below, since either branch can replace
+           the other as rows are dismissed. -->
+      <div ref="focusFallbackRef" class="activity__region" tabindex="-1">
+        <div v-if="notifications.length === 0" class="activity__state">
+          No activity yet.
+        </div>
 
-      <div v-else class="activity__list">
-        <ActivityNotificationItem
-          v-for="notification in notifications"
-          :key="notification.id"
-          :notification="notification"
-          :dismissing="dismissingIds.has(notification.id)"
-          @dismiss="handleDismiss"
-        />
+        <div v-else class="activity__list">
+          <ActivityNotificationItem
+            v-for="notification in notifications"
+            :key="notification.id"
+            :ref="(instance) => setItemRef(notification.id, instance)"
+            :notification="notification"
+            :dismissing="dismissingIds.has(notification.id)"
+            @dismiss="handleDismiss"
+          />
+        </div>
       </div>
     </template>
   </div>
@@ -42,6 +49,7 @@
 
 <script setup lang="ts">
 import ActivityNotificationItem from "~/components/ActivityNotificationItem.vue";
+import { useDismissFocusRestore } from "~/composables/useDismissFocusRestore";
 
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Activity" });
@@ -57,14 +65,25 @@ const {
   dismissNotification,
 } = useNotifications();
 
+const focusFallbackRef = ref<HTMLElement | null>(null);
+const { setItemRef, dismissWithFocusRestore } = useDismissFocusRestore(
+  () => notifications.value,
+  focusFallbackRef,
+);
+
 onMounted(() => {
   fetchAllNotifications().catch((fetchError: unknown) => {
     console.error("[activity] fetchAllNotifications failed", fetchError);
   });
 });
 
+// After a dismiss removes the focused row, moves keyboard focus to the
+// adjacent dismiss button (or the fallback wrapper as a last resort) instead
+// of letting it fall back to <body>. See useDismissFocusRestore for the
+// shared restore logic (also used by AppNotifications.vue, the header
+// drawer).
 async function handleDismiss(id: string): Promise<void> {
-  await dismissNotification(id);
+  await dismissWithFocusRestore(id, () => dismissNotification(id));
 }
 </script>
 
