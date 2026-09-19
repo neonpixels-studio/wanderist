@@ -10,6 +10,10 @@ import { extractErrorMessage } from "~/utils/extractErrorMessage";
 
 export function useAccountActions() {
   const { apiFetch } = useApiClient();
+  // Must be read synchronously here, during setup — useClerkInstance() (like
+  // any Clerk composable) relies on Vue's injection context, which is gone
+  // by the time an async action like deleteAccount() resumes after an await.
+  const clerk = useClerkInstance();
   const isLoading = ref(false);
   const passwordError = ref<string | null>(null);
   const avatarError = ref<string | null>(null);
@@ -78,20 +82,33 @@ export function useAccountActions() {
   }
 
   async function deleteAccount(): Promise<boolean> {
-    return runAction(
+    const deleted = await runAction(
       async () => {
         await apiFetch("/api/account", { method: "DELETE" });
-        // The server has already deleted the Clerk user, so the client's
-        // cached session is already dead — sign out locally too so the UI
-        // reflects that right away instead of showing stale signed-in
-        // chrome until the next token refresh fails.
-        const clerk = useClerk();
-        await clerk.signOut({ redirectUrl: "/" });
         return true;
       },
       deleteError,
       false,
     );
+
+    if (!deleted) {
+      return false;
+    }
+
+    // The server has already deleted the Clerk user, so the client's cached
+    // session is already dead — sign out locally too so the UI reflects that
+    // right away instead of showing stale signed-in chrome until the next
+    // token refresh fails. The account deletion itself already succeeded at
+    // this point, so a local sign-out failure (e.g. Clerk not yet loaded)
+    // must not flip the reported result back to false and reopen the delete
+    // flow for an account that no longer exists server-side.
+    try {
+      await clerk.value?.signOut({ redirectUrl: "/" });
+    } catch {
+      await navigateTo("/");
+    }
+
+    return true;
   }
 
   return {

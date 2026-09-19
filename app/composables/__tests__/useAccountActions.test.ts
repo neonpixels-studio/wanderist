@@ -4,6 +4,7 @@
  * `apiFetch` is mocked so no network calls are made.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { shallowRef } from "vue";
 import { useAccountActions } from "../useAccountActions";
 
 const mockApiFetch = vi.fn();
@@ -13,9 +14,13 @@ vi.mock("~/composables/useApiClient", () => ({
   useApiClient: vi.fn(() => ({ apiFetch: mockApiFetch })),
 }));
 
+// useClerkInstance() mirrors the real @clerk/nuxt useClerk() composable's
+// return shape (a ShallowRef<Clerk | null>), not a plain object — the code
+// under test dereferences .value, and a mock shaped like a plain object
+// would silently let that regress.
 vi.stubGlobal(
-  "useClerk",
-  vi.fn(() => ({ signOut: mockSignOut })),
+  "useClerkInstance",
+  vi.fn(() => shallowRef({ signOut: mockSignOut })),
 );
 
 describe("useAccountActions", () => {
@@ -124,9 +129,25 @@ describe("useAccountActions", () => {
       mockApiFetch.mockResolvedValue({ ok: true });
       const { deleteAccount } = useAccountActions();
 
-      await deleteAccount();
+      const result = await deleteAccount();
 
+      expect(result).toBe(true);
       expect(mockSignOut).toHaveBeenCalledWith({ redirectUrl: "/" });
+    });
+
+    it("still reports success when the local sign-out fails", async () => {
+      // The server has already deleted the Clerk user by the time signOut()
+      // runs, so a failure here is only stale client-side state — it must
+      // not flip a real deletion back into a reported failure, which would
+      // reopen the delete flow for an account that no longer exists.
+      mockApiFetch.mockResolvedValue({ ok: true });
+      mockSignOut.mockRejectedValueOnce(new Error("network"));
+      const { deleteAccount, deleteError } = useAccountActions();
+
+      const result = await deleteAccount();
+
+      expect(result).toBe(true);
+      expect(deleteError.value).toBeNull();
     });
 
     it("returns false and sets deleteError on failure", async () => {

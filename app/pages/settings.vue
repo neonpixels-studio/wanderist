@@ -503,16 +503,16 @@
           // confirm deletion
         </div>
         <h3 class="display">Delete your account?</h3>
-        <p v-if="deleteCountsAvailable">
+        <p>
           You'll be signed out right away and can't sign back in.
-          <b>{{ deletePlacesLabel }}</b
-          >, <b>{{ deleteTripsLabel }}</b> and all photos are permanently erased
-          {{ DELETION_GRACE_PERIOD_DAYS }} days later. Type <b>DELETE</b> to
-          confirm.
-        </p>
-        <p v-else>
-          You'll be signed out right away and can't sign back in. All places,
-          trips and photos are permanently erased
+          <template v-if="deleteCountsAvailable">
+            <b>{{ deletePlacesLabel }}</b
+            >, <b>{{ deleteTripsLabel }}</b> and all photos are permanently
+            erased
+          </template>
+          <template v-else>
+            All places, trips and photos are permanently erased
+          </template>
           {{ DELETION_GRACE_PERIOD_DAYS }} days later. Type <b>DELETE</b> to
           confirm.
         </p>
@@ -1008,14 +1008,10 @@ async function handleRemoveAvatar(): Promise<void> {
 }
 
 async function handleDeleteAccount(): Promise<void> {
-  const succeeded = await deleteAccount();
-
   // deleteAccount() already signs the client out and redirects to "/" on
-  // success (see useAccountActions), so there's nothing left to do here.
-  // Keep the modal open on failure so deleteError is visible to the user.
-  if (!succeeded) {
-    return;
-  }
+  // success (see useAccountActions). On failure it does nothing here,
+  // leaving the modal open so deleteError is visible to the user.
+  await deleteAccount();
 }
 
 function scrollTo(id: string) {
