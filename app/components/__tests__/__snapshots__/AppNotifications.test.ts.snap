@@ -3,7 +3,7 @@
 exports[`AppNotifications > renders the panel when open and matches snapshot 1`] = `
 "<div class="notif is-open" role="dialog" aria-label="Notifications">
   <div class="notif__head"><b>Notifications</b><button class="notif__mark"> mark all read </button></div>
-  <div class="notif__list">
+  <div class="notif__list" tabindex="-1">
     <!--v-if-->
     <!--v-if-->
     <div class="notif__item is-unread"><span class="notif__ico notif__ico--info"><svg data-icon="" name="instagram" size="16"></svg></span>

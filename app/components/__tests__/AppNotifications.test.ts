@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ref } from "vue";
-import { mount } from "@vue/test-utils";
+import { mount, flushPromises } from "@vue/test-utils";
 import AppNotifications from "../AppNotifications.vue";
+import { resolveNotificationText } from "~/utils/notificationDisplay";
 import type { AppNotification } from "~/composables/useNotifications";
 
 // Mutable refs so per-test overrides work without re-stubbing the global
@@ -79,7 +80,13 @@ describe("AppNotifications", () => {
     vi.clearAllMocks();
     mockMarkAllRead.mockResolvedValue(undefined);
     mockMarkRead.mockResolvedValue(undefined);
-    mockDismissNotification.mockResolvedValue(undefined);
+    // Mirrors the real composable's effect (filters the dismissed id out of
+    // the shared list) so focus-restore assertions see the post-dismiss DOM.
+    mockDismissNotification.mockImplementation(async (id: string) => {
+      notificationsRef.value = notificationsRef.value.filter(
+        (notification) => notification.id !== id,
+      );
+    });
     notificationsRef.value = [...SAMPLE_NOTIFICATIONS];
     isLoadingRef.value = false;
     errorRef.value = null;
@@ -353,5 +360,149 @@ describe("AppNotifications", () => {
     const dismissButtons = wrapper.findAll(".notif__dismiss");
     expect(dismissButtons[0]?.attributes("disabled")).toBeDefined();
     expect(dismissButtons[1]?.attributes("disabled")).toBeUndefined();
+  });
+
+  describe("keyboard focus after dismiss", () => {
+    // attachTo: document.body is required for jsdom/happy-dom to track
+    // document.activeElement across these focus assertions. The wrapper is
+    // unmounted in afterEach (not inline at the end of each `it`) so a
+    // failed assertion still detaches it — otherwise a stale mounted tree
+    // would linger in document.body and contaminate later tests' DOM queries
+    // and activeElement checks.
+    let wrapper: ReturnType<typeof mount> | undefined;
+    let outsideButton: HTMLButtonElement | undefined;
+
+    afterEach(() => {
+      wrapper?.unmount();
+      wrapper = undefined;
+      outsideButton?.remove();
+      outsideButton = undefined;
+    });
+
+    it("moves focus to the next row's dismiss button when a focused middle row is dismissed", async () => {
+      wrapper = mount(AppNotifications, {
+        props: { open: true },
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      // SAMPLE_NOTIFICATIONS has 3 rows; index 1 is a genuine middle row
+      // with both a previous and a next neighbor.
+      const dismissButtons = wrapper.findAll(".notif__dismiss");
+      const middleButton = dismissButtons[1];
+      const survivingNotification = SAMPLE_NOTIFICATIONS[2] as AppNotification;
+      middleButton?.element.focus();
+      expect(document.activeElement).toBe(middleButton?.element);
+
+      await middleButton?.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(
+        (document.activeElement as HTMLElement | null)?.getAttribute(
+          "aria-label",
+        ),
+      ).toContain(resolveNotificationText(survivingNotification));
+    });
+
+    it("moves focus to the previous row's dismiss button when the focused last row is dismissed", async () => {
+      wrapper = mount(AppNotifications, {
+        props: { open: true },
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButtons = wrapper.findAll(".notif__dismiss");
+      const lastButton = dismissButtons[dismissButtons.length - 1];
+      const survivingNotification = SAMPLE_NOTIFICATIONS[1] as AppNotification;
+      lastButton?.element.focus();
+
+      await lastButton?.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(
+        (document.activeElement as HTMLElement | null)?.getAttribute(
+          "aria-label",
+        ),
+      ).toContain(resolveNotificationText(survivingNotification));
+    });
+
+    it("falls back to the list container when dismissing the only (focused) row", async () => {
+      notificationsRef.value = [SAMPLE_NOTIFICATIONS[0] as AppNotification];
+
+      wrapper = mount(AppNotifications, {
+        props: { open: true },
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButton = wrapper.find(".notif__dismiss");
+      dismissButton.element.focus();
+
+      await dismissButton.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toBe(wrapper.find(".notif__list").element);
+    });
+
+    it("does not steal focus when the dismissed row's button was not focused", async () => {
+      outsideButton = document.createElement("button");
+      document.body.appendChild(outsideButton);
+      outsideButton.focus();
+
+      wrapper = mount(AppNotifications, {
+        props: { open: true },
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButton = wrapper.find(".notif__dismiss");
+
+      await dismissButton.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).toBe(outsideButton);
+    });
+
+    it("focuses the previous visible row (not a row sliding in from beyond the preview limit) when the last visible row is dismissed", async () => {
+      // DRAWER_PREVIEW_LIMIT is 12; a 13th notification sits just outside the
+      // preview and slides in once the last visible row is removed. Focus
+      // restore is identity-based (see useDismissFocusRestore) and only
+      // considers the dismissed row's immediate neighbors *as captured
+      // before the dismiss* — the row beyond the preview wasn't a neighbor
+      // at that point, so it's correctly never a focus target even though
+      // it becomes visible afterward.
+      const overflowNotifications: AppNotification[] = Array.from(
+        { length: 13 },
+        (_, index) => ({
+          id: `overflow-${index}`,
+          type: "like",
+          tone: "accent",
+          body: `Notification ${index}`,
+          isRead: true,
+          createdAt: new Date().toISOString(),
+          actor: null,
+        }),
+      );
+      notificationsRef.value = overflowNotifications;
+
+      wrapper = mount(AppNotifications, {
+        props: { open: true },
+        ...globalConfig,
+        attachTo: document.body,
+      });
+      const dismissButtons = wrapper.findAll(".notif__dismiss");
+      expect(dismissButtons).toHaveLength(12);
+      const lastVisibleButton = dismissButtons[11];
+      lastVisibleButton?.element.focus();
+
+      await lastVisibleButton?.trigger("click");
+      await flushPromises();
+
+      expect(document.activeElement).not.toBe(document.body);
+      expect(
+        (document.activeElement as HTMLElement | null)?.getAttribute(
+          "aria-label",
+        ),
+      ).toContain("Notification 10");
+    });
   });
 });
