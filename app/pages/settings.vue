@@ -500,8 +500,13 @@
           // confirm deletion
         </div>
         <h3 class="display">Delete your account?</h3>
-        <p>
-          This removes <b>117 places</b>, <b>9 trips</b> and all photos. Type
+        <p v-if="deleteCountsAvailable">
+          This removes <b>{{ deletePlacesLabel }}</b
+          >, <b>{{ deleteTripsLabel }}</b> and all photos. Type <b>DELETE</b> to
+          confirm.
+        </p>
+        <p v-else>
+          This removes all your places, trips and photos. Type
           <b>DELETE</b> to confirm.
         </p>
         <InputText v-model="deleteConfirm" placeholder="DELETE" />
@@ -541,6 +546,8 @@ import {
 } from "~/composables/useConnections";
 import { useAccountActions } from "~/composables/useAccountActions";
 import { useBilling } from "~/composables/useBilling";
+import { useStats } from "~/composables/useStats";
+import { useTripsStore } from "~/stores/trips";
 
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Settings" });
@@ -585,6 +592,35 @@ const {
   loadError: billingLoadError,
   fetchSubscription,
 } = useBilling();
+
+const { stats, loadError: statsLoadError, fetchStats } = useStats();
+const tripsStore = useTripsStore();
+
+// Guards the delete-confirmation copy: until both counts have actually
+// finished loading *successfully*, fall back to generic wording rather than
+// asserting a fabricated "0 places, 0 trips" — a wrong reassurance on the one
+// screen where the number is the whole point of the warning.
+//
+// `useStats().fetchStats` never rejects — on failure it catches internally,
+// resets `stats` to its zero defaults, and records the failure in
+// `statsLoadError` instead (see composables/useStats.ts). So a settle result
+// alone can't detect a failed stats fetch; `statsLoadError` is checked
+// directly. `tripsStore.fetchTrips` is the opposite — it does rethrow on
+// failure — so its settle result is what's checked for that half.
+const tripsCountLoaded = ref(false);
+const deleteCountsAvailable = computed(
+  () => tripsCountLoaded.value && statsLoadError.value === null,
+);
+
+const deletePlacesLabel = computed(() => {
+  const placesCount = stats.value.placesCount;
+  return `${placesCount} ${placesCount === 1 ? "place" : "places"}`;
+});
+
+const deleteTripsLabel = computed(() => {
+  const tripsCount = tripsStore.tripList.length;
+  return `${tripsCount} ${tripsCount === 1 ? "trip" : "trips"}`;
+});
 
 const PLAN_DISPLAY_NAMES: Record<string, string> = {
   drifter: "Drifter",
@@ -751,8 +787,20 @@ onMounted(async () => {
   // Mark the flag here so the watcher stops overwriting user edits after load.
   hasPopulatedFromServer.value = true;
 
-  await fetchConnections();
-  await fetchSubscription();
+  // Independent of each other and of preferences — run concurrently so one
+  // slow fetch doesn't delay the rest. fetchConnections/fetchSubscription/
+  // fetchStats each catch their own errors internally and never reject (see
+  // their composables), so a plain Promise.all is safe for them.
+  // tripsStore.fetchTrips is the one call that does reject on failure — it's
+  // converted to a boolean outcome up front so the delete-count guard reads
+  // an explicit, named result instead of indexing into a settled-results
+  // array positionally.
+  const tripsFetchSucceeded = tripsStore.fetchTrips().then(
+    () => true,
+    () => false,
+  );
+  await Promise.all([fetchConnections(), fetchSubscription(), fetchStats()]);
+  tripsCountLoaded.value = await tripsFetchSucceeded;
 });
 
 function handleConnectInstagram(): void {
