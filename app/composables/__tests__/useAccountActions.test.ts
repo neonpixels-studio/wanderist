@@ -150,6 +150,25 @@ describe("useAccountActions", () => {
       expect(deleteError.value).toBeNull();
     });
 
+    it("falls back to a plain redirect when Clerk has not loaded yet", async () => {
+      // clerk.value is null until the Clerk plugin finishes loading (see
+      // useClerkInstance's real @clerk/nuxt return type: ShallowRef<Clerk |
+      // null>). This must not be treated as a signOut() failure — there's no
+      // instance to call it on — but it still needs to get the user off the
+      // now-deleted account's page.
+      vi.mocked(globalThis.useClerkInstance).mockReturnValueOnce(
+        shallowRef(null),
+      );
+      mockApiFetch.mockResolvedValue({ ok: true });
+      const { deleteAccount, deleteError } = useAccountActions();
+
+      const result = await deleteAccount();
+
+      expect(result).toBe(true);
+      expect(deleteError.value).toBeNull();
+      expect(navigateTo).toHaveBeenCalledWith("/");
+    });
+
     it("returns false and sets deleteError on failure", async () => {
       mockApiFetch.mockRejectedValue(
         Object.assign(new Error("Failed"), {
@@ -188,6 +207,29 @@ describe("useAccountActions", () => {
 
       expect(isLoading.value).toBe(true);
       resolve();
+      await promise;
+      expect(isLoading.value).toBe(false);
+    });
+
+    it("stays true through the post-delete sign-out call, not just the DELETE request", async () => {
+      // Regression guard: the delete button disables on isLoading, and
+      // deleteAccount() does an apiFetch DELETE *then* an async sign-out.
+      // If isLoading dropped to false between those two steps, a second
+      // click could fire a second DELETE against an already-deleted account.
+      mockApiFetch.mockResolvedValue({ ok: true });
+      let resolveSignOut!: () => void;
+      mockSignOut.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          resolveSignOut = resolve;
+        }),
+      );
+
+      const { deleteAccount, isLoading } = useAccountActions();
+      const promise = deleteAccount();
+      await Promise.resolve(); // let the DELETE call's microtask settle
+
+      expect(isLoading.value).toBe(true);
+      resolveSignOut();
       await promise;
       expect(isLoading.value).toBe(false);
     });

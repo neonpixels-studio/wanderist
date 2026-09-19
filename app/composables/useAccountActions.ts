@@ -81,34 +81,42 @@ export function useAccountActions() {
     );
   }
 
+  // The server has already deleted the Clerk user by the time this runs, so
+  // the client's cached session is already dead — sign out locally too so
+  // the UI reflects that right away instead of showing stale signed-in
+  // chrome until the next token refresh fails. This is best-effort client
+  // cleanup only: it swallows its own failures (including Clerk not having
+  // loaded yet, when clerk.value is still null) and falls back to a plain
+  // navigation home, since by the time it runs the account deletion has
+  // already succeeded and nothing here should be able to report otherwise.
+  async function signOutLocally(): Promise<void> {
+    const clerkInstance = clerk.value;
+    if (!clerkInstance) {
+      await navigateTo("/");
+      return;
+    }
+    try {
+      await clerkInstance.signOut({ redirectUrl: "/" });
+    } catch {
+      await navigateTo("/");
+    }
+  }
+
   async function deleteAccount(): Promise<boolean> {
-    const deleted = await runAction(
+    return runAction(
       async () => {
         await apiFetch("/api/account", { method: "DELETE" });
+        // Kept inside this action (and therefore inside runAction's
+        // isLoading window) so the delete button/modal stay disabled for
+        // the full round trip, not just the initial DELETE — otherwise a
+        // second click during the sign-out call would fire a second DELETE
+        // against an account that's already gone.
+        await signOutLocally();
         return true;
       },
       deleteError,
       false,
     );
-
-    if (!deleted) {
-      return false;
-    }
-
-    // The server has already deleted the Clerk user, so the client's cached
-    // session is already dead — sign out locally too so the UI reflects that
-    // right away instead of showing stale signed-in chrome until the next
-    // token refresh fails. The account deletion itself already succeeded at
-    // this point, so a local sign-out failure (e.g. Clerk not yet loaded)
-    // must not flip the reported result back to false and reopen the delete
-    // flow for an account that no longer exists server-side.
-    try {
-      await clerk.value?.signOut({ redirectUrl: "/" });
-    } catch {
-      await navigateTo("/");
-    }
-
-    return true;
   }
 
   return {
