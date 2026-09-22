@@ -11,6 +11,11 @@ import {
   callHandler,
   assertThrows401WhenNotAuthenticated,
 } from "./_helpers";
+import { createFileTooLargeError } from "../../../server/utils/readCappedUploadBody";
+
+// 4 MB expressed in bytes — mirrors MAX_AVATAR_SIZE_BYTES in the handler
+// under test, so assertions here can't silently drift from it.
+const MAX_AVATAR_SIZE_BYTES = 4 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Hoist mock factories
@@ -108,6 +113,12 @@ describe("PATCH /api/account/avatar — upload", () => {
       "user-1",
       expect.any(Blob),
     );
+    // Proves the route asks the bounded reader for the avatar-specific cap
+    // (not, say, the larger media-route limit, or no cap at all).
+    expect(mockReadCappedUploadBody).toHaveBeenCalledWith(
+      expect.anything(),
+      MAX_AVATAR_SIZE_BYTES,
+    );
   });
 
   it("throws 415 for a disallowed content type", async () => {
@@ -121,16 +132,16 @@ describe("PATCH /api/account/avatar — upload", () => {
   it("propagates the 413 thrown by the size-cap reader (e.g. a lying/oversized upload)", async () => {
     // The actual byte-counting and streaming abort live in
     // readCappedUploadBody (see tests/server/utils/readCappedUploadBody.test.ts);
-    // this only proves the route doesn't swallow or alter its rejection.
-    mockReadCappedUploadBody.mockRejectedValue(
-      Object.assign(new Error("File too large. Maximum size is 4 MB"), {
-        statusCode: 413,
-      }),
-    );
+    // this only proves the route doesn't swallow, wrap, or alter its
+    // rejection. Building the error via the real (mock-passthrough)
+    // `createFileTooLargeError` — rather than a hand-rolled Error — means
+    // this test can't drift from the actual 413 message.
+    const capError = createFileTooLargeError(MAX_AVATAR_SIZE_BYTES);
+    mockReadCappedUploadBody.mockRejectedValue(capError);
 
-    await expect(
-      callHandler(handler, buildAccountEvent()),
-    ).rejects.toMatchObject({ statusCode: 413 });
+    await expect(callHandler(handler, buildAccountEvent())).rejects.toBe(
+      capError,
+    );
   });
 
   it("throws 413 on Content-Length alone before reading the body (early check)", async () => {
