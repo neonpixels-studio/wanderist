@@ -125,10 +125,9 @@ function buildRepairLikeCountStatement(
 }
 
 /**
- * Pulls the count-repair UPDATE's `RETURNING` row out of a batch's results.
- * The repair statement is always the last statement in the like/unlike batch
- * (see `likeContent`/`unlikeContent`), so its result sits at a fixed index —
- * no positional bookkeeping needed beyond that.
+ * Pulls the count-repair UPDATE's `RETURNING` row out of a batch's results,
+ * at the fixed index the repair statement always occupies (see
+ * `REPAIR_STATEMENT_INDEX`).
  */
 function extractRepairedRow<T extends Record<string, unknown>>(
   batchResults: unknown[],
@@ -163,11 +162,8 @@ const REPAIR_STATEMENT_INDEX = 1;
  * returns the parent row with its repaired count plus whether this call created
  * a new like. Safe to call repeatedly for the same (content, user) pair — the
  * count stays at exactly one and `created` is false after the first like.
- *
- * The insert and the count-repair run in one atomic `database.batch()` call
- * (see server/db/index.ts) rather than as two sequential HTTP round trips —
- * a failed repair can no longer leave a committed like row behind with a
- * stale count.
+ * Batches the insert with the count-repair — see
+ * `buildRepairLikeCountStatement`'s docstring for why.
  */
 export async function likeContent<T extends Record<string, unknown>>(
   database: Database,
@@ -202,12 +198,8 @@ export async function likeContent<T extends Record<string, unknown>>(
 
 /**
  * Removes a like (no-op if it was never there) and returns the parent row with
- * its repaired count.
- *
- * The delete and the count-repair run in one atomic `database.batch()` call
- * (see server/db/index.ts) rather than as two sequential HTTP round trips —
- * a failed repair can no longer leave a committed unlike behind with a stale
- * count.
+ * its repaired count. Batches the delete with the count-repair — see
+ * `buildRepairLikeCountStatement`'s docstring for why.
  */
 export async function unlikeContent<T extends Record<string, unknown>>(
   database: Database,
