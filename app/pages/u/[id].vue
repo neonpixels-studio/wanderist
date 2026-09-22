@@ -126,6 +126,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
 import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
+import { useOgMeta } from "~/composables/useOgMeta";
 
 const openCommandPalette = inject<(() => void) | undefined>(
   "openCommandPalette",
@@ -187,13 +188,24 @@ const handleLabel = computed(() => formatHandle(profile.value?.handle));
 const viewerIsFollowingTarget = computed(() => isFollowing(userId.value));
 const pending = computed(() => isPending(userId.value));
 
-useHead(
-  computed(() => ({
-    title: profile.value
-      ? `Wanderist — ${displayName.value}`
-      : "Wanderist — Profile",
-  })),
-);
+// Falls back to a stats summary when the traveler hasn't written a bio, so a
+// share-link preview never shows a blank description.
+const profileDescription = computed(() => {
+  if (!profile.value) {
+    return "A traveler's profile on Wanderist.";
+  }
+  if (profile.value.bio) {
+    return profile.value.bio;
+  }
+  return `${displayName.value} on Wanderist — ${profile.value.followerCount} followers, ${profile.value.placeCount} places.`;
+});
+
+useOgMeta(() => ({
+  title: profile.value
+    ? `Wanderist — ${displayName.value}`
+    : "Wanderist — Profile",
+  description: profileDescription.value,
+}));
 
 async function onToggleFollow(): Promise<void> {
   // Capture the target once: the viewer can navigate to another profile while

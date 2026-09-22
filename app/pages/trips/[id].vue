@@ -384,6 +384,7 @@ import { useMediaUpload } from "~/composables/useMediaUpload";
 import { moveIdUp, moveIdDown, moveIdToDropTarget } from "~/utils/stopOrder";
 import type { StopOrderMutator } from "~/utils/stopOrder";
 import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
+import { useOgMeta } from "~/composables/useOgMeta";
 
 // No auth middleware: a public trip must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private trip returns
@@ -514,13 +515,38 @@ const isLoading = computed(
   () => tripsStore.isLoadingDetail || !hasResolvedFetch.value,
 );
 
-useHead(
-  computed(() => ({
-    title: tripDetail.value
-      ? `Wanderist — ${tripDetail.value.trip.name}`
-      : "Wanderist — Trip",
-  })),
+// Falls back to a facts summary when nothing richer is available, so a
+// share-link preview never shows a blank description.
+const tripDescription = computed(() => {
+  if (!tripDetail.value) {
+    return "A trip on Wanderist.";
+  }
+  const stopCount = tripDetail.value.facts.stopCount;
+  const stopsPhrase = `${stopCount} ${stopCount === 1 ? "stop" : "stops"}`;
+  const distancePhrase =
+    tripDetail.value.facts.distanceKm != null
+      ? `, ${formatKm(tripDetail.value.facts.distanceKm)}`
+      : "";
+  return `${statusLabel.value} trip with ${stopsPhrase}${distancePhrase} on Wanderist.`;
+});
+
+// The trip's own coverImageId (not the optimistic pendingCoverUrl, which only
+// exists after an upload in the current session) drives the preview image so
+// a fresh visitor following a shared link — who never triggered an upload —
+// still gets the trip's real cover.
+const tripOgImagePath = computed(() =>
+  tripDetail.value?.trip.coverImageId
+    ? `/api/media/${tripDetail.value.trip.coverImageId}`
+    : null,
 );
+
+useOgMeta(() => ({
+  title: tripDetail.value
+    ? `Wanderist — ${tripDetail.value.trip.name}`
+    : "Wanderist — Trip",
+  description: tripDescription.value,
+  imagePath: tripOgImagePath.value,
+}));
 
 const sortedStops = computed<TripStop[]>(() => {
   if (!tripDetail.value) {

@@ -20,6 +20,19 @@ import type {
 const routeParams = reactive({ id: "user-1" });
 vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
 
+// Local, trackable useSeoMeta stub (#269 og/twitter meta coverage below):
+// the global default in vitest.setup.ts is a bare vi.fn() shared across
+// files, so this override lets tests inspect exactly what useOgMeta passed.
+const useSeoMetaMock = vi.fn();
+vi.stubGlobal("useSeoMeta", useSeoMetaMock);
+// Fixed site origin so absolute-URL assertions are deterministic, overriding
+// the blank default in vitest.setup.ts (kept blank there so unrelated
+// billing-route tests can assert on a missing site origin).
+vi.stubGlobal("useRuntimeConfig", () => ({
+  public: { siteOrigin: "https://wanderist.test" },
+}));
+vi.stubGlobal("useRequestURL", () => new URL("https://wanderist.test/"));
+
 // The page loads via useAsyncData; the global stub ignores the handler, so
 // invoke it here to exercise the mount-time fetches and record the call so the
 // wiring (key + watch on the route param) can be asserted. Re-running on param
@@ -431,5 +444,61 @@ describe("profile page", () => {
     // profile's count must not be bumped and no followers refetch should fire.
     expect(profile.value?.followerCount).toBe(3);
     expect(mockFetchFollowers).not.toHaveBeenCalled();
+  });
+
+  describe("Open Graph / Twitter meta (#269)", () => {
+    function lastSeoMetaCall(): Record<string, unknown> {
+      const call = useSeoMetaMock.mock.calls.at(-1)?.[0] as
+        Record<string, unknown> | undefined;
+      expect(call).toBeDefined();
+      return call as Record<string, unknown>;
+    }
+
+    it("emits og/twitter tags built from the loaded profile's bio", () => {
+      profile.value = { ...SAMPLE_PROFILE };
+
+      mount(ProfilePage, globalConfig);
+
+      const meta = lastSeoMetaCall();
+      const title = meta.title as () => string;
+      const description = meta.description as () => string;
+      const ogImage = meta.ogImage as () => string;
+      const ogUrl = meta.ogUrl as () => string;
+
+      expect(title()).toBe("Wanderist — Elsa");
+      expect((meta.ogTitle as () => string)()).toBe(title());
+      expect((meta.twitterTitle as () => string)()).toBe(title());
+      expect(description()).toBe("Cold-water swimmer chasing coastlines.");
+      expect((meta.ogDescription as () => string)()).toBe(description());
+      expect((meta.twitterDescription as () => string)()).toBe(description());
+      // No avatar exists on a profile, so the fallback favicon is used — still
+      // an absolute URL built from the configured site origin.
+      expect(ogImage()).toBe("https://wanderist.test/favicon.ico");
+      expect((meta.twitterImage as () => string)()).toBe(ogImage());
+      expect(ogUrl()).toMatch(/^https:\/\/wanderist\.test\//);
+      expect(meta.ogType).toBe("website");
+      expect(meta.twitterCard).toBe("summary_large_image");
+    });
+
+    it("falls back to a follower/place summary when the profile has no bio", () => {
+      profile.value = { ...SAMPLE_PROFILE, bio: null };
+
+      mount(ProfilePage, globalConfig);
+
+      const description = lastSeoMetaCall().description as () => string;
+      expect(description()).toBe("Elsa on Wanderist — 3 followers, 8 places.");
+    });
+
+    it("falls back to a placeholder title/description before a profile has loaded", () => {
+      profile.value = null;
+
+      mount(ProfilePage, globalConfig);
+
+      const meta = lastSeoMetaCall();
+      expect((meta.title as () => string)()).toBe("Wanderist — Profile");
+      expect((meta.description as () => string)()).toBe(
+        "A traveler's profile on Wanderist.",
+      );
+    });
   });
 });

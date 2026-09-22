@@ -12,6 +12,19 @@ import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
 const routeParams = reactive({ id: "trip-1" });
 vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
 
+// Local, trackable useSeoMeta stub (#269 og/twitter meta coverage below):
+// the global default in vitest.setup.ts is a bare vi.fn() shared across
+// files, so this override lets tests inspect exactly what useOgMeta passed.
+const useSeoMetaMock = vi.fn();
+vi.stubGlobal("useSeoMeta", useSeoMetaMock);
+// Fixed site origin so absolute-URL assertions are deterministic, overriding
+// the blank default in vitest.setup.ts (kept blank there so unrelated
+// billing-route tests can assert on a missing site origin).
+vi.stubGlobal("useRuntimeConfig", () => ({
+  public: { siteOrigin: "https://wanderist.test" },
+}));
+vi.stubGlobal("useRequestURL", () => new URL("https://wanderist.test/"));
+
 // The page derives isOwner from the signed-in Clerk user id vs the trip owner.
 // Drive that from a shared ref so a test can view the trip as its owner (all
 // edit controls render) or as a non-owner / anonymous visitor (read-only).
@@ -188,6 +201,7 @@ describe("Trip Detail page (/trips/[id])", () => {
     asyncDataStatus.value = "success";
     lastAsyncDataOptions = undefined;
     mockRefresh.mockClear();
+    useSeoMetaMock.mockClear();
     // Default: Clerk resolved, viewing as the trip's owner, so the owner-only
     // controls render.
     clerkLoadedRef.value = true;
@@ -981,5 +995,65 @@ describe("Trip Detail page (/trips/[id])", () => {
     await nextTick();
 
     expect(wrapper.find(".thero").exists()).toBe(false);
+  });
+
+  describe("Open Graph / Twitter meta (#269)", () => {
+    function lastSeoMetaCall(): Record<string, unknown> {
+      const call = useSeoMetaMock.mock.calls.at(-1)?.[0] as
+        Record<string, unknown> | undefined;
+      expect(call).toBeDefined();
+      return call as Record<string, unknown>;
+    }
+
+    it("emits og/twitter tags built from the loaded trip's facts, falling back to the favicon when the trip has no cover", () => {
+      const tripsStore = useTripsStore();
+      tripsStore.currentTripDetail = { ...SAMPLE_DETAIL };
+
+      mount(TripDetailPage, buildGlobalConfig(pinia));
+
+      const meta = lastSeoMetaCall();
+      const title = meta.title as () => string;
+      const description = meta.description as () => string;
+      const ogImage = meta.ogImage as () => string;
+      const ogUrl = meta.ogUrl as () => string;
+
+      expect(title()).toBe("Wanderist — Iceland, the ring road");
+      expect((meta.ogTitle as () => string)()).toBe(title());
+      expect((meta.twitterTitle as () => string)()).toBe(title());
+      expect(description()).toBe(
+        "Ongoing trip with 3 stops, 1,332 km on Wanderist.",
+      );
+      expect((meta.ogDescription as () => string)()).toBe(description());
+      expect((meta.twitterDescription as () => string)()).toBe(description());
+      expect(ogImage()).toBe("https://wanderist.test/favicon.ico");
+      expect((meta.twitterImage as () => string)()).toBe(ogImage());
+      expect(ogUrl()).toMatch(/^https:\/\/wanderist\.test\//);
+      expect(meta.ogType).toBe("website");
+      expect(meta.twitterCard).toBe("summary_large_image");
+    });
+
+    it("builds an absolute og:image from the trip's real cover, not the optimistic upload preview", () => {
+      const tripsStore = useTripsStore();
+      tripsStore.currentTripDetail = {
+        ...SAMPLE_DETAIL,
+        trip: { ...SAMPLE_DETAIL.trip, coverImageId: "media-abc123" },
+      };
+
+      mount(TripDetailPage, buildGlobalConfig(pinia));
+
+      const ogImage = lastSeoMetaCall().ogImage as () => string;
+      expect(ogImage()).toBe("https://wanderist.test/api/media/media-abc123");
+    });
+
+    it("falls back to a placeholder title/description before a trip has loaded", () => {
+      const tripsStore = useTripsStore();
+      tripsStore.currentTripDetail = null;
+
+      mount(TripDetailPage, buildGlobalConfig(pinia));
+
+      const meta = lastSeoMetaCall();
+      expect((meta.title as () => string)()).toBe("Wanderist — Trip");
+      expect((meta.description as () => string)()).toBe("A trip on Wanderist.");
+    });
   });
 });

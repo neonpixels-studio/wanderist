@@ -13,6 +13,19 @@ import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
 const routeParams = reactive({ id: "guide-1" });
 vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
 
+// Local, trackable useSeoMeta stub (#269 og/twitter meta coverage below):
+// the global default in vitest.setup.ts is a bare vi.fn() shared across
+// files, so this override lets tests inspect exactly what useOgMeta passed.
+const useSeoMetaMock = vi.fn();
+vi.stubGlobal("useSeoMeta", useSeoMetaMock);
+// Fixed site origin so absolute-URL assertions are deterministic, overriding
+// the blank default in vitest.setup.ts (kept blank there so unrelated
+// billing-route tests can assert on a missing site origin).
+vi.stubGlobal("useRuntimeConfig", () => ({
+  public: { siteOrigin: "https://wanderist.test" },
+}));
+vi.stubGlobal("useRequestURL", () => new URL("https://wanderist.test/"));
+
 // The fetch's canRetryAuthenticated watch reads useClerkAuth; drive it from
 // refs so a test can simulate the Clerk bootstrap window and a signed-in
 // owner's session resolving after the anonymous first pass.
@@ -106,6 +119,7 @@ describe("Guide Detail page (/guides/[id])", () => {
     routeParams.id = "guide-1";
     asyncDataStatus.value = "success";
     mockRefresh.mockClear();
+    useSeoMetaMock.mockClear();
     // Default: Clerk resolved and signed in, matching most existing assertions
     // (which don't exercise the auth-aware refetch itself).
     clerkLoadedRef.value = true;
@@ -462,5 +476,71 @@ describe("Guide Detail page (/guides/[id])", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(wrapper.text()).not.toContain("Tokyo on foot");
     expect(wrapper.text()).toContain("Guide not found.");
+  });
+
+  describe("Open Graph / Twitter meta (#269)", () => {
+    function lastSeoMetaCall(): Record<string, unknown> {
+      const call = useSeoMetaMock.mock.calls.at(-1)?.[0] as
+        Record<string, unknown> | undefined;
+      expect(call).toBeDefined();
+      return call as Record<string, unknown>;
+    }
+
+    it("emits og/twitter tags built from the loaded guide's body", () => {
+      const guidesStore = useGuidesStore();
+      guidesStore.currentGuide = { ...SAMPLE_GUIDE };
+
+      mount(GuideDetailPage, buildGlobalConfig(pinia));
+
+      const meta = lastSeoMetaCall();
+      const title = meta.title as () => string;
+      const description = meta.description as () => string;
+      const ogImage = meta.ogImage as () => string;
+      const ogUrl = meta.ogUrl as () => string;
+
+      expect(title()).toBe("Wanderist — Tokyo on foot");
+      expect((meta.ogTitle as () => string)()).toBe(title());
+      expect((meta.twitterTitle as () => string)()).toBe(title());
+      expect(description()).toBe(
+        "Start in Yanaka at sunrise.\n\nEnd at the river by dusk.",
+      );
+      expect((meta.ogDescription as () => string)()).toBe(description());
+      expect((meta.twitterDescription as () => string)()).toBe(description());
+      // No cover image exists on a guide, so the fallback favicon is used —
+      // still an absolute URL built from the configured site origin.
+      expect(ogImage()).toBe("https://wanderist.test/favicon.ico");
+      expect((meta.twitterImage as () => string)()).toBe(ogImage());
+      expect(ogUrl()).toMatch(/^https:\/\/wanderist\.test\//);
+      expect(meta.ogType).toBe("website");
+      expect(meta.twitterCard).toBe("summary_large_image");
+    });
+
+    it("falls back to a byline/read-time description when the guide has no body", () => {
+      const guidesStore = useGuidesStore();
+      guidesStore.currentGuide = {
+        ...SAMPLE_GUIDE,
+        body: null,
+        ownerHandle: "elsa_far",
+        ownerDisplayName: null,
+      };
+
+      mount(GuideDetailPage, buildGlobalConfig(pinia));
+
+      const description = lastSeoMetaCall().description as () => string;
+      expect(description()).toBe("8 min read, by @elsa_far on Wanderist.");
+    });
+
+    it("falls back to placeholder title/description before a guide has loaded", () => {
+      const guidesStore = useGuidesStore();
+      guidesStore.currentGuide = null;
+
+      mount(GuideDetailPage, buildGlobalConfig(pinia));
+
+      const meta = lastSeoMetaCall();
+      expect((meta.title as () => string)()).toBe("Wanderist — Guide");
+      expect((meta.description as () => string)()).toBe(
+        "A shared travel guide on Wanderist.",
+      );
+    });
   });
 });
