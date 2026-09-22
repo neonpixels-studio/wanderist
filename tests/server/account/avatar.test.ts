@@ -72,13 +72,16 @@ Object.assign(globalThis, {
 const { default: handler, MAX_AVATAR_SIZE_BYTES } =
   await import("../../../server/api/account/avatar.patch");
 
-function stubUploadHeaders(contentType = "image/jpeg"): void {
+function stubUploadHeaders(
+  contentType = "image/jpeg",
+  contentLength = "100",
+): void {
   mockGetHeader.mockImplementation((_event: unknown, header: string) => {
     if (header === "content-type") {
       return contentType;
     }
     if (header === "content-length") {
-      return "100";
+      return contentLength;
     }
     return null;
   });
@@ -144,15 +147,7 @@ describe("PATCH /api/account/avatar — upload", () => {
     // Stub content-length one byte over the avatar cap so this exercises the
     // `>` boundary itself (an off-by-one, e.g. `>` becoming `>=`, would flip
     // this test) rather than an arbitrarily larger value.
-    mockGetHeader.mockImplementation((_event: unknown, header: string) => {
-      if (header === "content-type") {
-        return "image/jpeg";
-      }
-      if (header === "content-length") {
-        return String(MAX_AVATAR_SIZE_BYTES + 1);
-      }
-      return null;
-    });
+    stubUploadHeaders("image/jpeg", String(MAX_AVATAR_SIZE_BYTES + 1));
 
     await expect(
       callHandler(handler, buildAccountEvent()),
@@ -161,15 +156,7 @@ describe("PATCH /api/account/avatar — upload", () => {
   });
 
   it("allows a Content-Length exactly at the avatar cap through the early check", async () => {
-    mockGetHeader.mockImplementation((_event: unknown, header: string) => {
-      if (header === "content-type") {
-        return "image/jpeg";
-      }
-      if (header === "content-length") {
-        return String(MAX_AVATAR_SIZE_BYTES);
-      }
-      return null;
-    });
+    stubUploadHeaders("image/jpeg", String(MAX_AVATAR_SIZE_BYTES));
 
     await callHandler(handler, buildAccountEvent());
 
@@ -185,15 +172,7 @@ describe("PATCH /api/account/avatar — upload", () => {
     // proceeds to the streaming cap (the real backstop) instead of trusting
     // an untrustworthy header directly. Mirrors the equivalent case in
     // tests/server/media.test.ts.
-    mockGetHeader.mockImplementation((_event: unknown, header: string) => {
-      if (header === "content-type") {
-        return "image/jpeg";
-      }
-      if (header === "content-length") {
-        return "not-a-number";
-      }
-      return null;
-    });
+    stubUploadHeaders("image/jpeg", "not-a-number");
 
     await callHandler(handler, buildAccountEvent());
 
