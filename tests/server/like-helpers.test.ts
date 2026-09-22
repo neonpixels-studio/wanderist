@@ -217,6 +217,18 @@ describe("likeContent", () => {
     ).rejects.toMatchObject({ statusCode: 500 });
   });
 
+  it("throws 500 when the insert statement's batch result isn't an array (same guard, the other batch position)", async () => {
+    const { db, batch } = makeLikeDb({});
+    batch.mockResolvedValueOnce([
+      { unexpected: "shape" },
+      [{ id: "e-1", likeCount: 1 }],
+    ]);
+
+    await expect(
+      likeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2"),
+    ).rejects.toMatchObject({ statusCode: 500 });
+  });
+
   it("runs the insert and the count-repair, in that order, as one atomic database.batch() call", async () => {
     const repaired = { id: "e-1", likeCount: 1 };
     const { db, batch, insertResultPromise, updateResultPromise } =

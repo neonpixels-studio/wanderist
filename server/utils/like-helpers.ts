@@ -98,14 +98,12 @@ export async function loadLikeableOrThrow<T extends LikeableRow>(
 /**
  * Builds (but does not run) the count-repair UPDATE: recomputes the
  * denormalised like count from the join table and writes it back to the
- * parent row. This is the single source of truth for the count — every
- * like/unlike derives it from a COUNT rather than a `+ 1`/`- 1`, so the cache
- * self-heals and can never drift below zero or double-count an idempotent
- * like. Split out from running it so `likeContent`/`unlikeContent` can pair
- * this statement with their like-row write in one atomic
- * `database.batch()` call (see server/db/index.ts) instead of two
- * independent HTTP round trips with a committed-write-then-failing-repair gap
- * between them.
+ * parent row, every like/unlike deriving it from a COUNT rather than a
+ * `+ 1`/`- 1` so it self-corrects instead of compounding drift. Split out
+ * from running it so `likeContent`/`unlikeContent` can pair this statement
+ * with their like-row write in one atomic `database.batch()` call (see
+ * server/db/index.ts) instead of two independent HTTP round trips with a
+ * committed-write-then-failing-repair gap between them.
  */
 function buildRepairLikeCountStatement(
   database: Database,
@@ -124,37 +122,43 @@ function buildRepairLikeCountStatement(
     .returning();
 }
 
-// Fixed positions within the two-statement like/unlike batch — see
-// buildRepairLikeCountStatement's docstring for why the repair statement
-// always rides alongside the like-row write in one atomic call. The repair
-// statement is always last, so extractRepairedRow reads this constant
-// directly rather than taking a caller-supplied index every call site would
-// pass the same value for.
+// Positions within the like/unlike batch; the repair statement is always last.
 const LIKE_WRITE_STATEMENT_INDEX = 0;
 const REPAIR_STATEMENT_INDEX = 1;
 
 /**
- * Pulls the count-repair UPDATE's `RETURNING` row out of a batch's results at
- * `REPAIR_STATEMENT_INDEX`. Throws 404 both when the row was never found (the
- * unlike path: the content row vanished between `loadLikeableOrThrow` and
- * this update) and, defensively, when the batch result at that index isn't
- * the array `RETURNING` always produces — a shape a driver change could
- * introduce, and one that should fail loudly rather than silently read as
- * "row not found".
+ * Reads one statement's `RETURNING` rows out of a batch's results at
+ * `statementIndex`. `RETURNING` always produces an array, so a non-array
+ * result means the driver's response shape changed underneath this code —
+ * that should fail loudly (500) rather than being silently misread as an
+ * empty or missing result.
+ */
+function readReturningRows(
+  batchResults: unknown[],
+  statementIndex: number,
+): unknown[] {
+  const result = batchResults[statementIndex];
+
+  if (!Array.isArray(result)) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: "Unexpected batch result shape",
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Pulls the count-repair UPDATE's `RETURNING` row out of a batch's results.
+ * Throws 404 when the row was never found — the unlike path, where the
+ * content row vanished between `loadLikeableOrThrow` and this update.
  */
 function extractRepairedRow<T extends Record<string, unknown>>(
   batchResults: unknown[],
 ): T {
-  const repairResult = batchResults[REPAIR_STATEMENT_INDEX];
-
-  if (!Array.isArray(repairResult)) {
-    throw createError({
-      statusCode: 500,
-      statusMessage: "Unexpected count-repair batch result shape",
-    });
-  }
-
-  const row = repairResult[0] as T | undefined;
+  const row = readReturningRows(batchResults, REPAIR_STATEMENT_INDEX)[0] as
+    T | undefined;
 
   if (!row) {
     throw createError({ statusCode: 404, statusMessage: "Not found" });
@@ -202,9 +206,7 @@ export async function likeContent<T extends Record<string, unknown>>(
     repairStatement,
   ]);
 
-  const inserted = batchResults[LIKE_WRITE_STATEMENT_INDEX] as {
-    userId: unknown;
-  }[];
+  const inserted = readReturningRows(batchResults, LIKE_WRITE_STATEMENT_INDEX);
   const content = extractRepairedRow<T>(batchResults);
 
   return { content, created: inserted.length > 0 };
