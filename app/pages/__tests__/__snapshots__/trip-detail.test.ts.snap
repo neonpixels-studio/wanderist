@@ -110,10 +110,10 @@ exports[`Trip Detail page (/trips/[id]) > renders without crashing and matches s
         <div data-v-a25903e0="" class="fact"><span data-v-a25903e0="" class="k">Visibility</span><span data-v-a25903e0="" class="v">Private</span></div>
       </div>
       <div data-v-a25903e0="" class="rail-card">
-        <h4 data-v-a25903e0="" class="display" style="display: flex; align-items: center; justify-content: space-between;"> Travelling with <button data-v-a25903e0="" class="label label--plain" style="font-size: 10px; border: none none; background: none none; color: var(--accent-ink); opacity: 0.5; cursor: not-allowed;" disabled="" title="Inviting co-travellers isn't available yet"> invite </button></h4>
+        <h4 data-v-a25903e0="" class="display" style="display: flex; align-items: center; justify-content: space-between;"> Travelling with <button data-v-a25903e0="" class="label label--plain" style="font-size: 10px; border: none none; background: none none; color: var(--accent-ink);" disabled="" title="Inviting co-travellers isn't available yet"> invite </button></h4>
         <div data-v-a25903e0="" class="companions">
-          <div data-v-a25903e0="" class="companion companion--disabled" title="Inviting co-travellers isn't available yet"><span data-v-a25903e0="" class="companion__av" style="background: var(--bg-tint); color: var(--muted);"><svg data-v-a25903e0="" data-icon="" name="plus" size="16"></svg></span>
-            <div data-v-a25903e0=""><b data-v-a25903e0="">Invite someone</b><br data-v-a25903e0=""><span data-v-a25903e0="">add a co-traveller</span></div>
+          <div data-v-a25903e0="" class="companion companion--disabled" aria-disabled="true" title="Inviting co-travellers isn't available yet"><span data-v-a25903e0="" class="companion__av" style="background: var(--bg-tint); color: var(--muted);"><svg data-v-a25903e0="" data-icon="" name="plus" size="16"></svg></span>
+            <div data-v-a25903e0=""><b data-v-a25903e0="">Invite someone</b><br data-v-a25903e0=""><span data-v-a25903e0="">coming soon</span></div>
           </div>
         </div>
       </div>

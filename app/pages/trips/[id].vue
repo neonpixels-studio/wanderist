@@ -352,12 +352,9 @@
                 border: none;
                 background: none;
                 color: var(--accent-ink);
-                opacity: 0.5;
-                cursor: not-allowed;
               "
               disabled
               :title="inviteUnavailableTitle"
-              @click="onInvite"
             >
               invite
             </button>
@@ -365,6 +362,7 @@
           <div class="companions">
             <div
               class="companion companion--disabled"
+              aria-disabled="true"
               :title="inviteUnavailableTitle"
             >
               <span
@@ -373,9 +371,7 @@
               >
                 <AppIcon name="plus" :size="16" />
               </span>
-              <div>
-                <b>Invite someone</b><br /><span>add a co-traveller</span>
-              </div>
+              <div><b>Invite someone</b><br /><span>coming soon</span></div>
             </div>
           </div>
         </div>
@@ -1019,15 +1015,9 @@ async function onShare(): Promise<void> {
 // no invite endpoint). The follow system (useFollows) handles user follows
 // but not trip-level collaborator invitations. Until that backend exists,
 // the invite button/row render disabled with this tooltip instead of
-// silently no-opping. Tracked for a future API endpoint addition.
+// silently no-opping.
+// @todo Re-enable invite once a trip collaborator/invite endpoint exists.
 const inviteUnavailableTitle = "Inviting co-travellers isn't available yet";
-
-function onInvite(): void {
-  // Unreachable in the browser: the button is `disabled`, and native
-  // disabled buttons never dispatch click events. Kept only so a
-  // programmatic .trigger('click') in tests exercises a real no-op rather
-  // than a missing handler.
-}
 </script>
 
 <style scoped>
@@ -1405,6 +1395,10 @@ function onInvite(): void {
   color: var(--muted);
 }
 .companion--disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.label--plain:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }
