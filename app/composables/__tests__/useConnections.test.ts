@@ -71,10 +71,10 @@ describe("useConnections", () => {
       ).toBe("user@gmail.com");
     });
 
-    it("sets loadError when the API call fails", async () => {
+    it("sets loadError from a server-intended data.statusMessage when the API call fails", async () => {
       mockApiFetch.mockRejectedValueOnce(
         Object.assign(new Error("Network error"), {
-          statusMessage: "Network error",
+          data: { statusMessage: "Network error" },
         }),
       );
 
@@ -83,6 +83,21 @@ describe("useConnections", () => {
 
       expect((loadError as { value: string | null }).value).toBe(
         "Network error",
+      );
+    });
+
+    it("never surfaces a raw Error message — falls back to the generic message", async () => {
+      // Regression guard for the shared extractErrorMessage bug: this
+      // composable used to carry its own local copy of the function (with
+      // the same raw-message leak) instead of importing the shared,
+      // fixed utility.
+      mockApiFetch.mockRejectedValueOnce(new Error("network down"));
+
+      const { fetchConnections, loadError } = useConnections();
+      await fetchConnections();
+
+      expect((loadError as { value: string | null }).value).toBe(
+        "An unexpected error occurred",
       );
     });
   });
@@ -107,7 +122,7 @@ describe("useConnections", () => {
     it("sets actionError and returns false on failure", async () => {
       mockApiFetch.mockRejectedValueOnce(
         Object.assign(new Error("Not connected"), {
-          statusMessage: "Not connected",
+          data: { statusMessage: "Not connected" },
         }),
       );
 

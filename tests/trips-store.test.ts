@@ -386,7 +386,23 @@ describe("useTripsStore", () => {
       const store = useTripsStore();
       await expect(store.fetchTripById("trip-1")).rejects.toThrow("Not found");
 
-      expect(store.detailError).toBe("Not found");
+      expect(store.detailError).toBe("An unexpected error occurred");
+    });
+
+    it("surfaces a server-intended data.statusMessage as detailError", async () => {
+      // Regression guard: proves detailError is actually wired to
+      // extractErrorMessage's output, not just hardcoded to the generic
+      // fallback (which the test above alone wouldn't catch).
+      mockApiFetch.mockRejectedValue(
+        Object.assign(new Error("Bad Request"), {
+          data: { statusMessage: "Trip is temporarily unavailable" },
+        }),
+      );
+
+      const store = useTripsStore();
+      await expect(store.fetchTripById("trip-1")).rejects.toThrow();
+
+      expect(store.detailError).toBe("Trip is temporarily unavailable");
     });
   });
 

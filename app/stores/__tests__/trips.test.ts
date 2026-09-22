@@ -93,7 +93,23 @@ describe("useTripsStore", () => {
 
       expect(store.currentTripDetail).toBeNull();
       expect(store.detailNotFound).toBe(false);
-      expect(store.detailError).toBe("Unauthorized");
+      expect(store.detailError).toBe("An unexpected error occurred");
+    });
+
+    it("surfaces a server-intended data.statusMessage as detailError", async () => {
+      // Regression guard: proves `detailError` is actually wired to
+      // extractErrorMessage's output, not just hardcoded to the generic
+      // fallback (which the tests above alone wouldn't catch).
+      mockApiFetch.mockRejectedValue(
+        Object.assign(new Error("Bad Request"), {
+          data: { statusMessage: "Trip is temporarily unavailable" },
+        }),
+      );
+      const store = useTripsStore();
+
+      await expect(store.fetchTripById("trip-1")).rejects.toThrow();
+
+      expect(store.detailError).toBe("Trip is temporarily unavailable");
     });
 
     it("sets detailError (not detailNotFound) on a 5xx, so a share-link visitor sees a retryable error instead of the trip looking deleted", async () => {
@@ -107,7 +123,7 @@ describe("useTripsStore", () => {
 
       expect(store.currentTripDetail).toBeNull();
       expect(store.detailNotFound).toBe(false);
-      expect(store.detailError).toBe("Internal Server Error");
+      expect(store.detailError).toBe("An unexpected error occurred");
     });
 
     it("sets detailError (not detailNotFound) on a network failure with no status code", async () => {
@@ -117,7 +133,7 @@ describe("useTripsStore", () => {
       await expect(store.fetchTripById("trip-1")).rejects.toThrow();
 
       expect(store.detailNotFound).toBe(false);
-      expect(store.detailError).toBe("Failed to fetch");
+      expect(store.detailError).toBe("An unexpected error occurred");
     });
 
     it("clears a stale trip on failure when nothing valid is displayed for the requested id", async () => {
@@ -155,7 +171,7 @@ describe("useTripsStore", () => {
       await expect(store.fetchTripById("trip-1")).rejects.toThrow();
 
       expect(store.currentTripDetail).toEqual(SAMPLE_TRIP_DETAIL);
-      expect(store.detailError).toBe("Internal Server Error");
+      expect(store.detailError).toBe("An unexpected error occurred");
     });
 
     it("clears the already-displayed trip on a 404 even when it was loaded for the same id", async () => {

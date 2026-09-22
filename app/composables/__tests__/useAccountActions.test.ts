@@ -84,7 +84,7 @@ describe("useAccountActions", () => {
       const imageUrl = await uploadAvatar(file);
 
       expect(imageUrl).toBeNull();
-      expect(avatarError.value).toBe("Upload failed");
+      expect(avatarError.value).toBe("An unexpected error occurred");
     });
   });
 
@@ -109,7 +109,7 @@ describe("useAccountActions", () => {
       const result = await removeAvatar();
 
       expect(result).toBe(false);
-      expect(avatarError.value).toBe("Remove failed");
+      expect(avatarError.value).toBe("An unexpected error occurred");
     });
   });
 
