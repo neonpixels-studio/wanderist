@@ -352,14 +352,21 @@
                 border: none;
                 background: none;
                 color: var(--accent-ink);
+                opacity: 0.5;
+                cursor: not-allowed;
               "
+              disabled
+              :title="inviteUnavailableTitle"
               @click="onInvite"
             >
               invite
             </button>
           </h4>
           <div class="companions">
-            <div class="companion">
+            <div
+              class="companion companion--disabled"
+              :title="inviteUnavailableTitle"
+            >
               <span
                 class="companion__av"
                 style="background: var(--bg-tint); color: var(--muted)"
@@ -1007,11 +1014,19 @@ async function onShare(): Promise<void> {
   await copyPublicLink(trip.id);
 }
 
+// Companion invite requires a collaborator/follow-system endpoint that is
+// not yet exposed via the current API surface (no trip_collaborators table,
+// no invite endpoint). The follow system (useFollows) handles user follows
+// but not trip-level collaborator invitations. Until that backend exists,
+// the invite button/row render disabled with this tooltip instead of
+// silently no-opping. Tracked for a future API endpoint addition.
+const inviteUnavailableTitle = "Inviting co-travellers isn't available yet";
+
 function onInvite(): void {
-  // Companion invite requires a collaborator/follow-system endpoint that is
-  // not yet exposed via the current API surface. This is a no-op placeholder;
-  // the follow system (useFollows) handles user follows but not trip-level
-  // collaborator invitations. Tracked for a future API endpoint addition.
+  // Unreachable in the browser: the button is `disabled`, and native
+  // disabled buttons never dispatch click events. Kept only so a
+  // programmatic .trigger('click') in tests exercises a real no-op rather
+  // than a missing handler.
 }
 </script>
 
@@ -1388,6 +1403,10 @@ function onInvite(): void {
 .companion span {
   font-size: 11px;
   color: var(--muted);
+}
+.companion--disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .alert--error {

@@ -262,6 +262,28 @@ describe("Trip Detail page (/trips/[id])", () => {
     expect(wrapper.html()).toContain("Invite someone");
   });
 
+  it("disables the invite button and row with a not-available tooltip instead of silently no-opping", async () => {
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    const inviteButton = wrapper
+      .findAll("button.label--plain")
+      .find((button) => button.text() === "invite")!;
+    expect(inviteButton.attributes("disabled")).toBeDefined();
+    expect(inviteButton.attributes("title")).toBe(
+      "Inviting co-travellers isn't available yet",
+    );
+
+    const companionRow = wrapper.find(".companion--disabled");
+    expect(companionRow.exists()).toBe(true);
+    expect(companionRow.attributes("title")).toBe(
+      "Inviting co-travellers isn't available yet",
+    );
+
+    // A disabled button never dispatches a real click in the browser; trigger
+    // it anyway to prove the handler is a safe no-op rather than throwing.
+    await expect(inviteButton.trigger("click")).resolves.not.toThrow();
+  });
+
   it("shows loading state when isLoadingDetail is true", async () => {
     const tripsStore = useTripsStore();
     tripsStore.currentTripDetail = null;
