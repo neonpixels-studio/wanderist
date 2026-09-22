@@ -193,11 +193,28 @@ describe("likeContent", () => {
   });
 
   it("throws 404 when the row vanished before the count repair", async () => {
-    const { db } = makeLikeDb({}, { returning: [] });
+    const { db, batch } = makeLikeDb({}, { returning: [] });
 
     await expect(
       likeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2"),
     ).rejects.toMatchObject({ statusCode: 404 });
+    // The 404 must come from the batch's repair-statement result, not a
+    // leftover sequential post-batch call.
+    expect(batch).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws 500 when the repair statement's batch result isn't an array (defends against a driver shape change)", async () => {
+    const { db, batch } = makeLikeDb({});
+    // extractRepairedRow is shared by likeContent/unlikeContent — exercising
+    // the guard once here through likeContent covers both callers.
+    batch.mockResolvedValueOnce([
+      [{ userId: "liker-2" }],
+      { unexpected: "shape" },
+    ]);
+
+    await expect(
+      likeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2"),
+    ).rejects.toMatchObject({ statusCode: 500 });
   });
 
   it("runs the insert and the count-repair, in that order, as one atomic database.batch() call", async () => {
@@ -264,11 +281,14 @@ describe("unlikeContent", () => {
   });
 
   it("throws 404 when the row vanished before the count repair", async () => {
-    const { db } = makeLikeDb({}, { returning: [] });
+    const { db, batch } = makeLikeDb({}, { returning: [] });
 
     await expect(
       unlikeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2"),
     ).rejects.toMatchObject({ statusCode: 404 });
+    // The 404 must come from the batch's repair-statement result, not a
+    // leftover sequential post-batch call.
+    expect(batch).toHaveBeenCalledTimes(1);
   });
 
   it("runs the delete and the count-repair, in that order, as one atomic database.batch() call", async () => {

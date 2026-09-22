@@ -124,23 +124,43 @@ function buildRepairLikeCountStatement(
     .returning();
 }
 
+// Fixed positions within the two-statement like/unlike batch — see
+// buildRepairLikeCountStatement's docstring for why the repair statement
+// always rides alongside the like-row write in one atomic call. The repair
+// statement is always last, so extractRepairedRow reads this constant
+// directly rather than taking a caller-supplied index every call site would
+// pass the same value for.
+const LIKE_WRITE_STATEMENT_INDEX = 0;
+const REPAIR_STATEMENT_INDEX = 1;
+
 /**
- * Pulls the count-repair UPDATE's `RETURNING` row out of a batch's results,
- * at the fixed index the repair statement always occupies (see
- * `REPAIR_STATEMENT_INDEX`).
+ * Pulls the count-repair UPDATE's `RETURNING` row out of a batch's results at
+ * `REPAIR_STATEMENT_INDEX`. Throws 404 both when the row was never found (the
+ * unlike path: the content row vanished between `loadLikeableOrThrow` and
+ * this update) and, defensively, when the batch result at that index isn't
+ * the array `RETURNING` always produces — a shape a driver change could
+ * introduce, and one that should fail loudly rather than silently read as
+ * "row not found".
  */
 function extractRepairedRow<T extends Record<string, unknown>>(
   batchResults: unknown[],
-  repairStatementIndex: number,
 ): T {
-  const updated = (batchResults[repairStatementIndex] as T[])[0];
+  const repairResult = batchResults[REPAIR_STATEMENT_INDEX];
 
-  if (!updated) {
-    // The content row was deleted between loadContentOrThrow and this update.
+  if (!Array.isArray(repairResult)) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: "Unexpected count-repair batch result shape",
+    });
+  }
+
+  const row = repairResult[0] as T | undefined;
+
+  if (!row) {
     throw createError({ statusCode: 404, statusMessage: "Not found" });
   }
 
-  return updated;
+  return row;
 }
 
 export interface LikeResult<T> {
@@ -150,12 +170,6 @@ export interface LikeResult<T> {
   // notify the author exactly once instead of on every repeated like.
   created: boolean;
 }
-
-// Fixed positions within the two-statement like/unlike batch — see
-// buildRepairLikeCountStatement's docstring for why the repair statement
-// always rides alongside the like-row write in one atomic call.
-const LIKE_WRITE_STATEMENT_INDEX = 0;
-const REPAIR_STATEMENT_INDEX = 1;
 
 /**
  * Records a like idempotently (ON CONFLICT DO NOTHING on the composite PK) and
@@ -191,7 +205,7 @@ export async function likeContent<T extends Record<string, unknown>>(
   const inserted = batchResults[LIKE_WRITE_STATEMENT_INDEX] as {
     userId: unknown;
   }[];
-  const content = extractRepairedRow<T>(batchResults, REPAIR_STATEMENT_INDEX);
+  const content = extractRepairedRow<T>(batchResults);
 
   return { content, created: inserted.length > 0 };
 }
@@ -227,7 +241,7 @@ export async function unlikeContent<T extends Record<string, unknown>>(
     repairStatement,
   ]);
 
-  return extractRepairedRow<T>(batchResults, REPAIR_STATEMENT_INDEX);
+  return extractRepairedRow<T>(batchResults);
 }
 
 /**
