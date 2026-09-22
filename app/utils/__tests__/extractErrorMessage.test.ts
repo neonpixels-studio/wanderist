@@ -75,4 +75,27 @@ describe("extractErrorMessage", () => {
     const error = Object.assign(new Error("boom"), { statusMessage: 500 });
     expect(extractErrorMessage(error)).toBe(UNEXPECTED_ERROR_MESSAGE);
   });
+
+  it("falls through to the top-level statusMessage when data.statusMessage is an empty string", () => {
+    const error = Object.assign(new Error("boom"), {
+      statusMessage: "top-level fallback",
+      data: { statusMessage: "" },
+    });
+    expect(extractErrorMessage(error)).toBe("top-level fallback");
+  });
+
+  it("falls through to the top-level statusMessage when data is not an object", () => {
+    const error = Object.assign(new Error("boom"), {
+      statusMessage: "top-level fallback",
+      data: "not an object",
+    });
+    expect(extractErrorMessage(error)).toBe("top-level fallback");
+  });
+
+  it("ignores a non-string data.statusMessage and falls through", () => {
+    const error = Object.assign(new Error("boom"), {
+      data: { statusMessage: 500 },
+    });
+    expect(extractErrorMessage(error)).toBe(UNEXPECTED_ERROR_MESSAGE);
+  });
 });

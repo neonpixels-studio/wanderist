@@ -85,6 +85,21 @@ describe("useConnections", () => {
         "Network error",
       );
     });
+
+    it("never surfaces a raw Error message — falls back to the generic message", async () => {
+      // Regression guard for the shared extractErrorMessage bug: this
+      // composable used to carry its own local copy of the function (with
+      // the same raw-message leak) instead of importing the shared,
+      // fixed utility.
+      mockApiFetch.mockRejectedValueOnce(new Error("network down"));
+
+      const { fetchConnections, loadError } = useConnections();
+      await fetchConnections();
+
+      expect((loadError as { value: string | null }).value).toBe(
+        "An unexpected error occurred",
+      );
+    });
   });
 
   describe("disconnectInstagram", () => {
