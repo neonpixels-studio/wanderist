@@ -163,23 +163,21 @@ const authorLabel = computed(() =>
     : "",
 );
 
-// Falls back to the byline + read time when the guide has no body yet, so a
-// share-link preview never shows a blank description for a guide with no
-// content.
+// Falls back to the byline + read time when the guide has no body (or the
+// body is only whitespace) yet, so a share-link preview never shows a blank
+// description for a guide with no real content.
 const guideDescription = computed(() => {
   if (!guide.value) {
     return `A shared travel guide on ${SITE_NAME}.`;
   }
-  if (guide.value.body) {
+  if (guide.value.body?.trim()) {
     return guide.value.body;
   }
   return `${guide.value.readTimeMinutes} min read, ${authorLabel.value} on ${SITE_NAME}.`;
 });
 
 useOgMeta(() => ({
-  title: guide.value
-    ? `${SITE_NAME} — ${guide.value.title}`
-    : `${SITE_NAME} — Guide`,
+  pageTitle: guide.value ? guide.value.title : "Guide",
   description: guideDescription.value,
 }));
 </script>

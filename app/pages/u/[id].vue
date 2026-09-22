@@ -188,13 +188,14 @@ const handleLabel = computed(() => formatHandle(profile.value?.handle));
 const viewerIsFollowingTarget = computed(() => isFollowing(userId.value));
 const pending = computed(() => isPending(userId.value));
 
-// Falls back to a stats summary when the traveler hasn't written a bio, so a
-// share-link preview never shows a blank description.
+// Falls back to a stats summary when the traveler hasn't written a bio (or
+// the bio is only whitespace), so a share-link preview never shows a blank
+// description.
 const profileDescription = computed(() => {
   if (!profile.value) {
     return `A traveler's profile on ${SITE_NAME}.`;
   }
-  if (profile.value.bio) {
+  if (profile.value.bio?.trim()) {
     return profile.value.bio;
   }
   const followerLabel = `${profile.value.followerCount} ${profile.value.followerCount === 1 ? "follower" : "followers"}`;
@@ -203,9 +204,7 @@ const profileDescription = computed(() => {
 });
 
 useOgMeta(() => ({
-  title: profile.value
-    ? `${SITE_NAME} — ${displayName.value}`
-    : `${SITE_NAME} — Profile`,
+  pageTitle: profile.value ? displayName.value : "Profile",
   description: profileDescription.value,
 }));
 

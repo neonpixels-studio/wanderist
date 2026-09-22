@@ -541,9 +541,7 @@ const tripOgImagePath = computed(() =>
 );
 
 useOgMeta(() => ({
-  title: tripDetail.value
-    ? `${SITE_NAME} — ${tripDetail.value.trip.name}`
-    : `${SITE_NAME} — Trip`,
+  pageTitle: tripDetail.value ? tripDetail.value.trip.name : "Trip",
   description: tripDescription.value,
   imagePath: tripOgImagePath.value,
 }));

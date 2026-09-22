@@ -8,20 +8,25 @@ import { useGuidesStore } from "~/stores/guides";
 import type { Guide } from "~/stores/guides";
 import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
 import {
-  OG_META_TEST_SITE_ORIGIN,
   lastSeoMetaCall,
   stubOgMetaGlobals,
 } from "~/composables/__tests__/ogMetaTestUtils";
 
 // Override the global useRoute stub with a REACTIVE params object so a test can
-// change the guide id and assert the page's watched ref tracks it.
+// change the guide id and assert the page's watched ref tracks it. `path` is a
+// getter (not a static string) so useOgMeta's og:url — which reads route.path
+// on every call, not just at mount — reflects an in-page id change too.
 const routeParams = reactive({ id: "guide-1" });
-vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
+vi.stubGlobal("useRoute", () => ({
+  params: routeParams,
+  query: {},
+  get path() {
+    return `/guides/${routeParams.id}`;
+  },
+}));
 
 // #269 og/twitter meta coverage below reads this trackable useSeoMeta stub.
-const useSeoMetaMock = stubOgMetaGlobals(
-  `${OG_META_TEST_SITE_ORIGIN}/guides/guide-1`,
-);
+const useSeoMetaMock = stubOgMetaGlobals();
 
 // The fetch's canRetryAuthenticated watch reads useClerkAuth; drive it from
 // refs so a test can simulate the Clerk bootstrap window and a signed-in
@@ -491,8 +496,10 @@ describe("Guide Detail page (/guides/[id])", () => {
       expect(title()).toBe("Wanderist — Tokyo on foot");
       expect((meta.ogTitle as () => string)()).toBe(title());
       expect((meta.twitterTitle as () => string)()).toBe(title());
+      // The body's own "\n\n" paragraph break is collapsed to a single space
+      // by useOgMeta — a preview blurb reads as one line, not raw newlines.
       expect(description()).toBe(
-        "Start in Yanaka at sunrise.\n\nEnd at the river by dusk.",
+        "Start in Yanaka at sunrise. End at the river by dusk.",
       );
       expect((meta.ogDescription as () => string)()).toBe(description());
       expect((meta.twitterDescription as () => string)()).toBe(description());
@@ -522,6 +529,22 @@ describe("Guide Detail page (/guides/[id])", () => {
       expect(description()).toBe("8 min read, by @elsa_far on Wanderist.");
     });
 
+    it("falls back to the byline/read-time description when the body is only whitespace", () => {
+      const guidesStore = useGuidesStore();
+      guidesStore.currentGuide = {
+        ...SAMPLE_GUIDE,
+        body: "   \n  ",
+        ownerHandle: "elsa_far",
+        ownerDisplayName: null,
+      };
+
+      mount(GuideDetailPage, buildGlobalConfig(pinia));
+
+      const description = lastSeoMetaCall(useSeoMetaMock)
+        .description as () => string;
+      expect(description()).toBe("8 min read, by @elsa_far on Wanderist.");
+    });
+
     it("falls back to placeholder title/description before a guide has loaded", () => {
       const guidesStore = useGuidesStore();
       guidesStore.currentGuide = null;
@@ -533,6 +556,37 @@ describe("Guide Detail page (/guides/[id])", () => {
       expect((meta.description as () => string)()).toBe(
         "A shared travel guide on Wanderist.",
       );
+    });
+
+    it("updates title and og:url once the guide loads after mount", async () => {
+      const guidesStore = useGuidesStore();
+      guidesStore.currentGuide = null;
+
+      mount(GuideDetailPage, buildGlobalConfig(pinia));
+      const beforeLoad = lastSeoMetaCall(useSeoMetaMock);
+      expect((beforeLoad.title as () => string)()).toBe("Wanderist — Guide");
+
+      guidesStore.currentGuide = { ...SAMPLE_GUIDE };
+      await nextTick();
+
+      const afterLoad = lastSeoMetaCall(useSeoMetaMock);
+      expect((afterLoad.title as () => string)()).toBe(
+        "Wanderist — Tokyo on foot",
+      );
+    });
+
+    it("updates og:url on in-page navigation to a different guide", async () => {
+      const guidesStore = useGuidesStore();
+      guidesStore.currentGuide = { ...SAMPLE_GUIDE };
+
+      mount(GuideDetailPage, buildGlobalConfig(pinia));
+      const ogUrl = lastSeoMetaCall(useSeoMetaMock).ogUrl as () => string;
+      expect(ogUrl()).toBe("https://wanderist.test/guides/guide-1");
+
+      routeParams.id = "guide-2";
+      await nextTick();
+
+      expect(ogUrl()).toBe("https://wanderist.test/guides/guide-2");
     });
   });
 });
