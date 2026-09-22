@@ -22,7 +22,7 @@ const {
   mockClerkRemoveProfileImage,
   mockGetHeader,
   mockGetQuery,
-  mockReadRawBody,
+  mockReadCappedUploadBody,
 } = vi.hoisted(() => ({
   mockRequireUser: vi.fn(),
   mockClerkSetProfileImage: vi
@@ -31,7 +31,7 @@ const {
   mockClerkRemoveProfileImage: vi.fn().mockResolvedValue(undefined),
   mockGetHeader: vi.fn(),
   mockGetQuery: vi.fn(),
-  mockReadRawBody: vi.fn(),
+  mockReadCappedUploadBody: vi.fn(),
 }));
 
 vi.mock("../../../server/utils/auth", () => ({
@@ -43,12 +43,29 @@ vi.mock("../../../server/utils/clerkAccount", () => ({
   clerkRemoveProfileImage: mockClerkRemoveProfileImage,
 }));
 
+// The size-cap streaming reader has its own dedicated coverage (both the
+// Node-stream and Web-ReadableStream paths) in
+// tests/server/utils/readCappedUploadBody.test.ts. This route's tests only
+// need to verify the route's own logic — content-type/empty-body/early-check
+// handling and wiring — so it's mocked here rather than driven through a
+// real stream, mirroring tests/server/media.test.ts.
+vi.mock("../../../server/utils/readCappedUploadBody", async () => {
+  // Only the streaming reader is faked; `createFileTooLargeError` stays the
+  // real implementation so this mock can't drift from its actual message.
+  const actual = await vi.importActual<
+    typeof import("../../../server/utils/readCappedUploadBody")
+  >("../../../server/utils/readCappedUploadBody");
+  return {
+    readCappedUploadBody: mockReadCappedUploadBody,
+    createFileTooLargeError: actual.createFileTooLargeError,
+  };
+});
+
 stubDefineEventHandler();
 stubCreateError();
 Object.assign(globalThis, {
   getHeader: mockGetHeader,
   getQuery: mockGetQuery,
-  readRawBody: mockReadRawBody,
 });
 
 const { default: handler } =
@@ -76,7 +93,7 @@ describe("PATCH /api/account/avatar — upload", () => {
     mockRequireUser.mockReturnValue("user-1");
     mockGetQuery.mockReturnValue({});
     stubUploadHeaders("image/jpeg");
-    mockReadRawBody.mockResolvedValue(Buffer.from("fake-image"));
+    mockReadCappedUploadBody.mockResolvedValue(Buffer.from("fake-image"));
     mockClerkSetProfileImage.mockResolvedValue(
       "https://cdn.clerk.com/avatar.jpg",
     );
@@ -101,16 +118,42 @@ describe("PATCH /api/account/avatar — upload", () => {
     ).rejects.toMatchObject({ statusCode: 415 });
   });
 
-  it("throws 413 when actual body exceeds 4 MB", async () => {
-    mockReadRawBody.mockResolvedValue(Buffer.alloc(5 * 1024 * 1024));
+  it("propagates the 413 thrown by the size-cap reader (e.g. a lying/oversized upload)", async () => {
+    // The actual byte-counting and streaming abort live in
+    // readCappedUploadBody (see tests/server/utils/readCappedUploadBody.test.ts);
+    // this only proves the route doesn't swallow or alter its rejection.
+    mockReadCappedUploadBody.mockRejectedValue(
+      Object.assign(new Error("File too large. Maximum size is 4 MB"), {
+        statusCode: 413,
+      }),
+    );
 
     await expect(
       callHandler(handler, buildAccountEvent()),
     ).rejects.toMatchObject({ statusCode: 413 });
   });
 
+  it("throws 413 on Content-Length alone before reading the body (early check)", async () => {
+    // Stub content-length to exceed the 4 MB avatar limit; the early gate
+    // should fire before the bounded reader is ever invoked.
+    mockGetHeader.mockImplementation((_event: unknown, header: string) => {
+      if (header === "content-type") {
+        return "image/jpeg";
+      }
+      if (header === "content-length") {
+        return String(5 * 1024 * 1024);
+      }
+      return null;
+    });
+
+    await expect(
+      callHandler(handler, buildAccountEvent()),
+    ).rejects.toMatchObject({ statusCode: 413 });
+    expect(mockReadCappedUploadBody).not.toHaveBeenCalled();
+  });
+
   it("throws 400 for an empty body", async () => {
-    mockReadRawBody.mockResolvedValue(null);
+    mockReadCappedUploadBody.mockResolvedValue(null);
 
     await expect(
       callHandler(handler, buildAccountEvent()),
