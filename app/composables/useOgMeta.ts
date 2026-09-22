@@ -80,9 +80,30 @@ export function useOgMeta(getMeta: () => OgMetaInput): void {
   // one evaluation per reactive flush instead of re-running it once each.
   const meta = computed(getMeta);
 
+  // Trusting the incoming request's own origin (built from its Host header)
+  // is only safe in dev, where it's always localhost. In production this
+  // should never be reached — NUXT_PUBLIC_SITE_ORIGIN is already required
+  // for billing/OAuth redirects (server/api/billing/*.ts,
+  // server/api/connections/instagram/*.ts) to work at all — but silently
+  // trusting an attacker-suppliable Host header for a value that can end up
+  // in CDN-cached SSR HTML (og:url, og:image) is the wrong failure mode if
+  // it's ever misconfigured, so a production miss is logged loudly rather
+  // than trusted quietly.
+  function resolveSiteOrigin(): string {
+    if (runtimeConfig.public.siteOrigin) {
+      return runtimeConfig.public.siteOrigin;
+    }
+    if (!import.meta.dev) {
+      console.error(
+        "[useOgMeta] runtimeConfig.public.siteOrigin is not configured; " +
+          "falling back to the request origin, which should not happen in production.",
+      );
+    }
+    return requestUrl.origin;
+  }
+
   function toAbsoluteUrl(path: string): string {
-    const origin = runtimeConfig.public.siteOrigin || requestUrl.origin;
-    return new URL(path, origin).toString();
+    return new URL(path, resolveSiteOrigin()).toString();
   }
 
   function currentTitle(): string {

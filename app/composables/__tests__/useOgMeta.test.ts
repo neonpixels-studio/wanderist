@@ -3,12 +3,19 @@ import { ref } from "vue";
 import { useOgMeta } from "../useOgMeta";
 import { lastSeoMetaCall, stubOgMetaGlobals } from "./ogMetaTestUtils";
 
+// A single source for the stubbed route, used at module scope and again in
+// the fallback block's beforeEach/afterEach below, so the path can't drift
+// between the three call sites.
+function stubGuideRoute(): void {
+  vi.stubGlobal("useRoute", () => ({
+    path: "/guides/guide-1",
+    params: {},
+    query: {},
+  }));
+}
+
 const useSeoMetaMock = stubOgMetaGlobals();
-vi.stubGlobal("useRoute", () => ({
-  path: "/guides/guide-1",
-  params: {},
-  query: {},
-}));
+stubGuideRoute();
 
 describe("useOgMeta", () => {
   beforeEach(() => {
@@ -150,27 +157,28 @@ describe("useOgMeta — origin fallback", () => {
     stubOgMetaGlobals(useSeoMetaMock);
     vi.stubGlobal("useRuntimeConfig", () => ({ public: {} }));
     vi.stubGlobal("useRequestURL", () => new URL("https://fallback.example/x"));
-    vi.stubGlobal("useRoute", () => ({
-      path: "/guides/guide-1",
-      params: {},
-      query: {},
-    }));
+    stubGuideRoute();
     useSeoMetaMock.mockClear();
   });
 
   afterEach(() => {
     stubOgMetaGlobals(useSeoMetaMock);
-    vi.stubGlobal("useRoute", () => ({
-      path: "/guides/guide-1",
-      params: {},
-      query: {},
-    }));
+    stubGuideRoute();
+    vi.restoreAllMocks();
   });
 
-  it("uses the request origin when runtimeConfig.public.siteOrigin is blank", () => {
+  it("uses the request origin when runtimeConfig.public.siteOrigin is blank, and logs it as a misconfiguration", () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
     useOgMeta(() => ({ pageTitle: "t", description: "d" }));
 
     const ogImage = lastSeoMetaCall(useSeoMetaMock).ogImage as () => string;
     expect(ogImage()).toBe("https://fallback.example/favicon.ico");
+    // import.meta.dev is falsy under plain vitest (no Nuxt build step), so
+    // this exercises the same "unexpectedly missing in production" branch
+    // that would fire on a real prod build with a blank siteOrigin.
+    expect(consoleErrorSpy).toHaveBeenCalled();
   });
 });

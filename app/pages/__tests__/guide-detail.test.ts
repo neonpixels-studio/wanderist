@@ -558,7 +558,7 @@ describe("Guide Detail page (/guides/[id])", () => {
       );
     });
 
-    it("updates title and og:url once the guide loads after mount", async () => {
+    it("updates title once the guide loads after mount", async () => {
       const guidesStore = useGuidesStore();
       guidesStore.currentGuide = null;
 
