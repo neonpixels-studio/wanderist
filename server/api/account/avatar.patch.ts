@@ -8,8 +8,10 @@ import {
   readCappedUploadBody,
 } from "../../utils/readCappedUploadBody";
 
-// 4 MB expressed in bytes — matches the UI copy "up to 4MB".
-const MAX_AVATAR_SIZE_BYTES = 4 * 1024 * 1024;
+// 4 MB expressed in bytes — matches the UI copy "up to 4MB". Exported so
+// tests assert against this value directly instead of keeping their own
+// copy that could silently drift from it.
+export const MAX_AVATAR_SIZE_BYTES = 4 * 1024 * 1024;
 
 const ALLOWED_AVATAR_CONTENT_TYPES = new Set(["image/jpeg", "image/png"]);
 

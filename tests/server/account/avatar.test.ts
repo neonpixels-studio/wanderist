@@ -13,10 +13,6 @@ import {
 } from "./_helpers";
 import { createFileTooLargeError } from "../../../server/utils/readCappedUploadBody";
 
-// 4 MB expressed in bytes — mirrors MAX_AVATAR_SIZE_BYTES in the handler
-// under test, so assertions here can't silently drift from it.
-const MAX_AVATAR_SIZE_BYTES = 4 * 1024 * 1024;
-
 // ---------------------------------------------------------------------------
 // Hoist mock factories
 // ---------------------------------------------------------------------------
@@ -73,7 +69,7 @@ Object.assign(globalThis, {
   getQuery: mockGetQuery,
 });
 
-const { default: handler } =
+const { default: handler, MAX_AVATAR_SIZE_BYTES } =
   await import("../../../server/api/account/avatar.patch");
 
 function stubUploadHeaders(contentType = "image/jpeg"): void {
@@ -145,14 +141,15 @@ describe("PATCH /api/account/avatar — upload", () => {
   });
 
   it("throws 413 on Content-Length alone before reading the body (early check)", async () => {
-    // Stub content-length to exceed the 4 MB avatar limit; the early gate
-    // should fire before the bounded reader is ever invoked.
+    // Stub content-length one byte over the avatar cap so this exercises the
+    // `>` boundary itself (an off-by-one, e.g. `>` becoming `>=`, would flip
+    // this test) rather than an arbitrarily larger value.
     mockGetHeader.mockImplementation((_event: unknown, header: string) => {
       if (header === "content-type") {
         return "image/jpeg";
       }
       if (header === "content-length") {
-        return String(5 * 1024 * 1024);
+        return String(MAX_AVATAR_SIZE_BYTES + 1);
       }
       return null;
     });
@@ -161,6 +158,49 @@ describe("PATCH /api/account/avatar — upload", () => {
       callHandler(handler, buildAccountEvent()),
     ).rejects.toMatchObject({ statusCode: 413 });
     expect(mockReadCappedUploadBody).not.toHaveBeenCalled();
+  });
+
+  it("allows a Content-Length exactly at the avatar cap through the early check", async () => {
+    mockGetHeader.mockImplementation((_event: unknown, header: string) => {
+      if (header === "content-type") {
+        return "image/jpeg";
+      }
+      if (header === "content-length") {
+        return String(MAX_AVATAR_SIZE_BYTES);
+      }
+      return null;
+    });
+
+    await callHandler(handler, buildAccountEvent());
+
+    expect(mockReadCappedUploadBody).toHaveBeenCalledWith(
+      expect.anything(),
+      MAX_AVATAR_SIZE_BYTES,
+    );
+  });
+
+  it("does not block the early check on a non-numeric Content-Length header", async () => {
+    // Number("not-a-number") is NaN, which fails every `>` comparison
+    // harmlessly rather than being rejected outright, so the request
+    // proceeds to the streaming cap (the real backstop) instead of trusting
+    // an untrustworthy header directly. Mirrors the equivalent case in
+    // tests/server/media.test.ts.
+    mockGetHeader.mockImplementation((_event: unknown, header: string) => {
+      if (header === "content-type") {
+        return "image/jpeg";
+      }
+      if (header === "content-length") {
+        return "not-a-number";
+      }
+      return null;
+    });
+
+    await callHandler(handler, buildAccountEvent());
+
+    expect(mockReadCappedUploadBody).toHaveBeenCalledWith(
+      expect.anything(),
+      MAX_AVATAR_SIZE_BYTES,
+    );
   });
 
   it("throws 400 for an empty body", async () => {
