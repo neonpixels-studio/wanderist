@@ -70,6 +70,20 @@ describe("extractErrorMessage", () => {
     expect(extractErrorMessage(error)).toBe(UNEXPECTED_ERROR_MESSAGE);
   });
 
+  it("falls back to the generic message when data.statusMessage is whitespace-only", () => {
+    const error = Object.assign(new Error("boom"), {
+      data: { statusMessage: "   " },
+    });
+    expect(extractErrorMessage(error)).toBe(UNEXPECTED_ERROR_MESSAGE);
+  });
+
+  it("trims surrounding whitespace from a real data.statusMessage", () => {
+    const error = Object.assign(new Error("boom"), {
+      data: { statusMessage: "  Email already in use  " },
+    });
+    expect(extractErrorMessage(error)).toBe("Email already in use");
+  });
+
   it("falls back to the generic message when data is not an object", () => {
     const error = Object.assign(new Error("boom"), { data: "not an object" });
     expect(extractErrorMessage(error)).toBe(UNEXPECTED_ERROR_MESSAGE);

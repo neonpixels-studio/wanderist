@@ -163,6 +163,22 @@ describe("useGuidesStore", () => {
       expect(store.isLoading).toBe(false);
     });
 
+    it("surfaces a server-intended data.statusMessage as the error text", async () => {
+      // Regression guard: proves `error` is actually wired to
+      // extractErrorMessage's output, not just hardcoded to the generic
+      // fallback (which the tests above alone wouldn't catch).
+      mockApiFetch.mockRejectedValue(
+        Object.assign(new Error("Bad Request"), {
+          data: { statusMessage: "Guide list is temporarily unavailable" },
+        }),
+      );
+      const store = useGuidesStore();
+
+      await expect(store.fetchGuides()).rejects.toThrow();
+
+      expect(store.error).toBe("Guide list is temporarily unavailable");
+    });
+
     it("sets hasLoaded on success", async () => {
       mockApiFetch.mockResolvedValue({ guides: [], page: 1, hasMore: false });
       const store = useGuidesStore();
@@ -250,6 +266,22 @@ describe("useGuidesStore", () => {
       expect(store.currentGuide).toBeNull();
       expect(store.guideError).toBe("An unexpected error occurred");
       expect(store.isLoadingGuide).toBe(false);
+    });
+
+    it("surfaces a server-intended data.statusMessage as guideError", async () => {
+      // Regression guard: proves `guideError` is actually wired to
+      // extractErrorMessage's output, not just hardcoded to the generic
+      // fallback (which the tests above alone wouldn't catch).
+      mockApiFetch.mockRejectedValue(
+        Object.assign(new Error("Bad Request"), {
+          data: { statusMessage: "Guide is temporarily unavailable" },
+        }),
+      );
+      const store = useGuidesStore();
+
+      await expect(store.fetchGuideById("g-1")).rejects.toThrow();
+
+      expect(store.guideError).toBe("Guide is temporarily unavailable");
     });
 
     it("sets guideNotFound (not guideError) on a 404, so the page renders not-found rather than a retry prompt", async () => {

@@ -46,7 +46,12 @@ function readNestedStatusMessage(data: unknown): string | null {
 
   const dataObj = data as Record<string, unknown>;
   const statusMessage = dataObj.statusMessage;
-  return typeof statusMessage === "string" && statusMessage
-    ? statusMessage
-    : null;
+  if (typeof statusMessage !== "string") {
+    return null;
+  }
+
+  // A whitespace-only value is effectively empty — showing it would leave
+  // the user staring at a blank error box.
+  const trimmedStatusMessage = statusMessage.trim();
+  return trimmedStatusMessage ? trimmedStatusMessage : null;
 }
