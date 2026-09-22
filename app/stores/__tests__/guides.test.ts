@@ -119,7 +119,7 @@ describe("useGuidesStore", () => {
 
       expect(store.guides).toEqual(loaded);
       expect(store.hasLoaded).toBe(true);
-      expect(store.error).toBe("Network error");
+      expect(store.error).toBe("An unexpected error occurred");
     });
 
     it("throws instead of looping forever when the API never stops reporting hasMore", async () => {
@@ -159,8 +159,24 @@ describe("useGuidesStore", () => {
 
       await expect(store.fetchGuides()).rejects.toThrow("Network error");
 
-      expect(store.error).toBe("Network error");
+      expect(store.error).toBe("An unexpected error occurred");
       expect(store.isLoading).toBe(false);
+    });
+
+    it("surfaces a server-intended data.statusMessage as the error text", async () => {
+      // Regression guard: proves `error` is actually wired to
+      // extractErrorMessage's output, not just hardcoded to the generic
+      // fallback (which the tests above alone wouldn't catch).
+      mockApiFetch.mockRejectedValue(
+        Object.assign(new Error("Bad Request"), {
+          data: { statusMessage: "Guide list is temporarily unavailable" },
+        }),
+      );
+      const store = useGuidesStore();
+
+      await expect(store.fetchGuides()).rejects.toThrow();
+
+      expect(store.error).toBe("Guide list is temporarily unavailable");
     });
 
     it("sets hasLoaded on success", async () => {
@@ -248,8 +264,24 @@ describe("useGuidesStore", () => {
       await expect(store.fetchGuideById("g-1")).rejects.toThrow("Not Found");
 
       expect(store.currentGuide).toBeNull();
-      expect(store.guideError).toBe("Not Found");
+      expect(store.guideError).toBe("An unexpected error occurred");
       expect(store.isLoadingGuide).toBe(false);
+    });
+
+    it("surfaces a server-intended data.statusMessage as guideError", async () => {
+      // Regression guard: proves `guideError` is actually wired to
+      // extractErrorMessage's output, not just hardcoded to the generic
+      // fallback (which the tests above alone wouldn't catch).
+      mockApiFetch.mockRejectedValue(
+        Object.assign(new Error("Bad Request"), {
+          data: { statusMessage: "Guide is temporarily unavailable" },
+        }),
+      );
+      const store = useGuidesStore();
+
+      await expect(store.fetchGuideById("g-1")).rejects.toThrow();
+
+      expect(store.guideError).toBe("Guide is temporarily unavailable");
     });
 
     it("sets guideNotFound (not guideError) on a 404, so the page renders not-found rather than a retry prompt", async () => {
@@ -281,7 +313,7 @@ describe("useGuidesStore", () => {
 
       expect(store.currentGuide).toBeNull();
       expect(store.guideNotFound).toBe(false);
-      expect(store.guideError).toBe("Unauthorized");
+      expect(store.guideError).toBe("An unexpected error occurred");
     });
 
     it("sets guideError (not guideNotFound) on a 5xx, so a share-link visitor sees a retryable error instead of not-found", async () => {
@@ -295,7 +327,7 @@ describe("useGuidesStore", () => {
 
       expect(store.currentGuide).toBeNull();
       expect(store.guideNotFound).toBe(false);
-      expect(store.guideError).toBe("Internal Server Error");
+      expect(store.guideError).toBe("An unexpected error occurred");
     });
 
     it("sets guideError (not guideNotFound) on a network failure with no status code", async () => {
@@ -305,7 +337,7 @@ describe("useGuidesStore", () => {
       await expect(store.fetchGuideById("g-1")).rejects.toThrow();
 
       expect(store.guideNotFound).toBe(false);
-      expect(store.guideError).toBe("Failed to fetch");
+      expect(store.guideError).toBe("An unexpected error occurred");
     });
 
     it("keeps the already-displayed guide when a retryable background refetch of the SAME id fails", async () => {
@@ -322,7 +354,7 @@ describe("useGuidesStore", () => {
       await expect(store.fetchGuideById("g-1")).rejects.toThrow();
 
       expect(store.currentGuide).toEqual(guide);
-      expect(store.guideError).toBe("Internal Server Error");
+      expect(store.guideError).toBe("An unexpected error occurred");
     });
 
     it("clears a stale guide on failure when nothing valid is displayed for the requested id", async () => {
@@ -522,7 +554,7 @@ describe("useGuidesStore", () => {
 
       const store = useGuidesStore();
       await expect(store.fetchGuides()).rejects.toThrow("Network error");
-      expect(store.error).toBe("Network error");
+      expect(store.error).toBe("An unexpected error occurred");
 
       await store.createGuide({ title: "Paris" });
 
@@ -566,7 +598,7 @@ describe("useGuidesStore", () => {
       await store.createGuide({ title: "Paris" });
 
       expect(store.hasLoaded).toBe(false);
-      expect(store.error).toBe("refetch failed");
+      expect(store.error).toBe("An unexpected error occurred");
     });
   });
 

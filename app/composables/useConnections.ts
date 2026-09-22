@@ -7,6 +7,7 @@
  */
 
 import { useApiClient } from "~/composables/useApiClient";
+import { extractErrorMessage } from "~/utils/extractErrorMessage";
 
 export interface InstagramConnectionState {
   connected: boolean;
@@ -82,29 +83,6 @@ const CONNECTIONS_DEFAULTS: ConnectionsState = {
   instagram: { connected: false },
   google: { connected: false, emailAddress: null, identificationId: null },
 };
-
-const UNEXPECTED_ERROR_MESSAGE = "An unexpected error occurred";
-
-function extractErrorMessage(error: unknown): string {
-  if (!error || typeof error !== "object") {
-    return UNEXPECTED_ERROR_MESSAGE;
-  }
-  const errorObj = error as Record<string, unknown>;
-  const data =
-    errorObj.data && typeof errorObj.data === "object"
-      ? (errorObj.data as Record<string, unknown>)
-      : null;
-  if (typeof data?.statusMessage === "string") {
-    return data.statusMessage;
-  }
-  if (typeof errorObj.statusMessage === "string") {
-    return errorObj.statusMessage;
-  }
-  if (typeof errorObj.message === "string") {
-    return errorObj.message;
-  }
-  return UNEXPECTED_ERROR_MESSAGE;
-}
 
 export function useConnections() {
   const { apiFetch } = useApiClient();
