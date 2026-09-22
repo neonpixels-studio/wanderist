@@ -354,16 +354,18 @@
                 color: var(--accent-ink);
               "
               disabled
-              :title="inviteUnavailableTitle"
+              :title="INVITE_UNAVAILABLE_TITLE"
             >
               invite
+              <span class="visually-hidden">
+                ({{ INVITE_UNAVAILABLE_TITLE }})
+              </span>
             </button>
           </h4>
           <div class="companions">
             <div
               class="companion companion--disabled"
-              aria-disabled="true"
-              :title="inviteUnavailableTitle"
+              :title="INVITE_UNAVAILABLE_TITLE"
             >
               <span
                 class="companion__av"
@@ -386,6 +388,7 @@ import type { Trip, TripStop } from "~/stores/trips";
 import { useMediaUpload } from "~/composables/useMediaUpload";
 import { moveIdUp, moveIdDown, moveIdToDropTarget } from "~/utils/stopOrder";
 import type { StopOrderMutator } from "~/utils/stopOrder";
+import { INVITE_UNAVAILABLE_TITLE } from "~/constants/trips";
 import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
 
 // No auth middleware: a public trip must open for anonymous visitors following
@@ -1014,10 +1017,9 @@ async function onShare(): Promise<void> {
 // not yet exposed via the current API surface (no trip_collaborators table,
 // no invite endpoint). The follow system (useFollows) handles user follows
 // but not trip-level collaborator invitations. Until that backend exists,
-// the invite button/row render disabled with this tooltip instead of
-// silently no-opping.
+// the invite button/row render disabled with INVITE_UNAVAILABLE_TITLE
+// instead of silently no-opping.
 // @todo Re-enable invite once a trip collaborator/invite endpoint exists.
-const inviteUnavailableTitle = "Inviting co-travellers isn't available yet";
 </script>
 
 <style scoped>
@@ -1394,10 +1396,7 @@ const inviteUnavailableTitle = "Inviting co-travellers isn't available yet";
   font-size: 11px;
   color: var(--muted);
 }
-.companion--disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
+.companion--disabled,
 .label--plain:disabled {
   cursor: not-allowed;
   opacity: 0.6;

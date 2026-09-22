@@ -6,6 +6,7 @@ import TripDetailPage from "../trips/[id].vue";
 import { useTripsStore } from "~/stores/trips";
 import type { TripDetail, TripStop } from "~/stores/trips";
 import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
+import { INVITE_UNAVAILABLE_TITLE } from "~/constants/trips";
 
 // Override the global useRoute stub with a REACTIVE params object so a test can
 // change the trip id and assert the page's watched ref tracks it.
@@ -267,19 +268,18 @@ describe("Trip Detail page (/trips/[id])", () => {
 
     const inviteButton = wrapper
       .findAll("button.label--plain")
-      .find((button) => button.text() === "invite");
+      .find((button) => button.text().startsWith("invite"));
     expect(inviteButton).toBeDefined();
     expect(inviteButton!.attributes("disabled")).toBeDefined();
-    expect(inviteButton!.attributes("title")).toBe(
-      "Inviting co-travellers isn't available yet",
-    );
+    expect(inviteButton!.attributes("title")).toBe(INVITE_UNAVAILABLE_TITLE);
+    // Native `disabled` removes the button from the tab order, so the title
+    // tooltip alone never reaches keyboard/screen-reader users — the reason
+    // must also be present as text.
+    expect(inviteButton!.text()).toContain(INVITE_UNAVAILABLE_TITLE);
 
     const companionRow = wrapper.find(".companion--disabled");
     expect(companionRow.exists()).toBe(true);
-    expect(companionRow.attributes("aria-disabled")).toBe("true");
-    expect(companionRow.attributes("title")).toBe(
-      "Inviting co-travellers isn't available yet",
-    );
+    expect(companionRow.attributes("title")).toBe(INVITE_UNAVAILABLE_TITLE);
     expect(companionRow.text()).toContain("coming soon");
   });
 
