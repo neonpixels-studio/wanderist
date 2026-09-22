@@ -1,6 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
-import { getDb } from "../db/index";
+import { getDb, runBatch } from "../db/index";
 import {
   entries,
   entryLikes,
@@ -95,18 +96,21 @@ export async function loadLikeableOrThrow<T extends LikeableRow>(
 }
 
 /**
- * Recomputes the denormalised like count from the join table and writes it
- * back to the parent row, returning the refreshed row. This is the single
- * source of truth for the count: every like/unlike derives it from a COUNT
- * rather than a `+ 1`/`- 1`, so the cache self-heals and can never drift below
- * zero or double-count an idempotent like.
+ * Builds (but does not run) the count-repair UPDATE: recomputes the
+ * denormalised like count from the join table and writes it back to the
+ * parent row, every like/unlike deriving it from a COUNT rather than a
+ * `+ 1`/`- 1` so it self-corrects instead of compounding drift. Split out
+ * from running it so `likeContent`/`unlikeContent` can pair this statement
+ * with their like-row write in one atomic `database.batch()` call (see
+ * server/db/index.ts) instead of two independent HTTP round trips with a
+ * committed-write-then-failing-repair gap between them.
  */
-async function repairLikeCount<T extends Record<string, unknown>>(
+function buildRepairLikeCountStatement(
   database: Database,
   config: LikeableConfig,
   contentId: string,
-): Promise<T> {
-  const updated = await database
+): BatchItem<"pg"> {
+  return database
     .update(config.contentTable)
     .set({
       likeCount: sql`(
@@ -116,15 +120,51 @@ async function repairLikeCount<T extends Record<string, unknown>>(
     })
     .where(eq(config.contentIdColumn, contentId))
     .returning();
+}
 
-  const row = updated[0];
+// Positions within the like/unlike batch; the repair statement is always last.
+const LIKE_WRITE_STATEMENT_INDEX = 0;
+const REPAIR_STATEMENT_INDEX = 1;
+
+/**
+ * Reads one statement's `RETURNING` rows out of a batch's results at
+ * `statementIndex`. `RETURNING` always produces an array, so a non-array
+ * result means the driver's response shape changed underneath this code —
+ * that should fail loudly (500) rather than being silently misread as an
+ * empty or missing result.
+ */
+function readReturningRows(
+  batchResults: unknown[],
+  statementIndex: number,
+): unknown[] {
+  const result = batchResults[statementIndex];
+
+  if (!Array.isArray(result)) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: "Unexpected batch result shape",
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Pulls the count-repair UPDATE's `RETURNING` row out of a batch's results.
+ * Throws 404 when the row was never found — the unlike path, where the
+ * content row vanished between `loadLikeableOrThrow` and this update.
+ */
+function extractRepairedRow<T extends Record<string, unknown>>(
+  batchResults: unknown[],
+): T {
+  const row = readReturningRows(batchResults, REPAIR_STATEMENT_INDEX)[0] as
+    T | undefined;
 
   if (!row) {
-    // The content row was deleted between loadContentOrThrow and this update.
     throw createError({ statusCode: 404, statusMessage: "Not found" });
   }
 
-  return row as T;
+  return row;
 }
 
 export interface LikeResult<T> {
@@ -140,6 +180,8 @@ export interface LikeResult<T> {
  * returns the parent row with its repaired count plus whether this call created
  * a new like. Safe to call repeatedly for the same (content, user) pair — the
  * count stays at exactly one and `created` is false after the first like.
+ * Batches the insert with the count-repair — see
+ * `buildRepairLikeCountStatement`'s docstring for why.
  */
 export async function likeContent<T extends Record<string, unknown>>(
   database: Database,
@@ -147,20 +189,33 @@ export async function likeContent<T extends Record<string, unknown>>(
   contentId: string,
   userId: string,
 ): Promise<LikeResult<T>> {
-  const inserted = await database
+  const insertStatement = database
     .insert(config.likeTable)
     .values({ [config.contentKey]: contentId, userId })
     .onConflictDoNothing()
     .returning({ userId: config.likeUserColumn });
 
-  const content = await repairLikeCount<T>(database, config, contentId);
+  const repairStatement = buildRepairLikeCountStatement(
+    database,
+    config,
+    contentId,
+  );
+
+  const batchResults = await runBatch(database, [
+    insertStatement,
+    repairStatement,
+  ]);
+
+  const inserted = readReturningRows(batchResults, LIKE_WRITE_STATEMENT_INDEX);
+  const content = extractRepairedRow<T>(batchResults);
 
   return { content, created: inserted.length > 0 };
 }
 
 /**
  * Removes a like (no-op if it was never there) and returns the parent row with
- * its repaired count.
+ * its repaired count. Batches the delete with the count-repair — see
+ * `buildRepairLikeCountStatement`'s docstring for why.
  */
 export async function unlikeContent<T extends Record<string, unknown>>(
   database: Database,
@@ -168,7 +223,7 @@ export async function unlikeContent<T extends Record<string, unknown>>(
   contentId: string,
   userId: string,
 ): Promise<T> {
-  await database
+  const deleteStatement = database
     .delete(config.likeTable)
     .where(
       and(
@@ -177,7 +232,18 @@ export async function unlikeContent<T extends Record<string, unknown>>(
       ),
     );
 
-  return repairLikeCount<T>(database, config, contentId);
+  const repairStatement = buildRepairLikeCountStatement(
+    database,
+    config,
+    contentId,
+  );
+
+  const batchResults = await runBatch(database, [
+    deleteStatement,
+    repairStatement,
+  ]);
+
+  return extractRepairedRow<T>(batchResults);
 }
 
 /**

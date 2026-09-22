@@ -16,6 +16,19 @@ vi.mock("drizzle-orm", async (importOriginal) => {
   };
 });
 
+// Only getDb is stubbed — runBatch is the real implementation (server/db/
+// index.ts) run against the test's mocked database.batch(), so a change to
+// runBatch's own behaviour (error handling, the empty-array guard) is
+// exercised here rather than against a hand-copied stand-in.
+vi.mock("../../server/db/index", async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import("../../server/db/index")>();
+  return {
+    ...original,
+    getDb: vi.fn(),
+  };
+});
+
 import { eq } from "drizzle-orm";
 import {
   ENTRY_LIKEABLE,
@@ -54,7 +67,12 @@ function makeLikeDb(
     { userId: "liker-2" },
   ];
   const valuesSpy = vi.fn();
-  const insertReturning = vi.fn().mockResolvedValue(insertReturningRows);
+  // Fixed promise instances (mockReturnValue, not mockResolvedValue — which
+  // would mint a fresh promise per call) so tests can assert exactly which
+  // statement landed at which position in the batch() array by reference
+  // (see the "one atomic database.batch() call" tests below).
+  const insertResultPromise = Promise.resolve(insertReturningRows);
+  const insertReturning = vi.fn().mockReturnValue(insertResultPromise);
   const onConflictDoNothing = vi
     .fn()
     .mockReturnValue({ returning: insertReturning });
@@ -65,16 +83,39 @@ function makeLikeDb(
     },
   }));
 
-  const returning = vi.fn().mockResolvedValue(returningRows);
+  const updateResultPromise = Promise.resolve(returningRows);
+  const returning = vi.fn().mockReturnValue(updateResultPromise);
   const updateWhere = vi.fn().mockReturnValue({ returning });
   const set = vi.fn().mockReturnValue({ where: updateWhere });
   const update = vi.fn().mockReturnValue({ set });
 
-  const deleteWhere = vi.fn().mockResolvedValue(undefined);
+  const deleteResultPromise = Promise.resolve(undefined);
+  const deleteWhere = vi.fn().mockReturnValue(deleteResultPromise);
   const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
 
-  const db = { insert, delete: deleteFn, update } as unknown as Db;
-  return { db, valuesSpy, onConflictDoNothing, update, deleteFn, deleteWhere };
+  // The like-row write (insert/delete) and the count-repair UPDATE now run as
+  // one atomic database.batch() call (see server/utils/like-helpers.ts)
+  // instead of two sequential round trips. Each statement built above is
+  // already a promise (the mocked chains resolve immediately), so awaiting
+  // the whole array mirrors drizzle's real "one HTTP call, every statement
+  // resolves together" behaviour closely enough for these unit tests.
+  const batch = vi.fn((statements: Promise<unknown>[]) =>
+    Promise.all(statements),
+  );
+
+  const db = { insert, delete: deleteFn, update, batch } as unknown as Db;
+  return {
+    db,
+    valuesSpy,
+    onConflictDoNothing,
+    update,
+    deleteFn,
+    deleteWhere,
+    batch,
+    insertResultPromise,
+    updateResultPromise,
+    deleteResultPromise,
+  };
 }
 
 /**
@@ -152,11 +193,72 @@ describe("likeContent", () => {
   });
 
   it("throws 404 when the row vanished before the count repair", async () => {
-    const { db } = makeLikeDb({}, { returning: [] });
+    const { db, batch } = makeLikeDb({}, { returning: [] });
 
     await expect(
       likeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2"),
     ).rejects.toMatchObject({ statusCode: 404 });
+    // The 404 must come from the batch's repair-statement result, not a
+    // leftover sequential post-batch call.
+    expect(batch).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws 500 when the repair statement's batch result isn't an array (defends against a driver shape change)", async () => {
+    const { db, batch } = makeLikeDb({});
+    // extractRepairedRow is shared by likeContent/unlikeContent — exercising
+    // the guard once here through likeContent covers both callers.
+    batch.mockResolvedValueOnce([
+      [{ userId: "liker-2" }],
+      { unexpected: "shape" },
+    ]);
+
+    await expect(
+      likeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2"),
+    ).rejects.toMatchObject({ statusCode: 500 });
+  });
+
+  it("throws 500 when the insert statement's batch result isn't an array (same guard, the other batch position)", async () => {
+    const { db, batch } = makeLikeDb({});
+    batch.mockResolvedValueOnce([
+      { unexpected: "shape" },
+      [{ id: "e-1", likeCount: 1 }],
+    ]);
+
+    await expect(
+      likeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2"),
+    ).rejects.toMatchObject({ statusCode: 500 });
+  });
+
+  it("runs the insert and the count-repair, in that order, as one atomic database.batch() call", async () => {
+    const repaired = { id: "e-1", likeCount: 1 };
+    const { db, batch, insertResultPromise, updateResultPromise } =
+      makeLikeDb(repaired);
+
+    await likeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2");
+
+    // Exactly one batch() call carrying both statements, insert before
+    // repair — not two sequential round trips (one insert HTTP call, then a
+    // separate update HTTP call), and not the repair racing ahead of the
+    // insert it's supposed to count.
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(batch.mock.calls[0][0][0]).toBe(insertResultPromise);
+    expect(batch.mock.calls[0][0][1]).toBe(updateResultPromise);
+  });
+
+  it("propagates a rejected batch without a separate, already-committed insert", async () => {
+    const { db, batch } = makeLikeDb({});
+    const batchError = new Error("batch failed");
+    batch.mockRejectedValueOnce(batchError);
+
+    // A failure here must surface as a single rejected batch call carrying
+    // both statements, not a resolved insert followed by a failing
+    // standalone count-repair call — that split is exactly the
+    // committed-insert-then-stale-count gap this batching closes.
+    await expect(
+      likeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2"),
+    ).rejects.toThrow(batchError);
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(batch.mock.calls[0][0]).toHaveLength(2);
   });
 
   it("inserts into the guide join table for the guide config", async () => {
@@ -191,11 +293,46 @@ describe("unlikeContent", () => {
   });
 
   it("throws 404 when the row vanished before the count repair", async () => {
-    const { db } = makeLikeDb({}, { returning: [] });
+    const { db, batch } = makeLikeDb({}, { returning: [] });
 
     await expect(
       unlikeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2"),
     ).rejects.toMatchObject({ statusCode: 404 });
+    // The 404 must come from the batch's repair-statement result, not a
+    // leftover sequential post-batch call.
+    expect(batch).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs the delete and the count-repair, in that order, as one atomic database.batch() call", async () => {
+    const repaired = { id: "e-1", likeCount: 0 };
+    const { db, batch, deleteResultPromise, updateResultPromise } =
+      makeLikeDb(repaired);
+
+    await unlikeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2");
+
+    // Exactly one batch() call carrying both statements, delete before
+    // repair — not two sequential round trips (one delete HTTP call, then a
+    // separate update HTTP call), and not the repair racing ahead of the
+    // delete it's supposed to count.
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(batch.mock.calls[0][0][0]).toBe(deleteResultPromise);
+    expect(batch.mock.calls[0][0][1]).toBe(updateResultPromise);
+  });
+
+  it("propagates a rejected batch without a separate, already-committed delete", async () => {
+    const { db, batch } = makeLikeDb({});
+    const batchError = new Error("batch failed");
+    batch.mockRejectedValueOnce(batchError);
+
+    // A failure here must surface as a single rejected batch call carrying
+    // both statements, not a resolved delete followed by a failing
+    // standalone count-repair call — that split is exactly the
+    // committed-delete-then-stale-count gap this batching closes.
+    await expect(
+      unlikeContent(db, ENTRY_LIKEABLE, "e-1", "liker-2"),
+    ).rejects.toThrow(batchError);
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(batch.mock.calls[0][0]).toHaveLength(2);
   });
 
   it("targets the guide join table for the guide config", async () => {
