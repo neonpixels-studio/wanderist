@@ -71,10 +71,10 @@ describe("useConnections", () => {
       ).toBe("user@gmail.com");
     });
 
-    it("sets loadError when the API call fails", async () => {
+    it("sets loadError from a server-intended data.statusMessage when the API call fails", async () => {
       mockApiFetch.mockRejectedValueOnce(
         Object.assign(new Error("Network error"), {
-          statusMessage: "Network error",
+          data: { statusMessage: "Network error" },
         }),
       );
 
@@ -122,7 +122,7 @@ describe("useConnections", () => {
     it("sets actionError and returns false on failure", async () => {
       mockApiFetch.mockRejectedValueOnce(
         Object.assign(new Error("Not connected"), {
-          statusMessage: "Not connected",
+          data: { statusMessage: "Not connected" },
         }),
       );
 

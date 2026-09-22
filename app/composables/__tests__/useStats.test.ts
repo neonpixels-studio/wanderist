@@ -84,7 +84,11 @@ describe("useStats", () => {
       expect(stats.value.currentStreak).toBe(0);
     });
 
-    it("falls back to error.statusMessage when data is absent", async () => {
+    it("never surfaces a bare top-level statusMessage (ofetch's raw HTTP reason phrase) — falls back to the generic message", async () => {
+      // A top-level statusMessage with no data wrapper is exactly what
+      // ofetch sets from response.statusText for infra-level failures (e.g.
+      // a Netlify 502) our own server never touched — it must never be
+      // trusted as intentional, user-facing copy.
       const fetchError = Object.assign(new Error("Bad Request"), {
         statusMessage: "Bad Request fallback",
       });
@@ -93,7 +97,7 @@ describe("useStats", () => {
       const { fetchStats, loadError } = useStats();
       await fetchStats();
 
-      expect(loadError.value).toBe("Bad Request fallback");
+      expect(loadError.value).toBe("An unexpected error occurred");
     });
 
     it("never surfaces a raw Error message — falls back to the generic message", async () => {
