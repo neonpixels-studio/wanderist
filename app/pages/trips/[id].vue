@@ -345,6 +345,12 @@
             "
           >
             Travelling with
+            <!-- Companion invite has no backing endpoint yet (no
+                 trip_collaborators table). Disabled rather than a silent
+                 no-op; the reason lives in visible/sr-reachable text, not
+                 just `title`, so it isn't dropped for keyboard/AT users.
+                 @todo Re-enable once a trip collaborator/invite endpoint
+                 exists. -->
             <button
               class="label label--plain"
               style="
@@ -354,7 +360,6 @@
                 color: var(--accent-ink);
               "
               disabled
-              :title="INVITE_UNAVAILABLE_TITLE"
             >
               invite
               <span class="visually-hidden">
@@ -1012,14 +1017,6 @@ async function onShare(): Promise<void> {
 
   await copyPublicLink(trip.id);
 }
-
-// Companion invite requires a collaborator/follow-system endpoint that is
-// not yet exposed via the current API surface (no trip_collaborators table,
-// no invite endpoint). The follow system (useFollows) handles user follows
-// but not trip-level collaborator invitations. Until that backend exists,
-// the invite button/row render disabled with INVITE_UNAVAILABLE_TITLE
-// instead of silently no-opping.
-// @todo Re-enable invite once a trip collaborator/invite endpoint exists.
 </script>
 
 <style scoped>

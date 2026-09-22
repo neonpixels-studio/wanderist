@@ -271,10 +271,11 @@ describe("Trip Detail page (/trips/[id])", () => {
       .find((button) => button.text().startsWith("invite"));
     expect(inviteButton).toBeDefined();
     expect(inviteButton!.attributes("disabled")).toBeDefined();
-    expect(inviteButton!.attributes("title")).toBe(INVITE_UNAVAILABLE_TITLE);
-    // Native `disabled` removes the button from the tab order, so the title
-    // tooltip alone never reaches keyboard/screen-reader users — the reason
-    // must also be present as text.
+    // No `title` attribute here: a disabled button never fires hover/focus
+    // events, so a title-only tooltip would never reach anyone. The reason
+    // must be real (screen-reader reachable) text instead — asserting both
+    // `title` and this text would double-announce it to AT users.
+    expect(inviteButton!.attributes("title")).toBeUndefined();
     expect(inviteButton!.text()).toContain(INVITE_UNAVAILABLE_TITLE);
 
     const companionRow = wrapper.find(".companion--disabled");
