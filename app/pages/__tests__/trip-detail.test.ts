@@ -6,6 +6,7 @@ import TripDetailPage from "../trips/[id].vue";
 import { useTripsStore } from "~/stores/trips";
 import type { TripDetail, TripStop } from "~/stores/trips";
 import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
+import { INVITE_UNAVAILABLE_TITLE } from "~/constants/trips";
 
 // Override the global useRoute stub with a REACTIVE params object so a test can
 // change the trip id and assert the page's watched ref tracks it.
@@ -260,6 +261,27 @@ describe("Trip Detail page (/trips/[id])", () => {
     const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
     expect(wrapper.find(".companions").exists()).toBe(true);
     expect(wrapper.html()).toContain("Invite someone");
+  });
+
+  it("disables the invite button and row with a not-available tooltip instead of silently no-opping", () => {
+    const wrapper = mount(TripDetailPage, buildGlobalConfig(pinia));
+
+    const inviteButton = wrapper
+      .findAll("button.label--plain")
+      .find((button) => button.text().startsWith("invite"));
+    expect(inviteButton).toBeDefined();
+    expect(inviteButton!.attributes("disabled")).toBeDefined();
+    // No `title` attribute here: a disabled button never fires hover/focus
+    // events, so a title-only tooltip would never reach anyone. The reason
+    // must be real (screen-reader reachable) text instead — asserting both
+    // `title` and this text would double-announce it to AT users.
+    expect(inviteButton!.attributes("title")).toBeUndefined();
+    expect(inviteButton!.text()).toContain(INVITE_UNAVAILABLE_TITLE);
+
+    const companionRow = wrapper.find(".companion--disabled");
+    expect(companionRow.exists()).toBe(true);
+    expect(companionRow.attributes("title")).toBe(INVITE_UNAVAILABLE_TITLE);
+    expect(companionRow.text()).toContain("coming soon");
   });
 
   it("shows loading state when isLoadingDetail is true", async () => {

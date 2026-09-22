@@ -345,6 +345,12 @@
             "
           >
             Travelling with
+            <!-- Companion invite has no backing endpoint yet (no
+                 trip_collaborators table). Disabled rather than a silent
+                 no-op; the reason lives in visible/sr-reachable text, not
+                 just `title`, so it isn't dropped for keyboard/AT users.
+                 @todo Re-enable once a trip collaborator/invite endpoint
+                 exists. -->
             <button
               class="label label--plain"
               style="
@@ -353,22 +359,26 @@
                 background: none;
                 color: var(--accent-ink);
               "
-              @click="onInvite"
+              disabled
             >
               invite
+              <span class="visually-hidden">
+                ({{ INVITE_UNAVAILABLE_TITLE }})
+              </span>
             </button>
           </h4>
           <div class="companions">
-            <div class="companion">
+            <div
+              class="companion companion--disabled"
+              :title="INVITE_UNAVAILABLE_TITLE"
+            >
               <span
                 class="companion__av"
                 style="background: var(--bg-tint); color: var(--muted)"
               >
                 <AppIcon name="plus" :size="16" />
               </span>
-              <div>
-                <b>Invite someone</b><br /><span>add a co-traveller</span>
-              </div>
+              <div><b>Invite someone</b><br /><span>coming soon</span></div>
             </div>
           </div>
         </div>
@@ -383,6 +393,7 @@ import type { Trip, TripStop } from "~/stores/trips";
 import { useMediaUpload } from "~/composables/useMediaUpload";
 import { moveIdUp, moveIdDown, moveIdToDropTarget } from "~/utils/stopOrder";
 import type { StopOrderMutator } from "~/utils/stopOrder";
+import { INVITE_UNAVAILABLE_TITLE } from "~/constants/trips";
 import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
 
 // No auth middleware: a public trip must open for anonymous visitors following
@@ -1006,13 +1017,6 @@ async function onShare(): Promise<void> {
 
   await copyPublicLink(trip.id);
 }
-
-function onInvite(): void {
-  // Companion invite requires a collaborator/follow-system endpoint that is
-  // not yet exposed via the current API surface. This is a no-op placeholder;
-  // the follow system (useFollows) handles user follows but not trip-level
-  // collaborator invitations. Tracked for a future API endpoint addition.
-}
 </script>
 
 <style scoped>
@@ -1388,6 +1392,11 @@ function onInvite(): void {
 .companion span {
   font-size: 11px;
   color: var(--muted);
+}
+.companion--disabled,
+.label--plain:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .alert--error {
