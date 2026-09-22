@@ -195,7 +195,7 @@ describe("Guides page (/guides)", () => {
       await flushPromises();
 
       expect(wrapper.find(".guide-form__error").text()).toBe(
-        "Failed to create guide",
+        "An unexpected error occurred",
       );
       expect(wrapper.find(".guide-form").exists()).toBe(true);
     });
@@ -297,7 +297,7 @@ describe("Guides page (/guides)", () => {
       await findButton(wrapper, "confirm delete")?.trigger("click");
       await flushPromises();
 
-      expect(wrapper.text()).toContain("Failed to delete guide");
+      expect(wrapper.text()).toContain("An unexpected error occurred");
     });
 
     it("keeps the confirm step open after a failed delete so retry is one click away", async () => {

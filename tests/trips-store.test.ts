@@ -386,7 +386,7 @@ describe("useTripsStore", () => {
       const store = useTripsStore();
       await expect(store.fetchTripById("trip-1")).rejects.toThrow("Not found");
 
-      expect(store.detailError).toBe("Not found");
+      expect(store.detailError).toBe("An unexpected error occurred");
     });
   });
 

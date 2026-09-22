@@ -63,13 +63,13 @@ describe("usePreferences", () => {
       expect(loadError.value).toBe("Bad Request fallback");
     });
 
-    it("falls back to generic message when no statusMessage is present", async () => {
+    it("never surfaces a raw Error message — falls back to the generic message", async () => {
       mockApiFetch.mockRejectedValue(new Error("network down"));
 
       const { fetchPreferences, loadError } = usePreferences();
       await fetchPreferences();
 
-      expect(loadError.value).toBe("network down");
+      expect(loadError.value).toBe("An unexpected error occurred");
     });
   });
 

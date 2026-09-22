@@ -96,13 +96,13 @@ describe("useStats", () => {
       expect(loadError.value).toBe("Bad Request fallback");
     });
 
-    it("falls back to error.message when no statusMessage is present", async () => {
+    it("never surfaces a raw Error message — falls back to the generic message", async () => {
       mockApiFetch.mockRejectedValue(new Error("network down"));
 
       const { fetchStats, loadError } = useStats();
       await fetchStats();
 
-      expect(loadError.value).toBe("network down");
+      expect(loadError.value).toBe("An unexpected error occurred");
     });
 
     it("falls back to generic message when error has no recognizable shape", async () => {
