@@ -66,6 +66,7 @@ import { useGuidesStore } from "~/stores/guides";
 import type { GuideVisibility } from "~/stores/guides";
 import { formatAuthorByline } from "~/utils/travelerLabels";
 import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
+import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
 
 // No auth middleware: a public guide must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private or
@@ -162,13 +163,23 @@ const authorLabel = computed(() =>
     : "",
 );
 
-useHead(
-  computed(() => ({
-    title: guide.value
-      ? `Wanderist — ${guide.value.title}`
-      : "Wanderist — Guide",
-  })),
-);
+// Falls back to the byline + read time when the guide has no body (or the
+// body is only whitespace) yet, so a share-link preview never shows a blank
+// description for a guide with no real content.
+const guideDescription = computed(() => {
+  if (!guide.value) {
+    return `A shared travel guide on ${SITE_NAME}.`;
+  }
+  if (guide.value.body?.trim()) {
+    return guide.value.body;
+  }
+  return `${guide.value.readTimeMinutes} min read, ${authorLabel.value} on ${SITE_NAME}.`;
+});
+
+useOgMeta(() => ({
+  pageTitle: guide.value ? guide.value.title : "Guide",
+  description: guideDescription.value,
+}));
 </script>
 
 <style scoped>

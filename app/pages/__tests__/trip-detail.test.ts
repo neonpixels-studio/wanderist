@@ -6,12 +6,27 @@ import TripDetailPage from "../trips/[id].vue";
 import { useTripsStore } from "~/stores/trips";
 import type { TripDetail, TripStop } from "~/stores/trips";
 import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
+import {
+  lastSeoMetaCall,
+  stubOgMetaGlobals,
+} from "~/composables/__tests__/ogMetaTestUtils";
 import { INVITE_UNAVAILABLE_TITLE } from "~/constants/trips";
 
 // Override the global useRoute stub with a REACTIVE params object so a test can
-// change the trip id and assert the page's watched ref tracks it.
+// change the trip id and assert the page's watched ref tracks it. `path` is a
+// getter (not a static string) so useOgMeta's og:url reflects a route-param
+// change, not just the value at mount.
 const routeParams = reactive({ id: "trip-1" });
-vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
+vi.stubGlobal("useRoute", () => ({
+  params: routeParams,
+  query: {},
+  get path() {
+    return `/trips/${routeParams.id}`;
+  },
+}));
+
+// #269 og/twitter meta coverage below reads this trackable useSeoMeta stub.
+const useSeoMetaMock = stubOgMetaGlobals();
 
 // The page derives isOwner from the signed-in Clerk user id vs the trip owner.
 // Drive that from a shared ref so a test can view the trip as its owner (all
@@ -189,6 +204,7 @@ describe("Trip Detail page (/trips/[id])", () => {
     asyncDataStatus.value = "success";
     lastAsyncDataOptions = undefined;
     mockRefresh.mockClear();
+    useSeoMetaMock.mockClear();
     // Default: Clerk resolved, viewing as the trip's owner, so the owner-only
     // controls render.
     clerkLoadedRef.value = true;
@@ -1003,5 +1019,105 @@ describe("Trip Detail page (/trips/[id])", () => {
     await nextTick();
 
     expect(wrapper.find(".thero").exists()).toBe(false);
+  });
+
+  describe("Open Graph / Twitter meta (#269)", () => {
+    it("emits og/twitter tags built from the loaded trip's facts, falling back to the small-card favicon when the trip has no cover", () => {
+      const tripsStore = useTripsStore();
+      tripsStore.currentTripDetail = { ...SAMPLE_DETAIL };
+
+      mount(TripDetailPage, buildGlobalConfig(pinia));
+
+      const meta = lastSeoMetaCall(useSeoMetaMock);
+      const title = meta.title as () => string;
+      const description = meta.description as () => string;
+      const ogImage = meta.ogImage as () => string;
+      const ogUrl = meta.ogUrl as () => string;
+
+      expect(title()).toBe("Wanderist — Iceland, the ring road");
+      expect((meta.ogTitle as () => string)()).toBe(title());
+      expect((meta.twitterTitle as () => string)()).toBe(title());
+      expect(description()).toBe(
+        "Ongoing trip with 3 stops, 1,332 km on Wanderist.",
+      );
+      expect((meta.ogDescription as () => string)()).toBe(description());
+      expect((meta.twitterDescription as () => string)()).toBe(description());
+      expect(ogImage()).toBe("https://wanderist.test/favicon.ico");
+      expect((meta.twitterImage as () => string)()).toBe(ogImage());
+      expect(ogUrl()).toBe("https://wanderist.test/trips/trip-1");
+      expect(meta.ogType).toBe("website");
+      expect((meta.twitterCard as () => string)()).toBe("summary");
+    });
+
+    it("builds an absolute og:image from the trip's real cover, not the optimistic upload preview, and uses the large-image card", () => {
+      const tripsStore = useTripsStore();
+      tripsStore.currentTripDetail = {
+        ...SAMPLE_DETAIL,
+        trip: { ...SAMPLE_DETAIL.trip, coverImageId: "media-abc123" },
+      };
+
+      mount(TripDetailPage, buildGlobalConfig(pinia));
+
+      const meta = lastSeoMetaCall(useSeoMetaMock);
+      const ogImage = meta.ogImage as () => string;
+      expect(ogImage()).toBe("https://wanderist.test/api/media/media-abc123");
+      expect((meta.twitterCard as () => string)()).toBe("summary_large_image");
+    });
+
+    it("falls back to a placeholder title/description before a trip has loaded", () => {
+      const tripsStore = useTripsStore();
+      tripsStore.currentTripDetail = null;
+
+      mount(TripDetailPage, buildGlobalConfig(pinia));
+
+      const meta = lastSeoMetaCall(useSeoMetaMock);
+      expect((meta.title as () => string)()).toBe("Wanderist — Trip");
+      expect((meta.description as () => string)()).toBe("A trip on Wanderist.");
+    });
+
+    it("singularizes the stop count and omits the distance phrase when there's exactly one stop and no distance", () => {
+      const tripsStore = useTripsStore();
+      tripsStore.currentTripDetail = {
+        ...SAMPLE_DETAIL,
+        facts: { ...SAMPLE_DETAIL.facts, stopCount: 1, distanceKm: null },
+      };
+
+      mount(TripDetailPage, buildGlobalConfig(pinia));
+
+      const description = lastSeoMetaCall(useSeoMetaMock)
+        .description as () => string;
+      expect(description()).toBe("Ongoing trip with 1 stop on Wanderist.");
+    });
+
+    it("updates title once the trip loads after mount", async () => {
+      const tripsStore = useTripsStore();
+      tripsStore.currentTripDetail = null;
+
+      mount(TripDetailPage, buildGlobalConfig(pinia));
+      const beforeLoad = lastSeoMetaCall(useSeoMetaMock);
+      expect((beforeLoad.title as () => string)()).toBe("Wanderist — Trip");
+
+      tripsStore.currentTripDetail = { ...SAMPLE_DETAIL };
+      await nextTick();
+
+      const afterLoad = lastSeoMetaCall(useSeoMetaMock);
+      expect((afterLoad.title as () => string)()).toBe(
+        "Wanderist — Iceland, the ring road",
+      );
+    });
+
+    it("updates og:url on in-page navigation to a different trip", async () => {
+      const tripsStore = useTripsStore();
+      tripsStore.currentTripDetail = { ...SAMPLE_DETAIL };
+
+      mount(TripDetailPage, buildGlobalConfig(pinia));
+      const ogUrl = lastSeoMetaCall(useSeoMetaMock).ogUrl as () => string;
+      expect(ogUrl()).toBe("https://wanderist.test/trips/trip-1");
+
+      routeParams.id = "trip-2";
+      await nextTick();
+
+      expect(ogUrl()).toBe("https://wanderist.test/trips/trip-2");
+    });
   });
 });

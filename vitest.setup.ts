@@ -35,6 +35,10 @@ Object.assign(globalThis, {
   })(),
   useNuxtApp: vi.fn(() => ({})),
   useRuntimeConfig: vi.fn(() => ({ public: { mapboxToken: "" } })),
+  // No test outside useOgMeta's specs cares about the request URL; those
+  // specs override this locally with a fixed origin (see
+  // useOgMeta.test.ts and the guide/profile/trip detail page specs).
+  useRequestURL: vi.fn(() => new URL("http://localhost:3000/")),
   useScrollReveal: vi.fn(),
   useAsyncData: vi.fn(() => ({
     data: vue.ref(null),
