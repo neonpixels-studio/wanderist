@@ -17,9 +17,16 @@ export interface OgMetaInput {
   imagePath?: string | null;
 }
 
+// Site-wide title prefix, factored out so the three public pages can't drift
+// on the separator/spacing between it and their own page title.
+export const SITE_NAME = "Wanderist";
+
 // No page currently ships a designed social-preview asset, so the favicon is
 // the only real image on the site to fall back to. See the "default OG image
-// asset" follow-up suggestion on this PR.
+// asset" follow-up suggestion on this PR. It's paired with the "summary"
+// (small-image) Twitter card below rather than "summary_large_image" — most
+// platforms reject or badly upscale a favicon-sized/.ico image for a large
+// card.
 const DEFAULT_OG_IMAGE_PATH = "/favicon.ico";
 
 // Most platforms truncate well before this anyway, but a guide body or
@@ -28,10 +35,17 @@ const DEFAULT_OG_IMAGE_PATH = "/favicon.ico";
 const MAX_DESCRIPTION_LENGTH = 200;
 
 function truncateDescription(description: string): string {
-  if (description.length <= MAX_DESCRIPTION_LENGTH) {
+  // Split into Unicode code points (not UTF-16 code units) so a cut at the
+  // boundary can't land inside a surrogate pair (e.g. an emoji) and emit a
+  // lone, unrenderable surrogate.
+  const characters = Array.from(description);
+  if (characters.length <= MAX_DESCRIPTION_LENGTH) {
     return description;
   }
-  return `${description.slice(0, MAX_DESCRIPTION_LENGTH - 1).trimEnd()}…`;
+  return `${characters
+    .slice(0, MAX_DESCRIPTION_LENGTH - 1)
+    .join("")
+    .trimEnd()}…`;
 }
 
 /**
@@ -60,6 +74,13 @@ export function useOgMeta(getMeta: () => OgMetaInput): void {
     return toAbsoluteUrl(getMeta().imagePath || DEFAULT_OG_IMAGE_PATH);
   }
 
+  // "summary_large_image" needs a real, sizeable image or the card renders
+  // broken/blank on most platforms; a page with no real image (favicon
+  // fallback) gets the small "summary" card instead.
+  function currentTwitterCard(): "summary" | "summary_large_image" {
+    return getMeta().imagePath ? "summary_large_image" : "summary";
+  }
+
   useSeoMeta({
     title: currentTitle,
     description: currentDescription,
@@ -68,7 +89,7 @@ export function useOgMeta(getMeta: () => OgMetaInput): void {
     ogImage: currentImageUrl,
     ogUrl: () => toAbsoluteUrl(requestUrl.pathname),
     ogType: "website",
-    twitterCard: "summary_large_image",
+    twitterCard: currentTwitterCard,
     twitterTitle: currentTitle,
     twitterDescription: currentDescription,
     twitterImage: currentImageUrl,

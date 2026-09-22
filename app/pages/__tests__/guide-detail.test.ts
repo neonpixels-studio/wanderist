@@ -7,24 +7,21 @@ import { nuxtLinkStub } from "~/components/__tests__/input-stubs";
 import { useGuidesStore } from "~/stores/guides";
 import type { Guide } from "~/stores/guides";
 import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
+import {
+  OG_META_TEST_SITE_ORIGIN,
+  lastSeoMetaCall,
+  stubOgMetaGlobals,
+} from "~/composables/__tests__/ogMetaTestUtils";
 
 // Override the global useRoute stub with a REACTIVE params object so a test can
 // change the guide id and assert the page's watched ref tracks it.
 const routeParams = reactive({ id: "guide-1" });
 vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
 
-// Local, trackable useSeoMeta stub (#269 og/twitter meta coverage below):
-// the global default in vitest.setup.ts is a bare vi.fn() shared across
-// files, so this override lets tests inspect exactly what useOgMeta passed.
-const useSeoMetaMock = vi.fn();
-vi.stubGlobal("useSeoMeta", useSeoMetaMock);
-// Fixed site origin so absolute-URL assertions are deterministic, overriding
-// the blank default in vitest.setup.ts (kept blank there so unrelated
-// billing-route tests can assert on a missing site origin).
-vi.stubGlobal("useRuntimeConfig", () => ({
-  public: { siteOrigin: "https://wanderist.test" },
-}));
-vi.stubGlobal("useRequestURL", () => new URL("https://wanderist.test/"));
+// #269 og/twitter meta coverage below reads this trackable useSeoMeta stub.
+const useSeoMetaMock = stubOgMetaGlobals(
+  `${OG_META_TEST_SITE_ORIGIN}/guides/guide-1`,
+);
 
 // The fetch's canRetryAuthenticated watch reads useClerkAuth; drive it from
 // refs so a test can simulate the Clerk bootstrap window and a signed-in
@@ -479,20 +476,13 @@ describe("Guide Detail page (/guides/[id])", () => {
   });
 
   describe("Open Graph / Twitter meta (#269)", () => {
-    function lastSeoMetaCall(): Record<string, unknown> {
-      const call = useSeoMetaMock.mock.calls.at(-1)?.[0] as
-        Record<string, unknown> | undefined;
-      expect(call).toBeDefined();
-      return call as Record<string, unknown>;
-    }
-
     it("emits og/twitter tags built from the loaded guide's body", () => {
       const guidesStore = useGuidesStore();
       guidesStore.currentGuide = { ...SAMPLE_GUIDE };
 
       mount(GuideDetailPage, buildGlobalConfig(pinia));
 
-      const meta = lastSeoMetaCall();
+      const meta = lastSeoMetaCall(useSeoMetaMock);
       const title = meta.title as () => string;
       const description = meta.description as () => string;
       const ogImage = meta.ogImage as () => string;
@@ -507,12 +497,13 @@ describe("Guide Detail page (/guides/[id])", () => {
       expect((meta.ogDescription as () => string)()).toBe(description());
       expect((meta.twitterDescription as () => string)()).toBe(description());
       // No cover image exists on a guide, so the fallback favicon is used —
-      // still an absolute URL built from the configured site origin.
+      // still an absolute URL built from the configured site origin — paired
+      // with the small "summary" card rather than "summary_large_image".
       expect(ogImage()).toBe("https://wanderist.test/favicon.ico");
       expect((meta.twitterImage as () => string)()).toBe(ogImage());
-      expect(ogUrl()).toMatch(/^https:\/\/wanderist\.test\//);
+      expect(ogUrl()).toBe("https://wanderist.test/guides/guide-1");
       expect(meta.ogType).toBe("website");
-      expect(meta.twitterCard).toBe("summary_large_image");
+      expect((meta.twitterCard as () => string)()).toBe("summary");
     });
 
     it("falls back to a byline/read-time description when the guide has no body", () => {
@@ -526,7 +517,8 @@ describe("Guide Detail page (/guides/[id])", () => {
 
       mount(GuideDetailPage, buildGlobalConfig(pinia));
 
-      const description = lastSeoMetaCall().description as () => string;
+      const description = lastSeoMetaCall(useSeoMetaMock)
+        .description as () => string;
       expect(description()).toBe("8 min read, by @elsa_far on Wanderist.");
     });
 
@@ -536,7 +528,7 @@ describe("Guide Detail page (/guides/[id])", () => {
 
       mount(GuideDetailPage, buildGlobalConfig(pinia));
 
-      const meta = lastSeoMetaCall();
+      const meta = lastSeoMetaCall(useSeoMetaMock);
       expect((meta.title as () => string)()).toBe("Wanderist — Guide");
       expect((meta.description as () => string)()).toBe(
         "A shared travel guide on Wanderist.",

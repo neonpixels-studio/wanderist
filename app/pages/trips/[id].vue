@@ -384,7 +384,7 @@ import { useMediaUpload } from "~/composables/useMediaUpload";
 import { moveIdUp, moveIdDown, moveIdToDropTarget } from "~/utils/stopOrder";
 import type { StopOrderMutator } from "~/utils/stopOrder";
 import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
-import { useOgMeta } from "~/composables/useOgMeta";
+import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
 
 // No auth middleware: a public trip must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private trip returns
@@ -519,7 +519,7 @@ const isLoading = computed(
 // share-link preview never shows a blank description.
 const tripDescription = computed(() => {
   if (!tripDetail.value) {
-    return "A trip on Wanderist.";
+    return `A trip on ${SITE_NAME}.`;
   }
   const stopCount = tripDetail.value.facts.stopCount;
   const stopsPhrase = `${stopCount} ${stopCount === 1 ? "stop" : "stops"}`;
@@ -527,7 +527,7 @@ const tripDescription = computed(() => {
     tripDetail.value.facts.distanceKm != null
       ? `, ${formatKm(tripDetail.value.facts.distanceKm)}`
       : "";
-  return `${statusLabel.value} trip with ${stopsPhrase}${distancePhrase} on Wanderist.`;
+  return `${statusLabel.value} trip with ${stopsPhrase}${distancePhrase} on ${SITE_NAME}.`;
 });
 
 // The trip's own coverImageId (not the optimistic pendingCoverUrl, which only
@@ -542,8 +542,8 @@ const tripOgImagePath = computed(() =>
 
 useOgMeta(() => ({
   title: tripDetail.value
-    ? `Wanderist — ${tripDetail.value.trip.name}`
-    : "Wanderist — Trip",
+    ? `${SITE_NAME} — ${tripDetail.value.trip.name}`
+    : `${SITE_NAME} — Trip`,
   description: tripDescription.value,
   imagePath: tripOgImagePath.value,
 }));

@@ -66,7 +66,7 @@ import { useGuidesStore } from "~/stores/guides";
 import type { GuideVisibility } from "~/stores/guides";
 import { formatAuthorByline } from "~/utils/travelerLabels";
 import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
-import { useOgMeta } from "~/composables/useOgMeta";
+import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
 
 // No auth middleware: a public guide must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private or
@@ -168,16 +168,18 @@ const authorLabel = computed(() =>
 // content.
 const guideDescription = computed(() => {
   if (!guide.value) {
-    return "A shared travel guide on Wanderist.";
+    return `A shared travel guide on ${SITE_NAME}.`;
   }
   if (guide.value.body) {
     return guide.value.body;
   }
-  return `${guide.value.readTimeMinutes} min read, ${authorLabel.value} on Wanderist.`;
+  return `${guide.value.readTimeMinutes} min read, ${authorLabel.value} on ${SITE_NAME}.`;
 });
 
 useOgMeta(() => ({
-  title: guide.value ? `Wanderist — ${guide.value.title}` : "Wanderist — Guide",
+  title: guide.value
+    ? `${SITE_NAME} — ${guide.value.title}`
+    : `${SITE_NAME} — Guide`,
   description: guideDescription.value,
 }));
 </script>

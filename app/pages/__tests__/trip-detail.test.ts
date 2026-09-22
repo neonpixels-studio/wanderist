@@ -6,24 +6,21 @@ import TripDetailPage from "../trips/[id].vue";
 import { useTripsStore } from "~/stores/trips";
 import type { TripDetail, TripStop } from "~/stores/trips";
 import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
+import {
+  OG_META_TEST_SITE_ORIGIN,
+  lastSeoMetaCall,
+  stubOgMetaGlobals,
+} from "~/composables/__tests__/ogMetaTestUtils";
 
 // Override the global useRoute stub with a REACTIVE params object so a test can
 // change the trip id and assert the page's watched ref tracks it.
 const routeParams = reactive({ id: "trip-1" });
 vi.stubGlobal("useRoute", () => ({ params: routeParams, query: {} }));
 
-// Local, trackable useSeoMeta stub (#269 og/twitter meta coverage below):
-// the global default in vitest.setup.ts is a bare vi.fn() shared across
-// files, so this override lets tests inspect exactly what useOgMeta passed.
-const useSeoMetaMock = vi.fn();
-vi.stubGlobal("useSeoMeta", useSeoMetaMock);
-// Fixed site origin so absolute-URL assertions are deterministic, overriding
-// the blank default in vitest.setup.ts (kept blank there so unrelated
-// billing-route tests can assert on a missing site origin).
-vi.stubGlobal("useRuntimeConfig", () => ({
-  public: { siteOrigin: "https://wanderist.test" },
-}));
-vi.stubGlobal("useRequestURL", () => new URL("https://wanderist.test/"));
+// #269 og/twitter meta coverage below reads this trackable useSeoMeta stub.
+const useSeoMetaMock = stubOgMetaGlobals(
+  `${OG_META_TEST_SITE_ORIGIN}/trips/trip-1`,
+);
 
 // The page derives isOwner from the signed-in Clerk user id vs the trip owner.
 // Drive that from a shared ref so a test can view the trip as its owner (all
@@ -998,20 +995,13 @@ describe("Trip Detail page (/trips/[id])", () => {
   });
 
   describe("Open Graph / Twitter meta (#269)", () => {
-    function lastSeoMetaCall(): Record<string, unknown> {
-      const call = useSeoMetaMock.mock.calls.at(-1)?.[0] as
-        Record<string, unknown> | undefined;
-      expect(call).toBeDefined();
-      return call as Record<string, unknown>;
-    }
-
-    it("emits og/twitter tags built from the loaded trip's facts, falling back to the favicon when the trip has no cover", () => {
+    it("emits og/twitter tags built from the loaded trip's facts, falling back to the small-card favicon when the trip has no cover", () => {
       const tripsStore = useTripsStore();
       tripsStore.currentTripDetail = { ...SAMPLE_DETAIL };
 
       mount(TripDetailPage, buildGlobalConfig(pinia));
 
-      const meta = lastSeoMetaCall();
+      const meta = lastSeoMetaCall(useSeoMetaMock);
       const title = meta.title as () => string;
       const description = meta.description as () => string;
       const ogImage = meta.ogImage as () => string;
@@ -1027,12 +1017,12 @@ describe("Trip Detail page (/trips/[id])", () => {
       expect((meta.twitterDescription as () => string)()).toBe(description());
       expect(ogImage()).toBe("https://wanderist.test/favicon.ico");
       expect((meta.twitterImage as () => string)()).toBe(ogImage());
-      expect(ogUrl()).toMatch(/^https:\/\/wanderist\.test\//);
+      expect(ogUrl()).toBe("https://wanderist.test/trips/trip-1");
       expect(meta.ogType).toBe("website");
-      expect(meta.twitterCard).toBe("summary_large_image");
+      expect((meta.twitterCard as () => string)()).toBe("summary");
     });
 
-    it("builds an absolute og:image from the trip's real cover, not the optimistic upload preview", () => {
+    it("builds an absolute og:image from the trip's real cover, not the optimistic upload preview, and uses the large-image card", () => {
       const tripsStore = useTripsStore();
       tripsStore.currentTripDetail = {
         ...SAMPLE_DETAIL,
@@ -1041,8 +1031,10 @@ describe("Trip Detail page (/trips/[id])", () => {
 
       mount(TripDetailPage, buildGlobalConfig(pinia));
 
-      const ogImage = lastSeoMetaCall().ogImage as () => string;
+      const meta = lastSeoMetaCall(useSeoMetaMock);
+      const ogImage = meta.ogImage as () => string;
       expect(ogImage()).toBe("https://wanderist.test/api/media/media-abc123");
+      expect((meta.twitterCard as () => string)()).toBe("summary_large_image");
     });
 
     it("falls back to a placeholder title/description before a trip has loaded", () => {
@@ -1051,7 +1043,7 @@ describe("Trip Detail page (/trips/[id])", () => {
 
       mount(TripDetailPage, buildGlobalConfig(pinia));
 
-      const meta = lastSeoMetaCall();
+      const meta = lastSeoMetaCall(useSeoMetaMock);
       expect((meta.title as () => string)()).toBe("Wanderist — Trip");
       expect((meta.description as () => string)()).toBe("A trip on Wanderist.");
     });

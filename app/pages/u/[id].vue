@@ -126,7 +126,7 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
 import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
-import { useOgMeta } from "~/composables/useOgMeta";
+import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
 
 const openCommandPalette = inject<(() => void) | undefined>(
   "openCommandPalette",
@@ -192,18 +192,20 @@ const pending = computed(() => isPending(userId.value));
 // share-link preview never shows a blank description.
 const profileDescription = computed(() => {
   if (!profile.value) {
-    return "A traveler's profile on Wanderist.";
+    return `A traveler's profile on ${SITE_NAME}.`;
   }
   if (profile.value.bio) {
     return profile.value.bio;
   }
-  return `${displayName.value} on Wanderist — ${profile.value.followerCount} followers, ${profile.value.placeCount} places.`;
+  const followerLabel = `${profile.value.followerCount} ${profile.value.followerCount === 1 ? "follower" : "followers"}`;
+  const placeLabel = `${profile.value.placeCount} ${profile.value.placeCount === 1 ? "place" : "places"}`;
+  return `${displayName.value} on ${SITE_NAME} — ${followerLabel}, ${placeLabel}.`;
 });
 
 useOgMeta(() => ({
   title: profile.value
-    ? `Wanderist — ${displayName.value}`
-    : "Wanderist — Profile",
+    ? `${SITE_NAME} — ${displayName.value}`
+    : `${SITE_NAME} — Profile`,
   description: profileDescription.value,
 }));
 
