@@ -50,4 +50,29 @@ describe("isTripCountedAsActive", () => {
       ),
     ).toBe(false);
   });
+
+  it("still counts a trip on its end date itself — endDate is stored at UTC midnight, so the last day isn't over yet", () => {
+    expect(
+      isTripCountedAsActive({ status: TRIP_STATUS.ONGOING, endDate: NOW }, NOW),
+    ).toBe(true);
+  });
+
+  it("stops counting once a full day has elapsed since endDate", () => {
+    const oneDayAfterEndDate = new Date(NOW.getTime() + 24 * 60 * 60 * 1000);
+    expect(
+      isTripCountedAsActive(
+        { status: TRIP_STATUS.ONGOING, endDate: NOW },
+        oneDayAfterEndDate,
+      ),
+    ).toBe(false);
+  });
+
+  it("treats a missing (undefined) endDate the same as null", () => {
+    expect(
+      isTripCountedAsActive(
+        { status: TRIP_STATUS.UPCOMING, endDate: undefined },
+        NOW,
+      ),
+    ).toBe(true);
+  });
 });

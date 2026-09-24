@@ -150,6 +150,30 @@ describe("POST /api/trips", () => {
     expect(mockAssertActiveTripLimit).not.toHaveBeenCalled();
   });
 
+  it("does not check the active-trip limit when endDate has already elapsed, even with the default 'upcoming' status", async () => {
+    mockReadBody.mockResolvedValue({
+      name: "Old Trip",
+      endDate: "2000-01-01T00:00:00.000Z",
+    });
+    mockReturning.mockResolvedValue([
+      {
+        id: "new-id",
+        userId: "user-1",
+        name: "Old Trip",
+        status: "upcoming",
+        visibility: "private",
+        startDate: null,
+        endDate: new Date("2000-01-01T00:00:00.000Z"),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ]);
+
+    await (handler as (event: object) => Promise<unknown>)(buildEvent());
+
+    expect(mockAssertActiveTripLimit).not.toHaveBeenCalled();
+  });
+
   it("creates and returns a trip with minimal required fields", async () => {
     const result = await (handler as (event: object) => Promise<unknown>)(
       buildEvent(),

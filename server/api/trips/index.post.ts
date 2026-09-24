@@ -4,6 +4,7 @@ import { ensureUser } from "../../utils/auth";
 import { requireString } from "../../utils/db-helpers";
 import { parseEnum, parseOptionalDate } from "../../utils/validation";
 import { assertActiveTripLimit } from "../../utils/planLimits";
+import { isTripCountedAsActive } from "../../utils/tripStatus";
 
 const VALID_STATUSES = [
   TRIP_STATUS.ONGOING,
@@ -46,9 +47,10 @@ export default defineEventHandler(async (event) => {
     });
   }
 
-  // A trip created directly as "past" doesn't count against the active-trips
-  // limit — only ongoing/upcoming trips do (see assertActiveTripLimit).
-  if (status !== TRIP_STATUS.PAST) {
+  // Only a trip that would itself count as active needs the limit check —
+  // one created as "past", or with an endDate that's already elapsed, never
+  // eats a plan slot (see isTripCountedAsActive/assertActiveTripLimit).
+  if (isTripCountedAsActive({ status, endDate: endDate ?? null })) {
     await assertActiveTripLimit(userId);
   }
 

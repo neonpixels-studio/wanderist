@@ -125,8 +125,12 @@ async function countMediaRows(userId: string): Promise<number> {
 }
 
 // Counted in application code rather than via a SQL `count()` aggregate
-// (unlike countPlaceRows/countMediaRows) because "active" can't be expressed
-// as a single stored-column filter — see isTripCountedAsActive for why.
+// (unlike countPlaceRows/countMediaRows): the create/patch routes also need
+// to ask "is this one trip active?" for a single already-loaded row (see
+// server/api/trips/index.post.ts and [id].patch.ts), so the rule lives once
+// as isTripCountedAsActive and both the count and the per-row gates share
+// it, rather than a SQL predicate and a JS predicate drifting apart. Fine at
+// this app's per-user trip volumes.
 async function countActiveTripRows(userId: string): Promise<number> {
   const database = getDb();
   const rows = await database
@@ -155,8 +159,9 @@ export async function assertPlaceLimit(userId: string): Promise<void> {
  * reading. "Effectively" matters here: a trip's stored `status` is only ever
  * set by explicit client input, so a trip whose `endDate` has elapsed but
  * was never manually flipped to "past" would otherwise count forever (see
- * isTripCountedAsActive). Call only when the trip being created is itself
- * not "past".
+ * isTripCountedAsActive). Call only when the trip being created or patched
+ * would itself count as active (see isTripCountedAsActive) — a trip that's
+ * already effectively past never needs to consume a slot.
  */
 export async function assertActiveTripLimit(userId: string): Promise<void> {
   const plan = await getEffectivePlan(userId);

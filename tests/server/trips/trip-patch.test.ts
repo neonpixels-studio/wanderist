@@ -83,6 +83,12 @@ vi.mock("../../../server/utils/coverImageCleanup", () => ({
   assertCoverImageOwned: mockAssertCoverImageOwned,
 }));
 
+const mockAssertActiveTripLimit = vi.fn().mockResolvedValue(undefined);
+
+vi.mock("../../../server/utils/planLimits", () => ({
+  assertActiveTripLimit: mockAssertActiveTripLimit,
+}));
+
 Object.assign(globalThis, {
   defineEventHandler: (handler: (event: object) => unknown) => handler,
   createError: mockCreateError,
@@ -124,6 +130,7 @@ describe("PATCH /api/trips/[id]", () => {
     mockUpdate.mockReturnValue({ set: mockSet });
     mockDeleteMediaIfUnreferenced.mockResolvedValue(true);
     mockAssertCoverImageOwned.mockResolvedValue(undefined);
+    mockAssertActiveTripLimit.mockResolvedValue(undefined);
   });
 
   it("updates and returns the trip", async () => {
@@ -400,5 +407,81 @@ describe("PATCH /api/trips/[id]", () => {
     const result = await callHandler(handler, buildEvent());
 
     expect(result).toMatchObject({ coverImageId: "media-new" });
+  });
+
+  describe("active-trip limit re-check", () => {
+    it("re-checks the limit when a patch would revive a past trip into active", async () => {
+      mockLoadOwnedOrThrow.mockResolvedValue({
+        id: "trip-1",
+        userId: "user-1",
+        status: "past",
+        endDate: null,
+      });
+      mockReadBody.mockResolvedValue({ status: "upcoming" });
+
+      await callHandler(handler, buildEvent());
+
+      expect(mockAssertActiveTripLimit).toHaveBeenCalledWith("user-1");
+    });
+
+    it("re-checks the limit when a patch would move a stale trip's endDate back into the future", async () => {
+      mockLoadOwnedOrThrow.mockResolvedValue({
+        id: "trip-1",
+        userId: "user-1",
+        status: "ongoing",
+        endDate: new Date("2000-01-01"),
+      });
+      mockReadBody.mockResolvedValue({ endDate: "2099-01-01T00:00:00.000Z" });
+
+      await callHandler(handler, buildEvent());
+
+      expect(mockAssertActiveTripLimit).toHaveBeenCalledWith("user-1");
+    });
+
+    it("propagates a 402 when reviving a trip would exceed the plan's active-trip limit", async () => {
+      mockLoadOwnedOrThrow.mockResolvedValue({
+        id: "trip-1",
+        userId: "user-1",
+        status: "past",
+        endDate: null,
+      });
+      mockReadBody.mockResolvedValue({ status: "ongoing" });
+      mockAssertActiveTripLimit.mockRejectedValue(
+        Object.assign(new Error("Plan limit reached"), { statusCode: 402 }),
+      );
+
+      await expect(callHandler(handler, buildEvent())).rejects.toMatchObject({
+        statusCode: 402,
+      });
+      expect(mockUpdate).not.toHaveBeenCalled();
+    });
+
+    it("does not re-check the limit when the trip is already active before and after the patch", async () => {
+      mockLoadOwnedOrThrow.mockResolvedValue({
+        id: "trip-1",
+        userId: "user-1",
+        status: "ongoing",
+        endDate: null,
+      });
+      mockReadBody.mockResolvedValue({ name: "Renamed" });
+
+      await callHandler(handler, buildEvent());
+
+      expect(mockAssertActiveTripLimit).not.toHaveBeenCalled();
+    });
+
+    it("does not re-check the limit when patching a past trip that stays past", async () => {
+      mockLoadOwnedOrThrow.mockResolvedValue({
+        id: "trip-1",
+        userId: "user-1",
+        status: "past",
+        endDate: null,
+      });
+      mockReadBody.mockResolvedValue({ name: "Renamed" });
+
+      await callHandler(handler, buildEvent());
+
+      expect(mockAssertActiveTripLimit).not.toHaveBeenCalled();
+    });
   });
 });
