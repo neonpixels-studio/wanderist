@@ -263,7 +263,7 @@ import {
 } from "~/utils/localDate";
 import {
   extractErrorMessage,
-  UNEXPECTED_ERROR_MESSAGE,
+  extractServerErrorMessage,
 } from "~/utils/extractErrorMessage";
 
 const MAX_LOCATION_SUGGESTIONS = 5;
@@ -1067,13 +1067,12 @@ function publishFailureMessage(
   caught: unknown,
   editedEntryId: string | null,
 ): string {
-  const message = extractErrorMessage(caught);
-  if (message !== UNEXPECTED_ERROR_MESSAGE) {
-    return message;
-  }
-  return editedEntryId
-    ? "Failed to save changes. Please try again."
-    : "Failed to publish. Please try again.";
+  return (
+    extractServerErrorMessage(caught) ??
+    (editedEntryId
+      ? "Failed to save changes. Please try again."
+      : "Failed to publish. Please try again.")
+  );
 }
 
 async function publish(): Promise<void> {

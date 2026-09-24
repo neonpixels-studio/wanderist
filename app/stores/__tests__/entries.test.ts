@@ -248,6 +248,22 @@ describe("useEntriesStore", () => {
       expect(store.isLoading).toBe(false);
     });
 
+    it("surfaces a server-intended data.statusMessage as error", async () => {
+      // Regression guard: proves `error` is actually wired to
+      // extractErrorMessage's output, not just hardcoded to the generic
+      // fallback (which the test above alone wouldn't catch).
+      mockApiFetch.mockRejectedValue(
+        Object.assign(new Error("Bad Request"), {
+          data: { statusMessage: "Entries are temporarily unavailable" },
+        }),
+      );
+      const store = useEntriesStore();
+
+      await expect(store.fetchEntries()).rejects.toThrow();
+
+      expect(store.error).toBe("Entries are temporarily unavailable");
+    });
+
     it("requests page 1 with no other query when no filters", async () => {
       mockApiFetch.mockResolvedValue({
         entries: [],

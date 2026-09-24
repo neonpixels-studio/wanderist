@@ -80,6 +80,22 @@ describe("usePlacesStore", () => {
       expect(store.isLoading).toBe(false);
     });
 
+    it("surfaces a server-intended data.statusMessage as error", async () => {
+      // Regression guard: proves `error` is actually wired to
+      // extractErrorMessage's output, not just hardcoded to the generic
+      // fallback (which the test above alone wouldn't catch).
+      mockApiFetch.mockRejectedValue(
+        Object.assign(new Error("Bad Request"), {
+          data: { statusMessage: "Places are temporarily unavailable" },
+        }),
+      );
+      const store = usePlacesStore();
+
+      await expect(store.fetchPlaces()).rejects.toThrow();
+
+      expect(store.error).toBe("Places are temporarily unavailable");
+    });
+
     it("calls /api/places with page=1 when no filters", async () => {
       mockApiFetch.mockResolvedValue({ places: [], page: 1, hasMore: false });
       const store = usePlacesStore();

@@ -396,7 +396,10 @@ import type { StopOrderMutator } from "~/utils/stopOrder";
 import { INVITE_UNAVAILABLE_TITLE } from "~/constants/trips";
 import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
 import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
-import { extractErrorMessage } from "~/utils/extractErrorMessage";
+import {
+  extractErrorMessage,
+  extractServerErrorMessage,
+} from "~/utils/extractErrorMessage";
 
 // No auth middleware: a public trip must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private trip returns
@@ -980,9 +983,13 @@ async function onCoverFileSelected(event: Event): Promise<void> {
       await tripsStore.patchTrip(tripId.value, { coverImageId: result.id });
     } catch (patchError) {
       // The file uploaded but the trip could not be updated; the media is now
-      // orphaned server-side. Surface the server's own error so the user knows
-      // the cover change did not persist (note: media cleanup is not implemented).
-      uploadError.value = extractErrorMessage(patchError);
+      // orphaned server-side. Surface the server's own error when it gave one,
+      // otherwise this specific fallback — not extractErrorMessage's generic
+      // one — so the user still learns the cover change did not persist
+      // (note: media cleanup is not implemented).
+      uploadError.value =
+        extractServerErrorMessage(patchError) ??
+        "Cover uploaded but could not be saved to the trip";
       return;
     }
     // Set after both steps succeed so the displayed cover matches persisted state

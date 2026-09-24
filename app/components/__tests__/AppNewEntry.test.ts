@@ -420,6 +420,27 @@ describe("AppNewEntry", () => {
     expect(wrapper.emitted("close")).toBeFalsy();
   });
 
+  it("surfaces a server-intended data.statusMessage as the publish error", async () => {
+    // Regression guard: proves the publish-error text is actually wired to
+    // the server's own message when it provided one, not just hardcoded to
+    // the create/edit-mode fallback (which the test above alone wouldn't
+    // catch, since both are plain strings).
+    mockCreateEntry.mockRejectedValue(
+      Object.assign(new Error("Bad Request"), {
+        data: { statusMessage: "You have reached your entry limit" },
+      }),
+    );
+
+    const wrapper = mountOpen();
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "You have reached your entry limit",
+    );
+  });
+
   it("blocks publish and shows an error when the date field is cleared", async () => {
     const wrapper = mountOpen();
     await wrapper.find('input[type="date"]').setValue("");
