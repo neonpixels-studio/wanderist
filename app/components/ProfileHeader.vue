@@ -25,7 +25,7 @@
       <template v-else>follow</template>
     </button>
     <NuxtLink
-      v-else-if="!isSelf && viewerAuthResolved"
+      v-else-if="!isSelf && viewerAuthLoaded"
       to="/login"
       class="btn btn--outline btn--sm"
     >
@@ -44,11 +44,14 @@ defineProps<{
   pending: boolean;
   // Both derived from Clerk: an anonymous visitor (a shared profile link is
   // openable without auth, see #279) can view the profile but not follow it.
-  // viewerAuthResolved is false while Clerk is still bootstrapping, so the
-  // "sign in to follow" prompt doesn't flash for a viewer who turns out to be
-  // signed in a moment later — see u/[id].vue's useClerkGatedFetch usage.
+  // viewerAuthLoaded (isClerkLoaded, passed straight through) gates the
+  // prompt so it doesn't flash for a viewer who turns out to be signed in a
+  // moment later — matches trips/[id].vue and guides/[id].vue's identical
+  // isClerkLoaded && !isSignedIn pattern. A viewer whose Clerk script never
+  // resolves at all (ad blocker, flaky CDN) sees neither affordance here,
+  // the same accepted limitation those sibling pages have.
   viewerIsSignedIn: boolean;
-  viewerAuthResolved: boolean;
+  viewerAuthLoaded: boolean;
 }>();
 
 defineEmits<{ toggle: [] }>();

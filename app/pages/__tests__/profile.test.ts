@@ -395,13 +395,11 @@ describe("profile page", () => {
     expect(signInLink).toBeUndefined();
   });
 
-  it("still offers the unavailable-state sign-in link even if Clerk's script never resolves (#279)", () => {
-    // Same ad-blocker/flaky-CDN scenario as the header's viewerAuthResolved
-    // fallback above, but for the notFound branch: isClerkLoaded never flips
-    // true, yet the gated fetch already settled into notFound (see
-    // useClerkGatedFetch's CLERK_BOOTSTRAP_TIMEOUT_MS). Gating this link on
-    // the raw isClerkLoaded would leave a signed-out owner of a private
-    // profile at a permanent dead end with no way to sign in.
+  it("omits the unavailable-state sign-in link while Clerk is still loading", () => {
+    // isClerkLoaded gates this link directly (matching trips/[id].vue and
+    // guides/[id].vue's identical not-found sign-in affordance) — a viewer
+    // whose Clerk script never resolves at all sees no link here, the same
+    // accepted limitation those sibling pages have.
     clerkLoadedRef.value = false;
     clerkSignedInRef.value = false;
     notFound.value = true;
@@ -410,7 +408,7 @@ describe("profile page", () => {
     const signInLink = wrapper
       .findAll("a")
       .find((link) => link.text().toLowerCase().includes("sign in"));
-    expect(signInLink?.attributes("href")).toBe("/login");
+    expect(signInLink).toBeUndefined();
   });
 
   it("forwards the followers loading state so the list shows no false empty state", () => {
@@ -539,13 +537,12 @@ describe("profile page", () => {
     expect(signInLink?.attributes("href")).toBe("/login");
   });
 
-  it("still shows a sign-in prompt once a profile has loaded even if Clerk's script never resolves (#279)", () => {
-    // Clerk blocked by an ad blocker, or a slow/flaky CDN: isClerkLoaded never
-    // flips true, but the gated fetch already fell back to an anonymous
-    // request (see useClerkGatedFetch's CLERK_BOOTSTRAP_TIMEOUT_MS) and
-    // profile.value is populated. viewerAuthResolved must fall back to that
-    // instead of waiting on isClerkLoaded forever — otherwise the header
-    // shows neither a follow button nor a sign-in prompt, permanently.
+  it("shows neither a follow button nor a sign-in prompt while Clerk is still loading", () => {
+    // isClerkLoaded gates both affordances directly (matching trips/[id].vue
+    // and guides/[id].vue's identical pattern) — a viewer whose Clerk script
+    // never resolves at all (ad blocker, flaky CDN) sees neither here, the
+    // same accepted limitation those sibling pages have. See
+    // ProfileHeader.test.ts for the equivalent component-level coverage.
     clerkLoadedRef.value = false;
     clerkSignedInRef.value = false;
     profile.value = { ...SAMPLE_PROFILE };
@@ -558,7 +555,7 @@ describe("profile page", () => {
     const signInLink = wrapper
       .findAll("a")
       .find((link) => link.text().toLowerCase().includes("sign in"));
-    expect(signInLink?.attributes("href")).toBe("/login");
+    expect(signInLink).toBeUndefined();
   });
 
   it("toggles follow when the follow button is clicked", async () => {

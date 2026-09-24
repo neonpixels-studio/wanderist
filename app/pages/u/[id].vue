@@ -24,19 +24,16 @@
       <!-- Removing the auth middleware (#279) means the profile's own owner,
            browsing signed out (an expired session, a fresh browser), can now
            land here too — this profile-state branch fires whenever the fetch
-           looked anonymous or didn't match, not only for a genuine stranger.
-           Mirrors trips/[id].vue and guides/[id].vue's identical not-found
-           sign-in affordance. Gated on viewerAuthResolved (not the raw
-           isClerkLoaded) so a signed-out owner whose Clerk script never
-           resolves (ad blocker, flaky CDN) still sees this link instead of a
-           permanent dead end once notFound settles — see viewerAuthResolved
-           below for why `notFound` alone is already proof the wait is over. -->
+           looked anonymous or didn't match, not only for a genuine stranger
+           or a nonexistent id, so the copy below stays neutral rather than
+           presuming ownership. Mirrors trips/[id].vue and guides/[id].vue's
+           identical not-found sign-in affordance and isClerkLoaded gating. -->
       <NuxtLink
-        v-if="viewerAuthResolved && !isSignedIn"
+        v-if="isClerkLoaded && !isSignedIn"
         to="/login"
         class="btn btn--outline btn--sm"
       >
-        sign in to view your profile
+        sign in to view this profile
       </NuxtLink>
     </div>
 
@@ -51,7 +48,7 @@
         :following="viewerIsFollowingTarget"
         :pending="pending"
         :viewer-is-signed-in="!!isSignedIn"
-        :viewer-auth-resolved="viewerAuthResolved"
+        :viewer-auth-loaded="isClerkLoaded"
         @toggle="onToggleFollow"
       />
 
@@ -167,9 +164,9 @@ const openCommandPalette = inject<(() => void) | undefined>(
 // Note: the profile fetch below is client-only (server: false), so a crawler
 // that doesn't execute JS still only sees the SSR fallback title/description,
 // not the traveler's real name/bio — the same limitation trips/[id].vue and
-// guides/[id].vue already have. This fix only removes the redirect that
-// blocked anonymous access outright; see the "Follow-up suggestions" note in
-// this PR for the separate SSR-population gap.
+// guides/[id].vue already have; SSR-populating it is a separate, cross-page
+// gap, not something this fix (which only removes the anonymous-access
+// redirect) takes on.
 definePageMeta({ layout: "app" });
 
 const route = useRoute();
@@ -222,19 +219,6 @@ const canRetryAuthenticated = computed(
 const { gate: gateOnClerkLoad, retryGeneration } = useClerkGatedFetch(
   isClerkLoaded,
   canRetryAuthenticated,
-);
-
-// Bounds the "do we know the viewer's auth state yet" wait — for
-// ProfileHeader's follow affordance and the notFound sign-in link below — to
-// the same window the fetch below already uses (CLERK_BOOTSTRAP_TIMEOUT_MS,
-// via gateOnClerkLoad): the gate concludes into either a populated `profile`
-// or a settled `notFound`, one way or another, so either is proof the wait is
-// over even if isClerkLoaded itself never flips true (Clerk's script blocked
-// by an ad blocker, a flaky CDN). Without this, a viewer in that situation
-// would see neither a follow button nor a "sign in to follow"/"sign in to
-// view your profile" prompt, permanently.
-const viewerAuthResolved = computed(
-  () => isClerkLoaded.value || !!profile.value || notFound.value,
 );
 
 const displayName = computed(
@@ -296,40 +280,33 @@ async function onToggleFollow(): Promise<void> {
   await fetchFollowers(targetUserId);
 }
 
-// Drive loading from the route param (not a bare onMounted) so navigating
-// between two profiles — the primary path, since follower lists link to
-// /u/[id] — refetches instead of showing the previous traveler.
 // `server: false` keeps the fetch client-only: an authenticated request
-// carries the Clerk session token, which only exists on the client (Clerk
-// runs with skipServerMiddleware) — running it during SSR would hang, since
-// Clerk's getToken never resolves on the server. This mirrors trips/[id].vue
-// and guides/[id].vue.
-//
-// Gated on Clerk's bootstrap (#255) so the profile owner's first request
-// already carries a token instead of reading their own private profile
-// anonymously (and 404ing) first — see useClerkGatedFetch. An anonymous
-// visitor following a shared link is unaffected: the gate falls back to an
-// anonymous fetch after CLERK_BOOTSTRAP_TIMEOUT_MS even if Clerk's script
-// never resolves, so a public profile still opens for them.
-//
-// Watch retryGeneration as well as the id: a signed-in viewer's session
-// resolving after the fetch above already fired re-issues the request with a
-// token so the owner gets their private profile; signing out re-issues it
-// anonymously so a private profile clears from the screen.
-useAsyncData(
-  () => `profile-${userId.value}`,
-  () =>
-    gateOnClerkLoad(() =>
-      Promise.all([
-        fetchProfile(userId.value),
-        fetchFollowers(userId.value),
-        fetchFollowingList(userId.value),
-        fetchTrips(userId.value),
-        fetchGuides(userId.value),
-      ]),
-    ),
-  { server: false, watch: [userId, retryGeneration] },
-);
+// carries the Clerk session token, which only exists client-side (Clerk runs
+// with skipServerMiddleware) — running it during SSR would hang, since
+// Clerk's getToken never resolves on the server. Gated on Clerk's bootstrap
+// (#255) so the owner's first request already carries a token instead of
+// reading their own private profile anonymously (and 404ing) first — an
+// anonymous visitor is unaffected, since the gate falls back to an anonymous
+// fetch after CLERK_BOOTSTRAP_TIMEOUT_MS regardless. Watches retryGeneration
+// too so a session resolving (or clearing) after the first fetch re-issues it
+// with the new auth state, not just on route-param (profile-to-profile)
+// navigation.
+function fetchProfileDetail(): Promise<unknown> {
+  return gateOnClerkLoad(() =>
+    Promise.all([
+      fetchProfile(userId.value),
+      fetchFollowers(userId.value),
+      fetchFollowingList(userId.value),
+      fetchTrips(userId.value),
+      fetchGuides(userId.value),
+    ]),
+  );
+}
+
+useAsyncData(() => `profile-${userId.value}`, fetchProfileDetail, {
+  server: false,
+  watch: [userId, retryGeneration],
+});
 
 // Follow state depends on the session token, so it is client-only too. The
 // other fetches above get that from `server: false` on useAsyncData, but a

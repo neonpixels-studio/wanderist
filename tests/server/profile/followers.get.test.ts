@@ -56,11 +56,27 @@ describe("GET /api/users/[id]/followers", () => {
     expect(mockFetchFollowers).not.toHaveBeenCalled();
   });
 
-  it("throws 401 when the user is not authenticated", async () => {
-    mockRequireViewableProfileTarget.mockRejectedValue(
-      createError({ statusCode: 401, statusMessage: "Unauthorized" }),
-    );
+  // #279: a shared profile link must open for an anonymous visitor, so
+  // requireViewableProfileTarget resolves with a null viewerId rather than
+  // throwing 401 — the visibility guard itself (tested separately in
+  // profile-queries.test.ts) decides whether an anonymous viewer may see this
+  // profile at all.
+  it("returns the followers page for an anonymous (null) viewer", async () => {
+    mockRequireViewableProfileTarget.mockResolvedValue({
+      database: {} as Awaited<
+        ReturnType<typeof requireViewableProfileTarget>
+      >["database"],
+      targetUserId: "target-1",
+      viewerId: null,
+    });
+    mockFetchFollowers.mockResolvedValue({
+      followers: FOLLOWERS,
+      hasMore: true,
+    });
 
-    await expect(callHandler()).rejects.toMatchObject({ statusCode: 401 });
+    const result = await callHandler();
+
+    expect(result).toEqual({ followers: FOLLOWERS, hasMore: true });
+    expect(mockFetchFollowers).toHaveBeenCalledWith({}, "target-1");
   });
 });

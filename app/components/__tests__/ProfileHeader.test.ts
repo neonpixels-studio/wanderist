@@ -19,7 +19,7 @@ const BASE_PROPS = {
   following: false,
   pending: false,
   viewerIsSignedIn: true,
-  viewerAuthResolved: true,
+  viewerAuthLoaded: true,
 };
 
 describe("ProfileHeader", () => {
@@ -99,7 +99,7 @@ describe("ProfileHeader", () => {
       props: {
         ...BASE_PROPS,
         viewerIsSignedIn: false,
-        viewerAuthResolved: true,
+        viewerAuthLoaded: true,
       },
     });
 
@@ -116,7 +116,7 @@ describe("ProfileHeader", () => {
       props: {
         ...BASE_PROPS,
         viewerIsSignedIn: false,
-        viewerAuthResolved: false,
+        viewerAuthLoaded: false,
       },
     });
 
