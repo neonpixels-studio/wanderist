@@ -4,7 +4,7 @@ import { installNitroGlobals, unwrapHandler } from "../follows/_helpers";
 installNitroGlobals();
 
 vi.mock("../../../server/utils/auth", () => ({
-  requireUser: vi.fn(),
+  optionalUser: vi.fn(),
   ensureUser: vi.fn(),
 }));
 
@@ -16,10 +16,10 @@ vi.mock("../../../server/utils/profile-queries", () => ({
   requireViewableProfile: vi.fn(),
 }));
 
-import { requireUser } from "../../../server/utils/auth";
+import { optionalUser } from "../../../server/utils/auth";
 import { requireViewableProfile } from "../../../server/utils/profile-queries";
 
-const mockRequireUser = vi.mocked(requireUser);
+const mockOptionalUser = vi.mocked(optionalUser);
 const mockRequireViewableProfile = vi.mocked(requireViewableProfile);
 
 const handler = await import("../../../server/api/users/[id].get");
@@ -48,7 +48,7 @@ describe("GET /api/users/[id]", () => {
   });
 
   it("returns the viewable profile marked not-self for another viewer", async () => {
-    mockRequireUser.mockReturnValue("viewer-1");
+    mockOptionalUser.mockReturnValue("viewer-1");
     mockRequireViewableProfile.mockResolvedValue(profileRow());
 
     const result = await callHandler();
@@ -62,7 +62,7 @@ describe("GET /api/users/[id]", () => {
   });
 
   it("marks the profile as self when the viewer owns it", async () => {
-    mockRequireUser.mockReturnValue("target-1");
+    mockOptionalUser.mockReturnValue("target-1");
     mockRequireViewableProfile.mockResolvedValue(
       profileRow({ publicProfile: false, effectivelyPublic: false }),
     );
@@ -73,7 +73,7 @@ describe("GET /api/users/[id]", () => {
   });
 
   it("propagates the 404 raised by the visibility guard", async () => {
-    mockRequireUser.mockReturnValue("viewer-1");
+    mockOptionalUser.mockReturnValue("viewer-1");
     mockRequireViewableProfile.mockRejectedValue(
       createError({ statusCode: 404, statusMessage: "Profile not found" }),
     );
@@ -81,11 +81,21 @@ describe("GET /api/users/[id]", () => {
     await expect(callHandler()).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it("throws 401 when the user is not authenticated", async () => {
-    mockRequireUser.mockImplementation(() => {
-      throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
-    });
+  // #279: a shared profile link must open for an anonymous visitor so its
+  // og/twitter meta can unfurl — optionalUser returns null rather than
+  // throwing, and requireViewableProfile (unit-tested separately in
+  // profile-queries.test.ts) treats a null viewer as a non-owner.
+  it("returns the viewable profile marked not-self for an anonymous (null) viewer", async () => {
+    mockOptionalUser.mockReturnValue(null);
+    mockRequireViewableProfile.mockResolvedValue(profileRow());
 
-    await expect(callHandler()).rejects.toMatchObject({ statusCode: 401 });
+    const result = await callHandler();
+
+    expect(result).toMatchObject({ userId: "target-1", isSelf: false });
+    expect(mockRequireViewableProfile).toHaveBeenCalledWith(
+      {},
+      null,
+      "target-1",
+    );
   });
 });

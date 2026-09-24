@@ -35,10 +35,25 @@ vi.stubGlobal("useRoute", () => ({
 // #269 og/twitter meta coverage below reads this trackable useSeoMeta stub.
 const useSeoMetaMock = stubOgMetaGlobals();
 
+// The page's fetch is gated on Clerk's bootstrap (#279, mirroring
+// trips/[id].vue and guides/[id].vue) and wraps a signed-in viewer's follow
+// affordance too. Defaults to an already-resolved, signed-in viewer so
+// existing tests (written before #279) keep exercising the follow button
+// without each one having to drive these refs itself; the anonymous-viewer
+// tests below override clerkSignedInRef explicitly.
+const clerkLoadedRef = ref(true);
+const clerkSignedInRef = ref(true);
+vi.stubGlobal("useClerkAuth", () => ({
+  isLoaded: clerkLoadedRef,
+  isSignedIn: clerkSignedInRef,
+  getToken: vi.fn().mockResolvedValue(null),
+}));
+
 // The page loads via useAsyncData; the global stub ignores the handler, so
 // invoke it here to exercise the mount-time fetches and record the call so the
-// wiring (key + watch on the route param) can be asserted. Re-running on param
-// change is Nuxt's own behaviour, not under test.
+// wiring (key + watch on the route param and retry generation) can be
+// asserted. Re-running on param change is Nuxt's own behaviour, not under
+// test.
 let lastAsyncDataCall: {
   key: () => string;
   options: { watch?: unknown[]; server?: boolean };
@@ -202,9 +217,11 @@ describe("profile page", () => {
     guidesError.value = null;
     followingIds.value = new Set();
     pendingUserIds.value = new Set();
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = true;
   });
 
-  it("loads via useAsyncData keyed on and watching the route param", () => {
+  it("loads via useAsyncData keyed on and watching the route param and retry generation", () => {
     mount(ProfilePage, globalConfig);
 
     // The watch source must be the route param itself — that is what makes
@@ -214,8 +231,26 @@ describe("profile page", () => {
       value: string;
     };
     expect(watched.value).toBe("user-1");
-    // Client-only: the fetches carry the Clerk token, so SSR would 401.
+    // A second watch source (useClerkGatedFetch's retryGeneration) re-issues
+    // the request once a session resolves after the first (possibly
+    // anonymous) fetch — see useClerkGatedFetch.test.ts for the retry logic
+    // itself.
+    expect(lastAsyncDataCall?.options.watch?.length).toBe(2);
+    // Client-only: an authenticated request carries the Clerk token, so SSR
+    // would hang (Clerk's getToken never resolves on the server).
     expect(lastAsyncDataCall?.options.server).toBe(false);
+  });
+
+  it("still fetches a public profile for a signed-out (anonymous) viewer, without redirecting (#279)", () => {
+    clerkSignedInRef.value = false;
+    profile.value = { ...SAMPLE_PROFILE };
+
+    mount(ProfilePage, globalConfig);
+
+    // No auth middleware and no gate withholding on sign-in state (only on
+    // Clerk having finished loading, which the default clerkLoadedRef already
+    // satisfies) — a shared profile link opens for an anonymous visitor.
+    expect(mockFetchProfile).toHaveBeenCalledWith("user-1");
   });
 
   it("fetches the profile, followers, following, trips, guides, and follow state on mount", () => {
@@ -360,6 +395,21 @@ describe("profile page", () => {
       .findAll("button")
       .find((button) => button.text().toLowerCase().includes("follow"));
     expect(followButton).toBeUndefined();
+  });
+
+  it("shows a sign-in prompt instead of a follow button for an anonymous viewer (#279)", () => {
+    clerkSignedInRef.value = false;
+    profile.value = { ...SAMPLE_PROFILE };
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    const followButton = wrapper
+      .findAll("button")
+      .find((button) => button.text().toLowerCase().includes("follow"));
+    expect(followButton).toBeUndefined();
+    const signInLink = wrapper
+      .findAll("a")
+      .find((link) => link.text().toLowerCase().includes("sign in"));
+    expect(signInLink?.attributes("href")).toBe("/login");
   });
 
   it("toggles follow when the follow button is clicked", async () => {

@@ -12,7 +12,7 @@
       </div>
     </div>
     <button
-      v-if="!isSelf"
+      v-if="!isSelf && viewerIsSignedIn"
       class="btn btn--sm"
       :class="following ? 'btn--primary' : 'btn--outline'"
       :disabled="pending"
@@ -24,6 +24,13 @@
       </template>
       <template v-else>follow</template>
     </button>
+    <NuxtLink
+      v-else-if="!isSelf && viewerAuthResolved"
+      to="/login"
+      class="btn btn--outline btn--sm"
+    >
+      sign in to follow
+    </NuxtLink>
   </header>
 </template>
 
@@ -35,6 +42,13 @@ defineProps<{
   isSelf: boolean;
   following: boolean;
   pending: boolean;
+  // Both derived from Clerk: an anonymous visitor (a shared profile link is
+  // openable without auth, see #279) can view the profile but not follow it.
+  // viewerAuthResolved is false while Clerk is still bootstrapping, so the
+  // "sign in to follow" prompt doesn't flash for a viewer who turns out to be
+  // signed in a moment later — see u/[id].vue's useClerkGatedFetch usage.
+  viewerIsSignedIn: boolean;
+  viewerAuthResolved: boolean;
 }>();
 
 defineEmits<{ toggle: [] }>();

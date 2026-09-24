@@ -33,6 +33,8 @@
         :is-self="profile.isSelf"
         :following="viewerIsFollowingTarget"
         :pending="pending"
+        :viewer-is-signed-in="!!isSignedIn"
+        :viewer-auth-resolved="isClerkLoaded"
         @toggle="onToggleFollow"
       />
 
@@ -127,13 +129,23 @@
 import { computed, onMounted } from "vue";
 import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
 import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
+import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
 
 const openCommandPalette = inject<(() => void) | undefined>(
   "openCommandPalette",
   undefined,
 );
 
-definePageMeta({ layout: "app", middleware: "auth" });
+// No auth middleware: a public profile must open for anonymous visitors
+// following a shared link, so its og/twitter meta (see useOgMeta below) can
+// unfurl in Slack/iMessage/etc previews (#279). This mirrors trips/[id].vue
+// and guides/[id].vue. The GET endpoints (/api/users/[id] and its
+// followers/following/trips/guides sub-resources) enforce visibility — a
+// private profile 404s for anyone but its owner, it never redirects to
+// /login — so a private profile stays protected. Owner-only affordances
+// (follow/unfollow) are meaningless for the profile owner viewing their own
+// page and simply reflect `profile.isSelf` from the API response.
+definePageMeta({ layout: "app" });
 
 const route = useRoute();
 const userId = computed(() => String(route.params.id));
@@ -173,6 +185,19 @@ const {
   isPending,
   error: followError,
 } = useFollows();
+
+// isLoaded gates when the profile fetch below is allowed to fire with a real
+// token (see the useClerkGatedFetch usage further down); isSignedIn drives
+// canRetryAuthenticated so a session that resolves after the first (possibly
+// anonymous) fetch re-issues it, same as trips/[id].vue and guides/[id].vue.
+const { isLoaded: isClerkLoaded, isSignedIn } = useClerkAuth();
+const canRetryAuthenticated = computed(
+  () => isClerkLoaded.value && !!isSignedIn.value,
+);
+const { gate: gateOnClerkLoad, retryGeneration } = useClerkGatedFetch(
+  isClerkLoaded,
+  canRetryAuthenticated,
+);
 
 const displayName = computed(
   () =>
@@ -236,21 +261,36 @@ async function onToggleFollow(): Promise<void> {
 // Drive loading from the route param (not a bare onMounted) so navigating
 // between two profiles — the primary path, since follower lists link to
 // /u/[id] — refetches instead of showing the previous traveler.
-// `server: false` keeps the fetch client-only: these calls carry the Clerk
-// session token (client-side), so running them during SSR would 401 and
-// hydrate a stuck loading state. This mirrors explore.vue's client-only load
-// while keeping trips/[id].vue's watch-on-param refetch.
+// `server: false` keeps the fetch client-only: an authenticated request
+// carries the Clerk session token, which only exists on the client (Clerk
+// runs with skipServerMiddleware) — running it during SSR would hang, since
+// Clerk's getToken never resolves on the server. This mirrors trips/[id].vue
+// and guides/[id].vue.
+//
+// Gated on Clerk's bootstrap (#255) so the profile owner's first request
+// already carries a token instead of reading their own private profile
+// anonymously (and 404ing) first — see useClerkGatedFetch. An anonymous
+// visitor following a shared link is unaffected: the gate falls back to an
+// anonymous fetch after CLERK_BOOTSTRAP_TIMEOUT_MS even if Clerk's script
+// never resolves, so a public profile still opens for them.
+//
+// Watch retryGeneration as well as the id: a signed-in viewer's session
+// resolving after the fetch above already fired re-issues the request with a
+// token so the owner gets their private profile; signing out re-issues it
+// anonymously so a private profile clears from the screen.
 useAsyncData(
   () => `profile-${userId.value}`,
   () =>
-    Promise.all([
-      fetchProfile(userId.value),
-      fetchFollowers(userId.value),
-      fetchFollowingList(userId.value),
-      fetchTrips(userId.value),
-      fetchGuides(userId.value),
-    ]),
-  { server: false, watch: [userId] },
+    gateOnClerkLoad(() =>
+      Promise.all([
+        fetchProfile(userId.value),
+        fetchFollowers(userId.value),
+        fetchFollowingList(userId.value),
+        fetchTrips(userId.value),
+        fetchGuides(userId.value),
+      ]),
+    ),
+  { server: false, watch: [userId, retryGeneration] },
 );
 
 // Follow state depends on the session token, so it is client-only too.
