@@ -151,9 +151,20 @@ describe("assertPlaceLimit", () => {
 });
 
 describe("assertActiveTripLimit", () => {
+  const FUTURE_DATE = new Date("2099-01-01");
+  const PAST_DATE = new Date("2000-01-01");
+
+  // assertActiveTripLimit counts rows in application code (see
+  // countActiveTripRows), not via a SQL count() aggregate, so the mocked
+  // `.where()` call must resolve the trip rows themselves rather than the
+  // `[{ value }]` shape `setCount` produces for the aggregate-based limits.
+  function setTripRows(rows: { status: string; endDate: Date | null }[]): void {
+    mockWhere.mockResolvedValue(rows);
+  }
+
   it("throws 402 when at the Drifter active-trip limit", async () => {
     mockGetEffectivePlan.mockResolvedValue("drifter");
-    setCount(1);
+    setTripRows([{ status: "upcoming", endDate: FUTURE_DATE }]);
     await expect(assertActiveTripLimit("user-1")).rejects.toMatchObject({
       statusCode: 402,
     });
@@ -161,7 +172,31 @@ describe("assertActiveTripLimit", () => {
 
   it("does not throw when under the limit", async () => {
     mockGetEffectivePlan.mockResolvedValue("drifter");
-    setCount(0);
+    setTripRows([]);
+    await expect(assertActiveTripLimit("user-1")).resolves.toBeUndefined();
+  });
+
+  it("does not count a trip whose endDate has elapsed but whose status was never flipped to past", async () => {
+    mockGetEffectivePlan.mockResolvedValue("drifter");
+    // The only trip on the account is stuck "ongoing" past its endDate — it
+    // must not eat the Drifter plan's one-active-trip slot forever (#278).
+    setTripRows([{ status: "ongoing", endDate: PAST_DATE }]);
+    await expect(assertActiveTripLimit("user-1")).resolves.toBeUndefined();
+  });
+
+  it("still counts a genuinely current/future trip toward the limit", async () => {
+    mockGetEffectivePlan.mockResolvedValue("drifter");
+    setTripRows([{ status: "ongoing", endDate: FUTURE_DATE }]);
+    await expect(assertActiveTripLimit("user-1")).rejects.toMatchObject({
+      statusCode: 402,
+    });
+  });
+
+  it("respects an explicit 'past' status regardless of dates", async () => {
+    mockGetEffectivePlan.mockResolvedValue("drifter");
+    // Manually marked past even though endDate is in the future (e.g. a
+    // cancelled trip) — the stored status still wins for exclusion.
+    setTripRows([{ status: "past", endDate: FUTURE_DATE }]);
     await expect(assertActiveTripLimit("user-1")).resolves.toBeUndefined();
   });
 });

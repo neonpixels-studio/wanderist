@@ -1,11 +1,10 @@
-import { count, eq, and, ne } from "drizzle-orm";
+import { count, eq, and } from "drizzle-orm";
 import { getDb } from "../db/index";
 import {
   places,
   trips,
   media,
   userPreferences,
-  TRIP_STATUS,
   PLAN,
   SUBSCRIPTION_STATUS,
 } from "../db/schema";
@@ -14,6 +13,7 @@ import {
   getSubscriptionForUser,
   type Plan,
 } from "./subscriptions";
+import { isTripCountedAsActive } from "./tripStatus";
 
 // Single source of truth for map style values — also imported by
 // server/api/preferences.patch.ts so the "which styles exist" list and the
@@ -124,6 +124,18 @@ async function countMediaRows(userId: string): Promise<number> {
   return rows[0]?.value ?? 0;
 }
 
+// Counted in application code rather than via a SQL `count()` aggregate
+// (unlike countPlaceRows/countMediaRows) because "active" can't be expressed
+// as a single stored-column filter — see isTripCountedAsActive for why.
+async function countActiveTripRows(userId: string): Promise<number> {
+  const database = getDb();
+  const rows = await database
+    .select({ status: trips.status, endDate: trips.endDate })
+    .from(trips)
+    .where(eq(trips.userId, userId));
+  return rows.filter((trip) => isTripCountedAsActive(trip)).length;
+}
+
 /** Enforces the plan's max pinned-places limit. Call before inserting a new place. */
 export async function assertPlaceLimit(userId: string): Promise<void> {
   const plan = await getEffectivePlan(userId);
@@ -138,9 +150,13 @@ export async function assertPlaceLimit(userId: string): Promise<void> {
 
 /**
  * Enforces the plan's max active-trips limit. "Active" means any trip not
- * marked "past" (i.e. ongoing or upcoming) — the pricing table's "Active
- * trips" row isn't otherwise defined, so this is the plain-English reading.
- * Call only when the trip being created is itself not "past".
+ * effectively "past" (i.e. ongoing or upcoming) — the pricing table's
+ * "Active trips" row isn't otherwise defined, so this is the plain-English
+ * reading. "Effectively" matters here: a trip's stored `status` is only ever
+ * set by explicit client input, so a trip whose `endDate` has elapsed but
+ * was never manually flipped to "past" would otherwise count forever (see
+ * isTripCountedAsActive). Call only when the trip being created is itself
+ * not "past".
  */
 export async function assertActiveTripLimit(userId: string): Promise<void> {
   const plan = await getEffectivePlan(userId);
@@ -149,16 +165,7 @@ export async function assertActiveTripLimit(userId: string): Promise<void> {
     max: limits.maxActiveTrips,
     resourceLabel: "active trips",
     planName: planDisplayName(plan),
-    currentCount: async () => {
-      const database = getDb();
-      const rows = await database
-        .select({ value: count() })
-        .from(trips)
-        .where(
-          and(eq(trips.userId, userId), ne(trips.status, TRIP_STATUS.PAST)),
-        );
-      return rows[0]?.value ?? 0;
-    },
+    currentCount: () => countActiveTripRows(userId),
   });
 }
 
