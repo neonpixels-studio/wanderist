@@ -124,8 +124,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed } from "vue";
 import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
+import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
 import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
 
 const openCommandPalette = inject<(() => void) | undefined>(
@@ -173,6 +174,31 @@ const {
   isPending,
   error: followError,
 } = useFollows();
+
+// This page requires auth (middleware: "auth" above), but that middleware
+// itself doesn't wait for Clerk to finish loading — it only redirects once
+// isLoaded is already true, so an unresolved Clerk on a hard refresh still
+// lets the page mount. apiFetch (see useApiClient) then sends the profile
+// request with no token, which the server treats as anonymous and rejects
+// with a 401 (#280, the same race #255 fixed for guide/trip detail) — even
+// for a viewer loading their own profile.
+const { isLoaded: isClerkLoaded, isSignedIn } = useClerkAuth();
+
+// A refetch only changes the answer once the viewer is signed in; an
+// anonymous visitor never gains a token, so this (turned into
+// retryGeneration by useClerkGatedFetch below) never advances a second time
+// for them.
+const canRetryAuthenticated = computed(
+  () => isClerkLoaded.value && !!isSignedIn.value,
+);
+
+// Gated on Clerk's bootstrap (#255, #280) so the viewer's first request
+// already carries a token instead of 401ing anonymously first — see
+// useClerkGatedFetch.
+const { gate: gateOnClerkLoad, retryGeneration } = useClerkGatedFetch(
+  isClerkLoaded,
+  canRetryAuthenticated,
+);
 
 const displayName = computed(
   () =>
@@ -240,21 +266,31 @@ async function onToggleFollow(): Promise<void> {
 // session token (client-side), so running them during SSR would 401 and
 // hydrate a stuck loading state. This mirrors explore.vue's client-only load
 // while keeping trips/[id].vue's watch-on-param refetch.
-useAsyncData(
-  () => `profile-${userId.value}`,
-  () =>
+//
+// fetchFollowing (the viewer's own follow state) is bundled in here rather
+// than a separate onMounted call: it carries the same token and would race
+// Clerk's bootstrap the same way, and useClerkGatedFetch only supports one
+// in-flight gate per call site (a second concurrent gate() call tears down
+// the first's pending timer/watch) — so both fetches must share this single
+// gate. The minor cost is refetching the viewer's own follow state on every
+// profile navigation, not just on mount.
+function fetchProfileDetail(): Promise<unknown> {
+  return gateOnClerkLoad(() =>
     Promise.all([
       fetchProfile(userId.value),
       fetchFollowers(userId.value),
       fetchFollowingList(userId.value),
       fetchTrips(userId.value),
       fetchGuides(userId.value),
+      fetchFollowing(),
     ]),
-  { server: false, watch: [userId] },
-);
+  );
+}
 
-// Follow state depends on the session token, so it is client-only too.
-onMounted(fetchFollowing);
+useAsyncData(() => `profile-${userId.value}`, fetchProfileDetail, {
+  server: false,
+  watch: [userId, retryGeneration],
+});
 </script>
 
 <style scoped>
