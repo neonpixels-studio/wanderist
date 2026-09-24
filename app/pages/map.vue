@@ -254,7 +254,10 @@ import { useMapbox } from "~/composables/useMapbox";
 import { resolveMapboxStyleLabel } from "~/composables/useMapboxStyles";
 import type { DropPinResult, MapInstance } from "~/composables/useMapbox";
 import { useStats } from "~/composables/useStats";
-import { extractErrorMessage } from "~/utils/extractErrorMessage";
+import {
+  extractErrorMessage,
+  UNEXPECTED_ERROR_MESSAGE,
+} from "~/utils/extractErrorMessage";
 
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Map" });
@@ -593,7 +596,13 @@ async function initializeMap(): Promise<void> {
     mapPanelRef.value,
     mapStyle.value,
     (error) => {
-      mapError.value = extractErrorMessage(error);
+      // Mapbox init/runtime errors are raised entirely client-side (bad
+      // token, WebGL unsupported, a tile request failing) — they never carry
+      // a server data.statusMessage, so extractErrorMessage would always
+      // collapse to its generic fallback here. Use that fallback directly
+      // rather than routing through a check that can never pass on this path.
+      console.error("Mapbox error", error);
+      mapError.value = UNEXPECTED_ERROR_MESSAGE;
     },
   );
 

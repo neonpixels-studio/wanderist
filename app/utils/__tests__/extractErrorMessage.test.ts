@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { extractErrorMessage } from "../extractErrorMessage";
+import {
+  extractErrorMessage,
+  extractServerErrorMessage,
+} from "../extractErrorMessage";
 
 const UNEXPECTED_ERROR_MESSAGE = "An unexpected error occurred";
 
@@ -94,5 +97,61 @@ describe("extractErrorMessage", () => {
       data: { statusMessage: 500 },
     });
     expect(extractErrorMessage(error)).toBe(UNEXPECTED_ERROR_MESSAGE);
+  });
+});
+
+// extractServerErrorMessage is the nullable form extractErrorMessage is
+// built on: it returns null (never a fallback string) so a caller that
+// needs a context-specific fallback can tell "the server said nothing"
+// apart from "the server's message happens to equal our generic fallback
+// text" (see AppNewEntry.vue's publishFailureMessage).
+describe("extractServerErrorMessage", () => {
+  it("returns the nested data.statusMessage from an ofetch-wrapped Nitro error", () => {
+    const error = Object.assign(new Error("[GET] 400"), {
+      data: { statusMessage: "Email already in use" },
+    });
+    expect(extractServerErrorMessage(error)).toBe("Email already in use");
+  });
+
+  it("trims surrounding whitespace from a real data.statusMessage", () => {
+    const error = Object.assign(new Error("boom"), {
+      data: { statusMessage: "  Email already in use  " },
+    });
+    expect(extractServerErrorMessage(error)).toBe("Email already in use");
+  });
+
+  it("returns null for a raw Error with no data.statusMessage", () => {
+    expect(extractServerErrorMessage(new Error("Failed to fetch"))).toBeNull();
+  });
+
+  it("returns null for null and undefined", () => {
+    expect(extractServerErrorMessage(null)).toBeNull();
+    expect(extractServerErrorMessage(undefined)).toBeNull();
+  });
+
+  it("returns null for a bare top-level statusMessage (ofetch's raw HTTP reason phrase)", () => {
+    const error = Object.assign(new Error('[GET] "/api/trips": 502'), {
+      statusMessage: "Bad Gateway",
+    });
+    expect(extractServerErrorMessage(error)).toBeNull();
+  });
+
+  it("returns null when data.statusMessage is whitespace-only", () => {
+    const error = Object.assign(new Error("boom"), {
+      data: { statusMessage: "   " },
+    });
+    expect(extractServerErrorMessage(error)).toBeNull();
+  });
+
+  it("returns null when data is not an object", () => {
+    const error = Object.assign(new Error("boom"), { data: "not an object" });
+    expect(extractServerErrorMessage(error)).toBeNull();
+  });
+
+  it("returns null when data.statusMessage is not a string", () => {
+    const error = Object.assign(new Error("boom"), {
+      data: { statusMessage: 500 },
+    });
+    expect(extractServerErrorMessage(error)).toBeNull();
   });
 });
