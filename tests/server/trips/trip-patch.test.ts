@@ -484,4 +484,57 @@ describe("PATCH /api/trips/[id]", () => {
       expect(mockAssertActiveTripLimit).not.toHaveBeenCalled();
     });
   });
+
+  describe("stale-status normalization", () => {
+    it("forces status to 'past' when patching endDate backwards on a currently-active trip", async () => {
+      // Otherwise this trip would keep rendering as "ongoing" (the stored
+      // status) while isTripCountedAsActive already excludes it from the
+      // limit — the same divergence the create route guards against.
+      mockLoadOwnedOrThrow.mockResolvedValue({
+        id: "trip-1",
+        userId: "user-1",
+        status: "ongoing",
+        endDate: null,
+      });
+      mockReadBody.mockResolvedValue({
+        endDate: "2000-01-01T00:00:00.000Z",
+      });
+
+      await callHandler(handler, buildEvent());
+
+      expect(mockSet).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "past" }),
+      );
+    });
+
+    it("forces status to 'past' when the patch explicitly requests an active status alongside an elapsed endDate", async () => {
+      mockLoadOwnedOrThrow.mockResolvedValue({
+        id: "trip-1",
+        userId: "user-1",
+        status: "past",
+        endDate: new Date("2000-01-01"),
+      });
+      mockReadBody.mockResolvedValue({ status: "ongoing" });
+
+      await callHandler(handler, buildEvent());
+
+      expect(mockSet).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "past" }),
+      );
+    });
+
+    it("leaves status untouched when the patched trip remains effectively active", async () => {
+      mockLoadOwnedOrThrow.mockResolvedValue({
+        id: "trip-1",
+        userId: "user-1",
+        status: "ongoing",
+        endDate: null,
+      });
+      mockReadBody.mockResolvedValue({ name: "Renamed" });
+
+      await callHandler(handler, buildEvent());
+
+      expect(mockSet.mock.calls[0]?.[0]).not.toHaveProperty("status");
+    });
+  });
 });

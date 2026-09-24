@@ -138,8 +138,31 @@ function willBecomeActive(
   const effectiveEndDate = resolveDate(patchFields.endDate, existing.endDate);
   return isTripCountedAsActive({
     status: effectiveStatus,
-    endDate: effectiveEndDate ?? null,
+    endDate: effectiveEndDate,
   });
+}
+
+// Mirrors the normalization in server/api/trips/index.post.ts: if the patch
+// would leave the trip with an elapsed endDate but a non-"past" status
+// (whether that mismatch comes from this patch's own status/endDate, or was
+// already sitting on the row), force the stored status down to "past" so it
+// can never render as ongoing/upcoming while isTripCountedAsActive already
+// excludes it from the active-trip count. Mutates `patchFields` in place —
+// callers apply it before the DB `.set()` call.
+function normalizeStaleStatus(
+  existing: Trip,
+  patchFields: TripPatchFields,
+): void {
+  if (willBecomeActive(existing, patchFields)) {
+    return;
+  }
+
+  const resolvedStatus = patchFields.status ?? existing.status;
+  if (resolvedStatus === TRIP_STATUS.PAST) {
+    return;
+  }
+
+  patchFields.status = TRIP_STATUS.PAST;
 }
 
 // Re-runs the active-trip limit check when a patch would flip a trip that
@@ -218,6 +241,7 @@ export default defineEventHandler(async (event): Promise<Trip> => {
   validateEffectiveDateRange(existing, patchFields);
   requireNonEmptyPatch(patchFields);
   await assertLimitIfBecomingActive(existing.userId, existing, patchFields);
+  normalizeStaleStatus(existing, patchFields);
 
   const database = getDb();
 
