@@ -1,0 +1,106 @@
+import { describe, it, expect } from "vitest";
+import { isTripCountedAsActive } from "../../../server/utils/tripStatus";
+import { TRIP_STATUS } from "../../../server/db/schema";
+
+const NOW = new Date("2026-06-15T00:00:00.000Z");
+const FUTURE_DATE = new Date("2026-07-01T00:00:00.000Z");
+const PAST_DATE = new Date("2026-06-01T00:00:00.000Z");
+
+describe("isTripCountedAsActive", () => {
+  it("counts an upcoming trip whose endDate is still ahead of now", () => {
+    expect(
+      isTripCountedAsActive(
+        { status: TRIP_STATUS.UPCOMING, endDate: FUTURE_DATE },
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  it("counts an ongoing trip with no endDate set yet", () => {
+    expect(
+      isTripCountedAsActive(
+        { status: TRIP_STATUS.ONGOING, endDate: null },
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  it("stops counting a trip whose endDate has elapsed even though status was never flipped to past", () => {
+    expect(
+      isTripCountedAsActive(
+        { status: TRIP_STATUS.ONGOING, endDate: PAST_DATE },
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  it("respects an explicit 'past' status even with no endDate to derive from", () => {
+    expect(
+      isTripCountedAsActive({ status: TRIP_STATUS.PAST, endDate: null }, NOW),
+    ).toBe(false);
+  });
+
+  it("respects an explicit 'past' status even when endDate is still in the future", () => {
+    // e.g. a trip cancelled before it started — the manual status wins and
+    // derivation never pulls a trip back into counting.
+    expect(
+      isTripCountedAsActive(
+        { status: TRIP_STATUS.PAST, endDate: FUTURE_DATE },
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  it("still counts a trip on its end date itself — the UTC calendar day isn't over yet", () => {
+    expect(
+      isTripCountedAsActive({ status: TRIP_STATUS.ONGOING, endDate: NOW }, NOW),
+    ).toBe(true);
+  });
+
+  it("stops counting once the UTC calendar day after endDate has begun", () => {
+    const startOfNextDay = new Date("2026-06-16T00:00:00.000Z");
+    expect(
+      isTripCountedAsActive(
+        { status: TRIP_STATUS.ONGOING, endDate: NOW },
+        startOfNextDay,
+      ),
+    ).toBe(false);
+  });
+
+  it("still counts a time-bearing endDate through the rest of its UTC calendar day", () => {
+    // endDate carries a time component (e.g. a full ISO timestamp rather
+    // than a date-only string) — the boundary is the calendar day, not
+    // "endDate + 24h", so this must still count right up to UTC midnight.
+    const endDateWithTime = new Date("2026-06-15T18:00:00.000Z");
+    const lateSameDay = new Date("2026-06-15T23:59:59.000Z");
+    expect(
+      isTripCountedAsActive(
+        { status: TRIP_STATUS.ONGOING, endDate: endDateWithTime },
+        lateSameDay,
+      ),
+    ).toBe(true);
+  });
+
+  it("stops counting a time-bearing endDate once its UTC calendar day ends, even under 24h after the timestamp", () => {
+    // 6 hours after the endDate instant, but past UTC midnight into the next
+    // calendar day — "+24h from the instant" would still count this; the
+    // calendar-day rule must not.
+    const endDateWithTime = new Date("2026-06-15T18:00:00.000Z");
+    const earlyNextDay = new Date("2026-06-16T00:00:01.000Z");
+    expect(
+      isTripCountedAsActive(
+        { status: TRIP_STATUS.ONGOING, endDate: endDateWithTime },
+        earlyNextDay,
+      ),
+    ).toBe(false);
+  });
+
+  it("treats a missing (undefined) endDate the same as null", () => {
+    expect(
+      isTripCountedAsActive(
+        { status: TRIP_STATUS.UPCOMING, endDate: undefined },
+        NOW,
+      ),
+    ).toBe(true);
+  });
+});

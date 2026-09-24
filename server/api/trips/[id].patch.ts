@@ -12,6 +12,8 @@ import {
   deleteMediaIfUnreferenced,
   assertCoverImageOwned,
 } from "../../utils/coverImageCleanup";
+import { assertActiveTripLimit } from "../../utils/planLimits";
+import { isTripCountedAsActive } from "../../utils/tripStatus";
 
 type Trip = typeof trips.$inferSelect;
 type Database = ReturnType<typeof getDb>;
@@ -128,6 +130,62 @@ function requireNonEmptyPatch(fields: TripPatchFields): void {
   }
 }
 
+function willBecomeActive(
+  existing: Trip,
+  patchFields: TripPatchFields,
+): boolean {
+  const effectiveStatus = patchFields.status ?? existing.status;
+  const effectiveEndDate = resolveDate(patchFields.endDate, existing.endDate);
+  return isTripCountedAsActive({
+    status: effectiveStatus,
+    endDate: effectiveEndDate,
+  });
+}
+
+// Mirrors the normalization in server/api/trips/index.post.ts: if the patch
+// would leave the trip with an elapsed endDate but a non-"past" status
+// (whether that mismatch comes from this patch's own status/endDate, or was
+// already sitting on the row), force the stored status down to "past" so it
+// can never render as ongoing/upcoming while isTripCountedAsActive already
+// excludes it from the active-trip count. Mutates `patchFields` in place —
+// callers apply it before the DB `.set()` call.
+function normalizeStaleStatus(
+  existing: Trip,
+  patchFields: TripPatchFields,
+): void {
+  if (willBecomeActive(existing, patchFields)) {
+    return;
+  }
+
+  const resolvedStatus = patchFields.status ?? existing.status;
+  if (resolvedStatus === TRIP_STATUS.PAST) {
+    return;
+  }
+
+  patchFields.status = TRIP_STATUS.PAST;
+}
+
+// Re-runs the active-trip limit check when a patch would flip a trip that
+// currently doesn't count against the limit (past, or past its endDate)
+// into one that does (e.g. re-dating a stale trip into the future, or
+// un-marking it "past") — otherwise a user could route around the limit
+// enforced on create by patching an inactive trip back to active.
+async function assertLimitIfBecomingActive(
+  userId: string,
+  existing: Trip,
+  patchFields: TripPatchFields,
+): Promise<void> {
+  if (isTripCountedAsActive(existing)) {
+    return;
+  }
+
+  if (!willBecomeActive(existing, patchFields)) {
+    return;
+  }
+
+  await assertActiveTripLimit(userId);
+}
+
 // Returns the media id the patch replaced (so it can be cleaned up), or null
 // when the cover did not change or there was no previous cover to release.
 function replacedCoverMediaId(
@@ -182,6 +240,8 @@ export default defineEventHandler(async (event): Promise<Trip> => {
 
   validateEffectiveDateRange(existing, patchFields);
   requireNonEmptyPatch(patchFields);
+  await assertLimitIfBecomingActive(existing.userId, existing, patchFields);
+  normalizeStaleStatus(existing, patchFields);
 
   const database = getDb();
 
