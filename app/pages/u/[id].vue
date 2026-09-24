@@ -126,7 +126,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, watch } from "vue";
 import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
 import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
 import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
@@ -293,8 +293,23 @@ useAsyncData(
   { server: false, watch: [userId, retryGeneration] },
 );
 
-// Follow state depends on the session token, so it is client-only too.
-onMounted(fetchFollowing);
+// Follow state depends on the session token, so it is client-only too. Wait
+// for canRetryAuthenticated (not a bare onMounted) so an anonymous visitor
+// following a shared profile link never fires this: /api/follows always
+// requires a token, so an anonymous request would 401 and surface a spurious
+// "Could not load following list" error banner (#279). `immediate: true`
+// still fetches right away for a viewer whose session is already resolved by
+// mount; a viewer who signs in afterward fetches once that resolves.
+watch(
+  canRetryAuthenticated,
+  (viewerIsAuthenticated) => {
+    if (!viewerIsAuthenticated) {
+      return;
+    }
+    fetchFollowing();
+  },
+  { immediate: true },
+);
 </script>
 
 <style scoped>

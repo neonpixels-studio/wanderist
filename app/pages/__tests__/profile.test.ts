@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { mount } from "@vue/test-utils";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { mount, enableAutoUnmount } from "@vue/test-utils";
 import { nextTick, reactive, ref } from "vue";
 import ProfilePage from "../u/[id].vue";
 import ProfileHeader from "~/components/ProfileHeader.vue";
@@ -34,6 +34,16 @@ vi.stubGlobal("useRoute", () => ({
 
 // #269 og/twitter meta coverage below reads this trackable useSeoMeta stub.
 const useSeoMetaMock = stubOgMetaGlobals();
+
+// The page now runs a real `watch(canRetryAuthenticated, ...)` (#279, follow
+// state) alongside useClerkGatedFetch's own real internal watcher — both
+// driven by this file's shared, module-scope clerkLoadedRef/clerkSignedInRef.
+// Without unmounting each wrapper, a still-mounted component from an earlier
+// test keeps reacting to a later test's ref changes and re-invokes the same
+// persistent useFollows mocks, inflating call counts read by an unrelated
+// test. Auto-unmounting after every test tears down those effects so each
+// test's assertions only see its own mount's calls.
+enableAutoUnmount(afterEach);
 
 // The page's fetch is gated on Clerk's bootstrap (#279, mirroring
 // trips/[id].vue and guides/[id].vue) and wraps a signed-in viewer's follow
@@ -251,6 +261,35 @@ describe("profile page", () => {
     // Clerk having finished loading, which the default clerkLoadedRef already
     // satisfies) — a shared profile link opens for an anonymous visitor.
     expect(mockFetchProfile).toHaveBeenCalledWith("user-1");
+  });
+
+  it("does not fetch the viewer's own follow state for an anonymous viewer (#279)", () => {
+    clerkSignedInRef.value = false;
+    profile.value = { ...SAMPLE_PROFILE };
+
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    // /api/follows always requires a token — fetching it anonymously would
+    // 401 and surface a spurious "Could not load following list" error
+    // banner on a page that must otherwise render cleanly for a share-link
+    // visitor.
+    expect(mockFetchFollowing).not.toHaveBeenCalled();
+    expect(wrapper.find(".alert-stub").exists()).toBe(false);
+  });
+
+  it("fetches the viewer's own follow state once a session resolves after mount", async () => {
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+    profile.value = { ...SAMPLE_PROFILE };
+
+    mount(ProfilePage, globalConfig);
+    expect(mockFetchFollowing).not.toHaveBeenCalled();
+
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = true;
+    await nextTick();
+
+    expect(mockFetchFollowing).toHaveBeenCalled();
   });
 
   it("fetches the profile, followers, following, trips, guides, and follow state on mount", () => {

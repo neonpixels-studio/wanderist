@@ -18,6 +18,21 @@ const PUBLIC_READ_GUIDE_PATH = /^\/api\/guides\/[^/]+$/;
 // visibility.
 const PUBLIC_READ_TRIP_PATH = /^\/api\/trips\/[^/]+$/;
 
+// GET /api/users/<id> serves a single profile, which may be public and shared
+// with anonymous visitors via its link (#279). Matches exactly one path
+// segment after /users/ so it never covers a future owner-only collection or
+// sub-resource this pattern shouldn't blanket-open. The route handler
+// (requireViewableProfile) still enforces visibility.
+const PUBLIC_READ_PROFILE_PATH = /^\/api\/users\/[^/]+$/;
+
+// GET /api/users/<id>/{followers,following,trips,guides} serves that same
+// public profile's sub-resource lists (#279) — named explicitly (not
+// [^/]+\/[^/]+) so a future owner-only sub-resource under /api/users/<id>/
+// isn't opened by default. The route handler (requireViewableProfileTarget)
+// still enforces visibility.
+const PUBLIC_READ_PROFILE_SUB_PATH =
+  /^\/api\/users\/[^/]+\/(followers|following|trips|guides)$/;
+
 function isApiPath(path: string): boolean {
   return path.startsWith(API_PATH_PREFIX);
 }
@@ -42,7 +57,12 @@ function isOptionalAuthRoute(event: H3Event): boolean {
   }
 
   const path = pathname(event);
-  return PUBLIC_READ_GUIDE_PATH.test(path) || PUBLIC_READ_TRIP_PATH.test(path);
+  return (
+    PUBLIC_READ_GUIDE_PATH.test(path) ||
+    PUBLIC_READ_TRIP_PATH.test(path) ||
+    PUBLIC_READ_PROFILE_PATH.test(path) ||
+    PUBLIC_READ_PROFILE_SUB_PATH.test(path)
+  );
 }
 
 function extractBearerToken(event: H3Event): string | null {

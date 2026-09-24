@@ -204,4 +204,105 @@ describe("auth middleware", () => {
     expect(event.context.userId).toBeUndefined();
     expect(mockVerifyClerkToken).not.toHaveBeenCalled();
   });
+
+  // #279: a shared profile link must open for an anonymous visitor so its
+  // og/twitter meta can unfurl. Mirrors the single-guide/single-trip coverage
+  // above — this is the regression the code review for #279 caught: the route
+  // handler alone (requireViewableProfile) is unreachable by an anonymous
+  // request unless this middleware also lets it through.
+  it("lets an anonymous GET on a single profile through without verifying a token", async () => {
+    const event = makeEvent({ path: "/api/users/user-1", headers: {} });
+
+    await runMiddleware(event);
+
+    expect(event.context.userId).toBeUndefined();
+    expect(mockVerifyClerkToken).not.toHaveBeenCalled();
+  });
+
+  it("identifies the viewer on a single-profile GET when a valid token is present", async () => {
+    mockVerifyClerkToken.mockResolvedValue(RESOLVED_USER);
+    const event = makeEvent({
+      path: "/api/users/user-1",
+      headers: { authorization: "Bearer good" },
+    });
+
+    await runMiddleware(event);
+
+    expect(event.context.userId).toBe(RESOLVED_USER);
+  });
+
+  it("rejects a present-but-invalid token on a single-profile GET with 401", async () => {
+    mockVerifyClerkToken.mockRejectedValue(new Error("bad token"));
+    const event = makeEvent({
+      path: "/api/users/user-1",
+      headers: { authorization: "Bearer bad" },
+    });
+
+    await expect(runMiddleware(event)).rejects.toMatchObject({
+      statusCode: 401,
+    });
+    expect(event.context.userId).toBeUndefined();
+  });
+
+  it("still requires a token for a non-GET method on a single profile", async () => {
+    const event = makeEvent({
+      path: "/api/users/user-1",
+      method: "PATCH",
+      headers: {},
+    });
+
+    await expect(runMiddleware(event)).rejects.toMatchObject({
+      statusCode: 401,
+    });
+  });
+
+  it.each(["followers", "following", "trips", "guides"])(
+    "lets an anonymous GET on the /%s profile sub-resource through without verifying a token",
+    async (subResource) => {
+      const event = makeEvent({
+        path: `/api/users/user-1/${subResource}`,
+        headers: {},
+      });
+
+      await runMiddleware(event);
+
+      expect(event.context.userId).toBeUndefined();
+      expect(mockVerifyClerkToken).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still requires a token on an unrecognized profile sub-resource", async () => {
+    const event = makeEvent({
+      path: "/api/users/user-1/settings",
+      headers: {},
+    });
+
+    await expect(runMiddleware(event)).rejects.toMatchObject({
+      statusCode: 401,
+    });
+  });
+
+  it("still requires a token for a non-GET method on a profile sub-resource", async () => {
+    const event = makeEvent({
+      path: "/api/users/user-1/followers",
+      method: "POST",
+      headers: {},
+    });
+
+    await expect(runMiddleware(event)).rejects.toMatchObject({
+      statusCode: 401,
+    });
+  });
+
+  it("matches the optional-auth profile route even with a trailing slash and a query string", async () => {
+    const event = makeEvent({
+      path: "/api/users/user-1/followers/?foo=bar",
+      headers: {},
+    });
+
+    await runMiddleware(event);
+
+    expect(event.context.userId).toBeUndefined();
+    expect(mockVerifyClerkToken).not.toHaveBeenCalled();
+  });
 });
