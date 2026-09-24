@@ -4,6 +4,7 @@ import { ensureUser } from "../../utils/auth";
 import { requireString } from "../../utils/db-helpers";
 import { parseEnum, parseOptionalDate } from "../../utils/validation";
 import { assertActiveTripLimit } from "../../utils/planLimits";
+import { isTripCountedAsActive } from "../../utils/tripStatus";
 
 const VALID_STATUSES = [
   TRIP_STATUS.ONGOING,
@@ -46,9 +47,22 @@ export default defineEventHandler(async (event) => {
     });
   }
 
-  // A trip created directly as "past" doesn't count against the active-trips
-  // limit — only ongoing/upcoming trips do (see assertActiveTripLimit).
-  if (status !== TRIP_STATUS.PAST) {
+  // A trip whose dates are already behind it is effectively "past" from the
+  // moment it's created, regardless of what status the client requested —
+  // storing the raw client value here would let a trip render as
+  // ongoing/upcoming (see server/api/trips/index.get.ts's status filter)
+  // while the active-trip count (isTripCountedAsActive) silently treats it
+  // as past, one rule disagreeing with itself. Normalizing at write time
+  // keeps both in agreement; only a trip that's still effectively active
+  // needs the limit check.
+  const effectiveStatus = isTripCountedAsActive({
+    status,
+    endDate: endDate ?? null,
+  })
+    ? status
+    : TRIP_STATUS.PAST;
+
+  if (effectiveStatus !== TRIP_STATUS.PAST) {
     await assertActiveTripLimit(userId);
   }
 
@@ -58,7 +72,7 @@ export default defineEventHandler(async (event) => {
     id: generateId(),
     userId,
     name,
-    status,
+    status: effectiveStatus,
     visibility,
     startDate: startDate ?? null,
     endDate: endDate ?? null,

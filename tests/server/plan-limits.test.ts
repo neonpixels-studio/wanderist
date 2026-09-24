@@ -7,9 +7,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
+  trips,
   userPreferences,
   PLAN,
   SUBSCRIPTION_STATUS,
+  TRIP_STATUS,
 } from "../../server/db/schema";
 import type {
   Plan,
@@ -151,18 +153,84 @@ describe("assertPlaceLimit", () => {
 });
 
 describe("assertActiveTripLimit", () => {
+  const FUTURE_DATE = new Date("2099-01-01");
+  const PAST_DATE = new Date("2000-01-01");
+
+  // assertActiveTripLimit counts rows in application code (see
+  // countActiveTripRows), not via a SQL count() aggregate, so the mocked
+  // `.where()` call must resolve the trip rows themselves rather than the
+  // `[{ value }]` shape `setCount` produces for the aggregate-based limits.
+  type TripRow = {
+    status: (typeof TRIP_STATUS)[keyof typeof TRIP_STATUS];
+    endDate: Date | null;
+  };
+
+  function setTripRows(rows: TripRow[]): void {
+    mockWhere.mockResolvedValue(rows);
+  }
+
   it("throws 402 when at the Drifter active-trip limit", async () => {
     mockGetEffectivePlan.mockResolvedValue("drifter");
-    setCount(1);
+    setTripRows([{ status: TRIP_STATUS.UPCOMING, endDate: FUTURE_DATE }]);
     await expect(assertActiveTripLimit("user-1")).rejects.toMatchObject({
       statusCode: 402,
     });
   });
 
+  it("scopes the row query to the given user id", async () => {
+    mockGetEffectivePlan.mockResolvedValue("drifter");
+    setTripRows([]);
+    await assertActiveTripLimit("user-1");
+    expect(mockWhere).toHaveBeenCalledWith(eq(trips.userId, "user-1"));
+  });
+
   it("does not throw when under the limit", async () => {
     mockGetEffectivePlan.mockResolvedValue("drifter");
-    setCount(0);
+    setTripRows([]);
     await expect(assertActiveTripLimit("user-1")).resolves.toBeUndefined();
+  });
+
+  it("does not count a trip whose endDate has elapsed but whose status was never flipped to past", async () => {
+    mockGetEffectivePlan.mockResolvedValue("drifter");
+    // The only trip on the account is stuck "ongoing" past its endDate — it
+    // must not eat the Drifter plan's one-active-trip slot forever (#278).
+    setTripRows([{ status: TRIP_STATUS.ONGOING, endDate: PAST_DATE }]);
+    await expect(assertActiveTripLimit("user-1")).resolves.toBeUndefined();
+  });
+
+  it("still counts a genuinely current/future trip toward the limit", async () => {
+    mockGetEffectivePlan.mockResolvedValue("drifter");
+    setTripRows([{ status: TRIP_STATUS.ONGOING, endDate: FUTURE_DATE }]);
+    await expect(assertActiveTripLimit("user-1")).rejects.toMatchObject({
+      statusCode: 402,
+    });
+  });
+
+  it("respects an explicit 'past' status regardless of dates", async () => {
+    mockGetEffectivePlan.mockResolvedValue("drifter");
+    // Manually marked past even though endDate is in the future (e.g. a
+    // cancelled trip) — the stored status still wins for exclusion.
+    setTripRows([{ status: TRIP_STATUS.PAST, endDate: FUTURE_DATE }]);
+    await expect(assertActiveTripLimit("user-1")).resolves.toBeUndefined();
+  });
+
+  it("counts only the effectively-active trips out of a mixed set", async () => {
+    mockGetEffectivePlan.mockResolvedValue("drifter");
+    // 2 of these 4 rows are effectively active (one upcoming with a future
+    // endDate, one ongoing with no endDate yet); the stale-ongoing and
+    // explicit-past rows must be excluded from the count. The Drifter cap is
+    // 1, so if the filter (rather than the raw row count) weren't driving
+    // this, either result would look plausible — asserting 402 pins the
+    // count at exactly 2, not 4 or 0.
+    setTripRows([
+      { status: TRIP_STATUS.UPCOMING, endDate: FUTURE_DATE },
+      { status: TRIP_STATUS.ONGOING, endDate: null },
+      { status: TRIP_STATUS.ONGOING, endDate: PAST_DATE },
+      { status: TRIP_STATUS.PAST, endDate: FUTURE_DATE },
+    ]);
+    await expect(assertActiveTripLimit("user-1")).rejects.toMatchObject({
+      statusCode: 402,
+    });
   });
 });
 

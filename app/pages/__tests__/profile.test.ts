@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mount, enableAutoUnmount } from "@vue/test-utils";
-import { nextTick, reactive, ref } from "vue";
+import { nextTick, reactive, ref, watch } from "vue";
 import ProfilePage from "../u/[id].vue";
+import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
 import ProfileHeader from "~/components/ProfileHeader.vue";
 import ProfileFollowerList from "~/components/ProfileFollowerList.vue";
 import ProfileFollowingList from "~/components/ProfileFollowingList.vue";
@@ -62,8 +63,9 @@ vi.stubGlobal("useClerkAuth", () => ({
 // The page loads via useAsyncData; the global stub ignores the handler, so
 // invoke it here to exercise the mount-time fetches and record the call so the
 // wiring (key + watch on the route param and retry generation) can be
-// asserted. Re-running on param change is Nuxt's own behaviour, not under
-// test.
+// asserted. Honour the real refetch-on-watch contract (not just record the
+// watch array) so a test can assert the useClerkGatedFetch gate's
+// retryGeneration actually re-triggers the fetch once Clerk resolves.
 let lastAsyncDataCall: {
   key: () => string;
   options: { watch?: unknown[]; server?: boolean };
@@ -77,6 +79,11 @@ vi.stubGlobal(
   ) => {
     lastAsyncDataCall = { key, options };
     handler();
+    if (options.watch) {
+      watch(options.watch as Parameters<typeof watch>[0], () => {
+        handler();
+      });
+    }
     return {
       data: ref(null),
       pending: ref(false),
@@ -301,6 +308,46 @@ describe("profile page", () => {
     expect(mockFetchTrips).toHaveBeenCalledWith("user-1");
     expect(mockFetchGuides).toHaveBeenCalledWith("user-1");
     expect(mockFetchFollowing).toHaveBeenCalled();
+  });
+
+  // Regression coverage for #280: /u/[id]'s fetch used to fire with no
+  // isClerkLoaded gate at all, so a hard refresh raced an unresolved Clerk
+  // bootstrap and could 401 anonymously — even for a viewer loading their own
+  // profile. useClerkGatedFetch's gate (shared with trips/[id].vue and
+  // guides/[id].vue) withholds the profile fetch until Clerk resolves.
+  it("does not fetch until Clerk resolves, then fetches exactly once already authenticated (no anonymous 401 race)", async () => {
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+
+    mount(ProfilePage, globalConfig);
+    expect(mockFetchProfile).not.toHaveBeenCalled();
+    expect(mockFetchFollowing).not.toHaveBeenCalled();
+
+    // Clerk resolves isLoaded and isSignedIn together, same as the #255 fix.
+    clerkSignedInRef.value = true;
+    clerkLoadedRef.value = true;
+    await nextTick();
+
+    expect(mockFetchProfile).toHaveBeenCalledTimes(1);
+    expect(mockFetchProfile).toHaveBeenCalledWith("user-1");
+    expect(mockFetchFollowing).toHaveBeenCalledTimes(1);
+  });
+
+  it("still fetches a profile anonymously once the Clerk bootstrap grace period lapses", async () => {
+    vi.useFakeTimers();
+    try {
+      clerkLoadedRef.value = false;
+      clerkSignedInRef.value = false;
+
+      mount(ProfilePage, globalConfig);
+      expect(mockFetchProfile).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(CLERK_BOOTSTRAP_TIMEOUT_MS);
+
+      expect(mockFetchProfile).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("renders a loaded public profile", () => {
