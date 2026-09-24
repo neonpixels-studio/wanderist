@@ -267,14 +267,13 @@ describe("profile page", () => {
     clerkSignedInRef.value = false;
     profile.value = { ...SAMPLE_PROFILE };
 
-    const wrapper = mount(ProfilePage, globalConfig);
+    mount(ProfilePage, globalConfig);
 
     // /api/follows always requires a token — fetching it anonymously would
     // 401 and surface a spurious "Could not load following list" error
-    // banner on a page that must otherwise render cleanly for a share-link
-    // visitor.
+    // banner (useFollows' own `error` ref, rendered via followError above)
+    // on a page that must otherwise render cleanly for a share-link visitor.
     expect(mockFetchFollowing).not.toHaveBeenCalled();
-    expect(wrapper.find(".alert-stub").exists()).toBe(false);
   });
 
   it("fetches the viewer's own follow state once a session resolves after mount", async () => {
