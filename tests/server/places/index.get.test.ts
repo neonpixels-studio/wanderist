@@ -22,11 +22,23 @@ vi.mock("drizzle-orm", async (importOriginal) => {
   };
 });
 
+// Returns a distinguishable value (not an identity passthrough) so tests can
+// tell "the handler returned the gate's output" apart from "the handler
+// returned the raw rows and happened to call the gate as a side effect."
+vi.mock("../../../server/utils/locationPrivacy", () => ({
+  applyPreciseLocationPrivacy: vi.fn((place: Record<string, unknown>) => ({
+    ...place,
+    __gated: true,
+  })),
+}));
+
 import { requireUser } from "../../../server/utils/auth";
 import { getDb } from "../../../server/db/index";
+import { applyPreciseLocationPrivacy } from "../../../server/utils/locationPrivacy";
 
 const mockRequireUser = vi.mocked(requireUser);
 const mockGetDb = vi.mocked(getDb);
+const mockApplyPreciseLocationPrivacy = vi.mocked(applyPreciseLocationPrivacy);
 const mockGetQuery = vi.mocked(
   globalThis.getQuery as (event: unknown) => Record<string, unknown>,
 );
@@ -66,11 +78,23 @@ describe("GET /api/places", () => {
     const defaultHandler = "default" in handler ? handler.default : handler;
     const result = await (defaultHandler as (event: unknown) => unknown)({});
 
+    // Pins the wiring both ways: every row must be routed through the
+    // privacy gate with the resolved caller id, AND the response must carry
+    // the gate's output (the `__gated` marker) rather than the raw rows.
     expect(result).toEqual({
-      places: expectedPlaces,
+      places: expectedPlaces.map((place) => ({ ...place, __gated: true })),
       page: 1,
       hasMore: false,
     });
+    expect(mockApplyPreciseLocationPrivacy).toHaveBeenCalledTimes(2);
+    expect(mockApplyPreciseLocationPrivacy).toHaveBeenCalledWith(
+      expectedPlaces[0],
+      "user-1",
+    );
+    expect(mockApplyPreciseLocationPrivacy).toHaveBeenCalledWith(
+      expectedPlaces[1],
+      "user-1",
+    );
   });
 
   it("throws 401 when not authenticated", async () => {
