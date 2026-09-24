@@ -89,7 +89,9 @@ export function useMapbox() {
 
     mapInstance.on("error", (event) => {
       if (onMapError) {
-        onMapError(event.error ?? new Error("Mapbox map error"));
+        const error = event.error ?? new Error("Mapbox map error");
+        console.error("Mapbox map error", error);
+        onMapError(error);
       }
     });
 

@@ -354,6 +354,23 @@ describe("useTripsStore", () => {
       expect(store.listError).toBe(UNEXPECTED_ERROR_MESSAGE);
     });
 
+    it("surfaces a server-intended data.statusMessage as listError", async () => {
+      // Regression guard: proves `listError` is actually wired to
+      // extractErrorMessage's output, not just hardcoded to the generic
+      // fallback (which the test above alone wouldn't catch) — mirrors the
+      // equivalent detailError test for fetchTripById below.
+      mockApiFetch.mockRejectedValue(
+        Object.assign(new Error("Bad Request"), {
+          data: { statusMessage: "Trips are temporarily unavailable" },
+        }),
+      );
+      const store = useTripsStore();
+
+      await expect(store.fetchTrips()).rejects.toThrow();
+
+      expect(store.listError).toBe("Trips are temporarily unavailable");
+    });
+
     it("clears listError before each new fetch", async () => {
       mockApiFetch.mockRejectedValueOnce(new Error("first error"));
       mockApiFetch.mockResolvedValueOnce({

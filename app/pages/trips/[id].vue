@@ -269,6 +269,7 @@
           v-if="reorderError"
           class="alert alert--error"
           style="margin-top: 8px"
+          data-test="reorder-error"
         >
           {{ reorderError }}
         </div>
@@ -419,7 +420,11 @@ const { user: clerkUser } = useClerkUser();
 // state so a signed-out owner arriving from a bookmark/expired session isn't
 // dead-ended.
 const { isLoaded: isClerkLoaded, isSignedIn } = useClerkAuth();
-const { upload, isUploading: isUploadingCover } = useMediaUpload();
+const {
+  upload,
+  isUploading: isUploadingCover,
+  error: mediaError,
+} = useMediaUpload();
 
 const isAddingStop = ref(false);
 const addStopError = ref<string | null>(null);
@@ -990,14 +995,13 @@ async function onCoverFileSelected(event: Event): Promise<void> {
     }
     // Set after both steps succeed so the displayed cover matches persisted state
     pendingCoverUrl.value = result.url;
-  } catch (uploadFailure) {
+  } catch {
     // The upload request itself failed (network error, server rejection,
-    // etc.) — mirror the patch-failure branch above: surface the server's
-    // own error when it gave one, otherwise this specific fallback rather
-    // than extractErrorMessage's generic one, so the user still learns it
-    // was the cover upload that failed.
-    uploadError.value =
-      extractServerErrorMessage(uploadFailure) ?? "Could not upload cover";
+    // etc.) — useMediaUpload already extracted the server's own error (or
+    // null) into mediaError; fall back to this specific message rather than
+    // a generic one so the user still learns it was the cover upload that
+    // failed.
+    uploadError.value = mediaError.value ?? "Could not upload cover";
   } finally {
     // Reset input so selecting the same file fires change again
     input.value = "";

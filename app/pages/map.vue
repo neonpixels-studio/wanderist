@@ -37,7 +37,12 @@
     </template>
 
     <!-- Places load error -->
-    <div v-if="placesStore.error" class="places-error" role="alert">
+    <div
+      v-if="placesStore.error"
+      class="places-error"
+      role="alert"
+      data-test="places-error"
+    >
       {{ placesStore.error }}
     </div>
 
@@ -595,13 +600,13 @@ async function initializeMap(): Promise<void> {
   const mapInstance = await mapbox.initMap(
     mapPanelRef.value,
     mapStyle.value,
-    (error) => {
+    () => {
       // Mapbox init/runtime errors are raised entirely client-side (bad
       // token, WebGL unsupported, a tile request failing) — they never carry
       // a server data.statusMessage, so extractErrorMessage would always
       // collapse to its generic fallback here. Use that fallback directly
-      // rather than routing through a check that can never pass on this path.
-      console.error("Mapbox error", error);
+      // rather than routing through a check that can never pass on this
+      // path. useMapbox already logs the underlying error.
       mapError.value = UNEXPECTED_ERROR_MESSAGE;
     },
   );
