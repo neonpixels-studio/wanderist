@@ -21,6 +21,19 @@
         <AppIcon name="arrow-right" :size="14" />
         back to Explore
       </NuxtLink>
+      <!-- Removing the auth middleware (#279) means the profile's own owner,
+           browsing signed out (an expired session, a fresh browser), can now
+           land here too — this profile-state branch fires whenever the fetch
+           looked anonymous or didn't match, not only for a genuine stranger.
+           Mirrors trips/[id].vue and guides/[id].vue's identical not-found
+           sign-in affordance. -->
+      <NuxtLink
+        v-if="isClerkLoaded && !isSignedIn"
+        to="/login"
+        class="btn btn--outline btn--sm"
+      >
+        sign in to view your profile
+      </NuxtLink>
     </div>
 
     <AppAlert v-else-if="error" intent="error" :message="error" />
@@ -34,7 +47,7 @@
         :following="viewerIsFollowingTarget"
         :pending="pending"
         :viewer-is-signed-in="!!isSignedIn"
-        :viewer-auth-resolved="isClerkLoaded"
+        :viewer-auth-resolved="viewerAuthResolved"
         @toggle="onToggleFollow"
       />
 
@@ -137,14 +150,22 @@ const openCommandPalette = inject<(() => void) | undefined>(
 );
 
 // No auth middleware: a public profile must open for anonymous visitors
-// following a shared link, so its og/twitter meta (see useOgMeta below) can
-// unfurl in Slack/iMessage/etc previews (#279). This mirrors trips/[id].vue
-// and guides/[id].vue. The GET endpoints (/api/users/[id] and its
-// followers/following/trips/guides sub-resources) enforce visibility — a
-// private profile 404s for anyone but its owner, it never redirects to
-// /login — so a private profile stays protected. Owner-only affordances
-// (follow/unfollow) are meaningless for the profile owner viewing their own
-// page and simply reflect `profile.isSelf` from the API response.
+// following a shared link, instead of being redirected to /login before the
+// page (and its og/twitter meta, see useOgMeta below) ever renders (#279).
+// This mirrors trips/[id].vue and guides/[id].vue. The GET endpoints
+// (/api/users/[id] and its followers/following/trips/guides sub-resources)
+// enforce visibility — a private profile 404s for anyone but its owner, it
+// never redirects to /login — so a private profile stays protected.
+// Owner-only affordances (follow/unfollow) are meaningless for the profile
+// owner viewing their own page and simply reflect `profile.isSelf` from the
+// API response.
+//
+// Note: the profile fetch below is client-only (server: false), so a crawler
+// that doesn't execute JS still only sees the SSR fallback title/description,
+// not the traveler's real name/bio — the same limitation trips/[id].vue and
+// guides/[id].vue already have. This fix only removes the redirect that
+// blocked anonymous access outright; see the "Follow-up suggestions" note in
+// this PR for the separate SSR-population gap.
 definePageMeta({ layout: "app" });
 
 const route = useRoute();
@@ -197,6 +218,17 @@ const canRetryAuthenticated = computed(
 const { gate: gateOnClerkLoad, retryGeneration } = useClerkGatedFetch(
   isClerkLoaded,
   canRetryAuthenticated,
+);
+
+// Bounds ProfileHeader's "do we know the viewer's auth state yet" wait to the
+// same window the fetch below already uses (CLERK_BOOTSTRAP_TIMEOUT_MS, via
+// gateOnClerkLoad): a profile only loads once that gate has concluded, one
+// way or another, so a populated `profile` is proof the wait is over even if
+// isClerkLoaded itself never flips true (Clerk's script blocked by an ad
+// blocker, a flaky CDN). Without this, a viewer in that situation would see
+// neither a follow button nor a "sign in to follow" prompt, permanently.
+const viewerAuthResolved = computed(
+  () => isClerkLoaded.value || !!profile.value,
 );
 
 const displayName = computed(

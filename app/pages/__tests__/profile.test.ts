@@ -325,6 +325,30 @@ describe("profile page", () => {
     expect(wrapper.find(".phead").exists()).toBe(false);
   });
 
+  it("offers a sign-in link in the unavailable state for a signed-out viewer (#279)", () => {
+    // Covers the profile owner landing on their own private profile while
+    // signed out (an expired session, a fresh browser) — now reachable since
+    // the auth middleware no longer redirects them to /login first.
+    clerkSignedInRef.value = false;
+    notFound.value = true;
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    const signInLink = wrapper
+      .findAll("a")
+      .find((link) => link.text().toLowerCase().includes("sign in"));
+    expect(signInLink?.attributes("href")).toBe("/login");
+  });
+
+  it("omits the sign-in link in the unavailable state for a signed-in viewer", () => {
+    notFound.value = true;
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    const signInLink = wrapper
+      .findAll("a")
+      .find((link) => link.text().toLowerCase().includes("sign in"));
+    expect(signInLink).toBeUndefined();
+  });
+
   it("forwards the followers loading state so the list shows no false empty state", () => {
     profile.value = { ...SAMPLE_PROFILE };
     followersLoading.value = true;
@@ -437,6 +461,28 @@ describe("profile page", () => {
   });
 
   it("shows a sign-in prompt instead of a follow button for an anonymous viewer (#279)", () => {
+    clerkSignedInRef.value = false;
+    profile.value = { ...SAMPLE_PROFILE };
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    const followButton = wrapper
+      .findAll("button")
+      .find((button) => button.text().toLowerCase().includes("follow"));
+    expect(followButton).toBeUndefined();
+    const signInLink = wrapper
+      .findAll("a")
+      .find((link) => link.text().toLowerCase().includes("sign in"));
+    expect(signInLink?.attributes("href")).toBe("/login");
+  });
+
+  it("still shows a sign-in prompt once a profile has loaded even if Clerk's script never resolves (#279)", () => {
+    // Clerk blocked by an ad blocker, or a slow/flaky CDN: isClerkLoaded never
+    // flips true, but the gated fetch already fell back to an anonymous
+    // request (see useClerkGatedFetch's CLERK_BOOTSTRAP_TIMEOUT_MS) and
+    // profile.value is populated. viewerAuthResolved must fall back to that
+    // instead of waiting on isClerkLoaded forever — otherwise the header
+    // shows neither a follow button nor a sign-in prompt, permanently.
+    clerkLoadedRef.value = false;
     clerkSignedInRef.value = false;
     profile.value = { ...SAMPLE_PROFILE };
     const wrapper = mount(ProfilePage, globalConfig);

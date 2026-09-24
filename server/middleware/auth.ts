@@ -33,6 +33,17 @@ const PUBLIC_READ_PROFILE_PATH = /^\/api\/users\/[^/]+$/;
 const PUBLIC_READ_PROFILE_SUB_PATH =
   /^\/api\/users\/[^/]+\/(followers|following|trips|guides)$/;
 
+// Every GET path pattern a request may match without a bearer token. A list
+// (not one growing `||` chain) so a fourth/fifth public route is a one-line
+// addition to isOptionalAuthRoute below, not another branch to thread through
+// its condition.
+const OPTIONAL_AUTH_GET_PATTERNS = [
+  PUBLIC_READ_GUIDE_PATH,
+  PUBLIC_READ_TRIP_PATH,
+  PUBLIC_READ_PROFILE_PATH,
+  PUBLIC_READ_PROFILE_SUB_PATH,
+];
+
 function isApiPath(path: string): boolean {
   return path.startsWith(API_PATH_PREFIX);
 }
@@ -57,12 +68,7 @@ function isOptionalAuthRoute(event: H3Event): boolean {
   }
 
   const path = pathname(event);
-  return (
-    PUBLIC_READ_GUIDE_PATH.test(path) ||
-    PUBLIC_READ_TRIP_PATH.test(path) ||
-    PUBLIC_READ_PROFILE_PATH.test(path) ||
-    PUBLIC_READ_PROFILE_SUB_PATH.test(path)
-  );
+  return OPTIONAL_AUTH_GET_PATTERNS.some((pattern) => pattern.test(path));
 }
 
 function extractBearerToken(event: H3Event): string | null {
