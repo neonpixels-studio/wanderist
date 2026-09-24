@@ -61,12 +61,16 @@ test("profile page (/u/<id>) is accessible without authentication (#279)", async
   page,
 }) => {
   await page.goto("/u/test-user");
-  // Waiting on this locator auto-waits through Clerk's client-side bootstrap
-  // (the same window app/plugins/auth-guard.client.ts's watchEffect would
-  // need to fire a redirect in), so a passing assertion here already proves
-  // no redirect happened by the time the page settles.
-  await expect(page.locator(".profile-state")).toBeVisible({
-    timeout: 10_000,
-  });
+  // `.profile-state` covers both the loading AND not-found branches, so
+  // waiting on it alone would resolve during the pre-Clerk-bootstrap loading
+  // paint — before app/plugins/auth-guard.client.ts's watchEffect could even
+  // have fired a redirect. Wait on the settled not-found heading instead: it
+  // only renders after the gated fetch resolves (Clerk finishing, or the
+  // CLERK_BOOTSTRAP_TIMEOUT_MS fallback), which is strictly after that
+  // window closes — so a passing assertion here actually proves no redirect
+  // happened, not just that the page hadn't gotten around to it yet.
+  await expect(
+    page.getByRole("heading", { name: "Profile unavailable" }),
+  ).toBeVisible({ timeout: 10_000 });
   await expect(page).toHaveURL(/\/u\/test-user/);
 });

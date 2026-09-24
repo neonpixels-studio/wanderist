@@ -26,9 +26,13 @@
            land here too — this profile-state branch fires whenever the fetch
            looked anonymous or didn't match, not only for a genuine stranger.
            Mirrors trips/[id].vue and guides/[id].vue's identical not-found
-           sign-in affordance. -->
+           sign-in affordance. Gated on viewerAuthResolved (not the raw
+           isClerkLoaded) so a signed-out owner whose Clerk script never
+           resolves (ad blocker, flaky CDN) still sees this link instead of a
+           permanent dead end once notFound settles — see viewerAuthResolved
+           below for why `notFound` alone is already proof the wait is over. -->
       <NuxtLink
-        v-if="isClerkLoaded && !isSignedIn"
+        v-if="viewerAuthResolved && !isSignedIn"
         to="/login"
         class="btn btn--outline btn--sm"
       >
@@ -139,7 +143,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
 import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
 import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
@@ -220,15 +224,17 @@ const { gate: gateOnClerkLoad, retryGeneration } = useClerkGatedFetch(
   canRetryAuthenticated,
 );
 
-// Bounds ProfileHeader's "do we know the viewer's auth state yet" wait to the
-// same window the fetch below already uses (CLERK_BOOTSTRAP_TIMEOUT_MS, via
-// gateOnClerkLoad): a profile only loads once that gate has concluded, one
-// way or another, so a populated `profile` is proof the wait is over even if
-// isClerkLoaded itself never flips true (Clerk's script blocked by an ad
-// blocker, a flaky CDN). Without this, a viewer in that situation would see
-// neither a follow button nor a "sign in to follow" prompt, permanently.
+// Bounds the "do we know the viewer's auth state yet" wait — for
+// ProfileHeader's follow affordance and the notFound sign-in link below — to
+// the same window the fetch below already uses (CLERK_BOOTSTRAP_TIMEOUT_MS,
+// via gateOnClerkLoad): the gate concludes into either a populated `profile`
+// or a settled `notFound`, one way or another, so either is proof the wait is
+// over even if isClerkLoaded itself never flips true (Clerk's script blocked
+// by an ad blocker, a flaky CDN). Without this, a viewer in that situation
+// would see neither a follow button nor a "sign in to follow"/"sign in to
+// view your profile" prompt, permanently.
 const viewerAuthResolved = computed(
-  () => isClerkLoaded.value || !!profile.value,
+  () => isClerkLoaded.value || !!profile.value || notFound.value,
 );
 
 const displayName = computed(
@@ -325,23 +331,32 @@ useAsyncData(
   { server: false, watch: [userId, retryGeneration] },
 );
 
-// Follow state depends on the session token, so it is client-only too. Wait
-// for canRetryAuthenticated (not a bare onMounted) so an anonymous visitor
-// following a shared profile link never fires this: /api/follows always
-// requires a token, so an anonymous request would 401 and surface a spurious
-// "Could not load following list" error banner (#279). `immediate: true`
-// still fetches right away for a viewer whose session is already resolved by
-// mount; a viewer who signs in afterward fetches once that resolves.
-watch(
-  canRetryAuthenticated,
-  (viewerIsAuthenticated) => {
-    if (!viewerIsAuthenticated) {
-      return;
-    }
-    fetchFollowing();
-  },
-  { immediate: true },
-);
+// Follow state depends on the session token, so it is client-only too. The
+// other fetches above get that from `server: false` on useAsyncData, but a
+// bare `watch` has no such option, and Vue's `immediate: true` does invoke
+// its callback during SSR component setup. Registering the watch itself
+// inside onMounted (rather than a bare top-level watch) is what keeps this
+// off the server: onMounted never runs during SSR, full stop, so nothing here
+// depends on Clerk merely reporting unloaded there. Wait for
+// canRetryAuthenticated (not a bare fetchFollowing() call) so an anonymous
+// visitor following a shared profile link never fires this: /api/follows
+// always requires a token, so a tokenless request would 401 and surface a
+// spurious "Could not load following list" error banner (#279). `immediate:
+// true` still fetches right away for a viewer whose session is already
+// resolved by mount; a viewer who signs in afterward fetches once that
+// resolves.
+onMounted(() => {
+  watch(
+    canRetryAuthenticated,
+    (viewerIsAuthenticated) => {
+      if (!viewerIsAuthenticated) {
+        return;
+      }
+      fetchFollowing();
+    },
+    { immediate: true },
+  );
+});
 </script>
 
 <style scoped>

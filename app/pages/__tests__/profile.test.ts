@@ -395,6 +395,24 @@ describe("profile page", () => {
     expect(signInLink).toBeUndefined();
   });
 
+  it("still offers the unavailable-state sign-in link even if Clerk's script never resolves (#279)", () => {
+    // Same ad-blocker/flaky-CDN scenario as the header's viewerAuthResolved
+    // fallback above, but for the notFound branch: isClerkLoaded never flips
+    // true, yet the gated fetch already settled into notFound (see
+    // useClerkGatedFetch's CLERK_BOOTSTRAP_TIMEOUT_MS). Gating this link on
+    // the raw isClerkLoaded would leave a signed-out owner of a private
+    // profile at a permanent dead end with no way to sign in.
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+    notFound.value = true;
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    const signInLink = wrapper
+      .findAll("a")
+      .find((link) => link.text().toLowerCase().includes("sign in"));
+    expect(signInLink?.attributes("href")).toBe("/login");
+  });
+
   it("forwards the followers loading state so the list shows no false empty state", () => {
     profile.value = { ...SAMPLE_PROFILE };
     followersLoading.value = true;
