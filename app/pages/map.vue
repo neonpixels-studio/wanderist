@@ -37,7 +37,12 @@
     </template>
 
     <!-- Places load error -->
-    <div v-if="placesStore.error" class="places-error" role="alert">
+    <div
+      v-if="placesStore.error"
+      class="places-error"
+      role="alert"
+      data-test="places-error"
+    >
       {{ placesStore.error }}
     </div>
 
@@ -254,6 +259,10 @@ import { useMapbox } from "~/composables/useMapbox";
 import { resolveMapboxStyleLabel } from "~/composables/useMapboxStyles";
 import type { DropPinResult, MapInstance } from "~/composables/useMapbox";
 import { useStats } from "~/composables/useStats";
+import {
+  extractErrorMessage,
+  UNEXPECTED_ERROR_MESSAGE,
+} from "~/utils/extractErrorMessage";
 
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Map" });
@@ -492,8 +501,7 @@ async function submitEditPlace(input: UpdatePlaceInput): Promise<void> {
       return;
     }
 
-    updatePlaceError.value =
-      error instanceof Error ? error.message : "Failed to update place";
+    updatePlaceError.value = extractErrorMessage(error);
   } finally {
     updatingPlaceId.value = null;
   }
@@ -578,8 +586,7 @@ async function submitDropPin(): Promise<void> {
 
     selectPlace(created);
   } catch (error) {
-    createPlaceError.value =
-      error instanceof Error ? error.message : "Failed to create place";
+    createPlaceError.value = extractErrorMessage(error);
   } finally {
     isCreatingPlace.value = false;
   }
@@ -593,8 +600,14 @@ async function initializeMap(): Promise<void> {
   const mapInstance = await mapbox.initMap(
     mapPanelRef.value,
     mapStyle.value,
-    (error) => {
-      mapError.value = error.message;
+    () => {
+      // Mapbox init/runtime errors are raised entirely client-side (bad
+      // token, WebGL unsupported, a tile request failing) — they never carry
+      // a server data.statusMessage, so extractErrorMessage would always
+      // collapse to its generic fallback here. Use that fallback directly
+      // rather than routing through a check that can never pass on this
+      // path. useMapbox already logs the underlying error.
+      mapError.value = UNEXPECTED_ERROR_MESSAGE;
     },
   );
 

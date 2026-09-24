@@ -4,6 +4,7 @@ import { ref } from "vue";
 import AppNewEntry from "../AppNewEntry.vue";
 import type { EntryDraft } from "~/composables/useEntryDraft";
 import type { Entry } from "~/stores/entries";
+import { UNEXPECTED_ERROR_MESSAGE } from "~/utils/extractErrorMessage";
 
 const iconStub = { template: "<svg data-icon />" };
 
@@ -407,10 +408,37 @@ describe("AppNewEntry", () => {
     await wrapper.vm.$nextTick();
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+    // The raw Error's message is diagnostic text, not something the server
+    // chose to surface — the create-mode fallback shows instead of leaking it
+    // (see publishFailureMessage in AppNewEntry.vue).
+    expect(wrapper.find('[data-test="publish-error"]').text()).not.toContain(
       "Server error",
     );
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "Failed to publish. Please try again.",
+    );
     expect(wrapper.emitted("close")).toBeFalsy();
+  });
+
+  it("surfaces a server-intended data.statusMessage as the publish error", async () => {
+    // Regression guard: proves the publish-error text is actually wired to
+    // the server's own message when it provided one, not just hardcoded to
+    // the create/edit-mode fallback (which the test above alone wouldn't
+    // catch, since both are plain strings).
+    mockCreateEntry.mockRejectedValue(
+      Object.assign(new Error("Bad Request"), {
+        data: { statusMessage: "You have reached your entry limit" },
+      }),
+    );
+
+    const wrapper = mountOpen();
+    await wrapper.find(".btn--primary").trigger("click");
+    await wrapper.vm.$nextTick();
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "You have reached your entry limit",
+    );
   });
 
   it("blocks publish and shows an error when the date field is cleared", async () => {
@@ -1098,7 +1126,15 @@ describe("AppNewEntry", () => {
 
     expect(mockCreateEntry).not.toHaveBeenCalled();
     expect(wrapper.emitted("close")).toBeFalsy();
-    expect(wrapper.find(".error-hint").text()).toContain("Place limit reached");
+    // The raw Error's message is diagnostic text, not something the server
+    // chose to surface — the create-mode fallback shows instead of leaking it
+    // (see publishFailureMessage in AppNewEntry.vue).
+    expect(wrapper.find(".error-hint").text()).not.toContain(
+      "Place limit reached",
+    );
+    expect(wrapper.find(".error-hint").text()).toContain(
+      "Failed to publish. Please try again.",
+    );
   });
 
   it("shows an error and keeps the affordance when place creation fails", async () => {
@@ -1112,8 +1148,14 @@ describe("AppNewEntry", () => {
     await wrapper.find(".location-create__btn").trigger("click");
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.find(".location-create__error").text()).toContain(
+    // The raw Error's message is diagnostic text, not something the server
+    // chose to surface — the generic fallback shows instead of leaking it
+    // (see app/utils/extractErrorMessage.ts).
+    expect(wrapper.find(".location-create__error").text()).not.toContain(
       "Place limit reached",
+    );
+    expect(wrapper.find(".location-create__error").text()).toContain(
+      UNEXPECTED_ERROR_MESSAGE,
     );
     expect(wrapper.find(".location-create").exists()).toBe(true);
   });
@@ -1458,7 +1500,13 @@ describe("AppNewEntry — edit mode", () => {
     await wrapper.vm.$nextTick();
     await wrapper.vm.$nextTick();
 
-    expect(wrapper.find(".error-hint").text()).toContain("Update failed");
+    // The raw Error's message is diagnostic text, not something the server
+    // chose to surface — the edit-mode fallback shows instead of leaking it
+    // (see publishFailureMessage in AppNewEntry.vue).
+    expect(wrapper.find(".error-hint").text()).not.toContain("Update failed");
+    expect(wrapper.find(".error-hint").text()).toContain(
+      "Failed to save changes. Please try again.",
+    );
     expect(wrapper.emitted("close")).toBeFalsy();
   });
 
@@ -1693,9 +1741,15 @@ describe("AppNewEntry — edit mode", () => {
     expect(wrapper.find(".drawer__head h3").text()).toBe("Capture a moment");
     expect(titleInputValue(wrapper)).toBe("");
     // The save failed, so the failure must survive the re-seed rather than being
-    // silently cleared when the form catches up to create mode.
-    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+    // silently cleared when the form catches up to create mode. The message
+    // itself is the edit-mode fallback (not the raw Error text, and not the
+    // create-mode fallback) because editedEntryId was snapshotted before the
+    // prop was cleared.
+    expect(wrapper.find('[data-test="publish-error"]').text()).not.toContain(
       "Update failed",
+    );
+    expect(wrapper.find('[data-test="publish-error"]').text()).toContain(
+      "Failed to save changes. Please try again.",
     );
   });
 });

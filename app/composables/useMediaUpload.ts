@@ -4,7 +4,14 @@
  * Usage:
  *   const { upload, isUploading, error } = useMediaUpload()
  *   const result = await upload(file)  // { id, url }
+ *
+ * `error` holds the server's own message when it deliberately provided one,
+ * or null otherwise — never a raw diagnostic Error message (see
+ * extractServerErrorMessage). It's nullable rather than pre-filled with a
+ * generic fallback so a caller can supply its own context-specific fallback
+ * (e.g. "Could not upload cover") instead of a one-size-fits-all string.
  */
+import { extractServerErrorMessage } from "~/utils/extractErrorMessage";
 
 export interface MediaUploadResult {
   id: string;
@@ -28,11 +35,7 @@ export function useMediaUpload() {
 
       return response;
     } catch (uploadError) {
-      const message =
-        uploadError instanceof Error
-          ? uploadError.message
-          : "Upload failed. Please try again.";
-      error.value = message;
+      error.value = extractServerErrorMessage(uploadError);
       throw uploadError;
     } finally {
       isUploading.value = false;

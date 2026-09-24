@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { extractErrorMessage } from "~/utils/extractErrorMessage";
 
 export interface Place {
   id: string;
@@ -101,10 +102,7 @@ export const usePlacesStore = defineStore("places", () => {
     try {
       places.value = await fetchAllPlacesPages(filters);
     } catch (fetchError) {
-      error.value =
-        fetchError instanceof Error
-          ? fetchError.message
-          : "Failed to load places";
+      error.value = extractErrorMessage(fetchError);
       throw fetchError;
     } finally {
       isLoading.value = false;

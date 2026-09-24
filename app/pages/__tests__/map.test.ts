@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from "pinia";
 import MapPage from "../map.vue";
 import PlaceEditForm from "~/components/PlaceEditForm.vue";
 import { pageGlobalConfig as globalConfig } from "./test-utils";
+import { UNEXPECTED_ERROR_MESSAGE } from "~/utils/extractErrorMessage";
 
 // Explore's trending-place cards link here with the place name as a `place`
 // query param (see issue #218). Reactive (like Nuxt's real useRoute) so the
@@ -422,8 +423,36 @@ describe("Map page (/map)", () => {
     await wrapper.find(".place-edit-form form").trigger("submit");
     await flushPromises();
 
-    expect(wrapper.find(".place-edit-form__error").text()).toBe("Save failed");
+    // The raw Error's message is diagnostic text, not something the server
+    // chose to surface — the generic fallback shows instead of leaking it
+    // (see app/utils/extractErrorMessage.ts).
+    expect(wrapper.find(".place-edit-form__error").text()).toBe(
+      UNEXPECTED_ERROR_MESSAGE,
+    );
     expect(wrapper.find(".place-edit-form").exists()).toBe(true);
+  });
+
+  it("surfaces a server-intended data.statusMessage as the update error", async () => {
+    // Regression guard: proves the update error is actually wired to
+    // extractErrorMessage's output, not just hardcoded to the generic
+    // fallback (which the test above alone wouldn't catch).
+    const wrapper = await mountWithPlaces();
+    await wrapper.findAll(".place-item")[0].trigger("click");
+    await wrapper.find('button[aria-label="Edit place"]').trigger("click");
+
+    mockApiFetch.mockRejectedValueOnce(
+      Object.assign(new Error("Bad Request"), {
+        data: { statusMessage: "That category is no longer available" },
+      }),
+    );
+
+    await wrapper.find(".place-edit-form__select").setValue("nature");
+    await wrapper.find(".place-edit-form form").trigger("submit");
+    await flushPromises();
+
+    expect(wrapper.find(".place-edit-form__error").text()).toBe(
+      "That category is no longer available",
+    );
   });
 
   it("closes the edit form when a different place is selected", async () => {
@@ -641,9 +670,12 @@ describe("Map page (/map)", () => {
       },
     });
     await flushPromises();
-    expect(errorWrapper.find(".places-error").exists()).toBe(true);
-    expect(errorWrapper.find(".places-error").text()).toContain(
-      "Network error",
+    // `.places-error` is shared with the map-init and stats banners, both of
+    // which also fall back to this same generic message — scope to
+    // data-test="places-error" so this only matches the placesStore banner.
+    expect(errorWrapper.find('[data-test="places-error"]').exists()).toBe(true);
+    expect(errorWrapper.find('[data-test="places-error"]').text()).toBe(
+      UNEXPECTED_ERROR_MESSAGE,
     );
   });
 });

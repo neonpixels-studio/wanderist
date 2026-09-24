@@ -11,6 +11,7 @@ import {
   stubOgMetaGlobals,
 } from "~/composables/__tests__/ogMetaTestUtils";
 import { INVITE_UNAVAILABLE_TITLE } from "~/constants/trips";
+import { UNEXPECTED_ERROR_MESSAGE } from "~/utils/extractErrorMessage";
 
 // Override the global useRoute stub with a REACTIVE params object so a test can
 // change the trip id and assert the page's watched ref tracks it. `path` is a
@@ -606,7 +607,19 @@ describe("Trip Detail page (/trips/[id])", () => {
     await moveButtons[1]!.trigger("click");
     await flushPromises();
 
-    expect(wrapper.text()).toContain("Failed to save the new stop order");
+    // Regression guard: a raw Error's `.message` is diagnostic text, not
+    // something the server deliberately chose to surface, so it must not
+    // reach the user-facing banner — the generic fallback shows instead
+    // (see app/utils/extractErrorMessage.ts). Scoped to data-test="reorder-error"
+    // (rather than the whole page's text) since the add-stop banner right
+    // above it shares the same alert--error class and could coincidentally
+    // satisfy a page-wide match.
+    expect(wrapper.find('[data-test="reorder-error"]').text()).not.toContain(
+      "Failed to save the new stop order",
+    );
+    expect(wrapper.find('[data-test="reorder-error"]').text()).toBe(
+      UNEXPECTED_ERROR_MESSAGE,
+    );
     const stopNames = wrapper
       .findAll(".stop__name")
       .map((element) => element.text());

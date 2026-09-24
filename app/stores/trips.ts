@@ -181,8 +181,7 @@ export const useTripsStore = defineStore("trips", () => {
     try {
       tripList.value = await fetchAllTripsPages(params);
     } catch (error) {
-      listError.value =
-        error instanceof Error ? error.message : "Failed to load trips";
+      listError.value = extractErrorMessage(error);
       throw error;
     } finally {
       isLoadingList.value = false;

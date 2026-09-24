@@ -1,7 +1,7 @@
-const UNEXPECTED_ERROR_MESSAGE = "An unexpected error occurred";
+export const UNEXPECTED_ERROR_MESSAGE = "An unexpected error occurred";
 
 /**
- * Extracts a human-readable error message from an unknown thrown value.
+ * Extracts the server's own deliberately-chosen error message, if any.
  *
  * Only messages the server deliberately chose to surface are trusted. Every
  * server error in this app is raised via H3's `createError({ statusMessage })`
@@ -23,20 +23,32 @@ const UNEXPECTED_ERROR_MESSAGE = "An unexpected error occurred";
  * `fetch`, ofetch's own composed "[GET] ... 500 ..." string, etc.) is never
  * used either: it's diagnostic text for developers, not copy the server
  * chose to show a user, and it can contain raw network/implementation
- * detail. All of these cases fall through to the generic fallback instead.
+ * detail. All of these cases return null instead.
  *
- * Priority:
- * 1. `error.data.statusMessage` — Nitro server errors wrapped by ofetch
- * 2. Generic fallback message
+ * Returns null (rather than a generic fallback) so a caller that needs a
+ * context-specific fallback — e.g. AppNewEntry.vue's publishFailureMessage
+ * distinguishing edit vs create — can tell "the server said nothing" apart
+ * from "the server's message happens to equal our generic fallback text".
+ * Most callers don't need that distinction and should use
+ * extractErrorMessage below instead.
  */
-export function extractErrorMessage(error: unknown): string {
+export function extractServerErrorMessage(error: unknown): string | null {
   if (!error || typeof error !== "object") {
-    return UNEXPECTED_ERROR_MESSAGE;
+    return null;
   }
 
   const errorObj = error as Record<string, unknown>;
 
-  return readNestedStatusMessage(errorObj.data) ?? UNEXPECTED_ERROR_MESSAGE;
+  return readNestedStatusMessage(errorObj.data);
+}
+
+/**
+ * Extracts a human-readable error message from an unknown thrown value,
+ * falling back to a generic message when the server didn't deliberately
+ * choose one (see extractServerErrorMessage for what is and isn't trusted).
+ */
+export function extractErrorMessage(error: unknown): string {
+  return extractServerErrorMessage(error) ?? UNEXPECTED_ERROR_MESSAGE;
 }
 
 function readNestedStatusMessage(data: unknown): string | null {
