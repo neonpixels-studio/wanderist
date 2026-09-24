@@ -20,11 +20,23 @@ vi.mock("../../../server/utils/planLimits", () => ({
   assertPlaceLimit: mockAssertPlaceLimit,
 }));
 
+// Returns a distinguishable value (not an identity passthrough) so tests can
+// tell "the handler returned the gate's output" apart from "the handler
+// returned the raw row and happened to call the gate as a side effect."
+vi.mock("../../../server/utils/locationPrivacy", () => ({
+  applyPreciseLocationPrivacy: vi.fn((place: Record<string, unknown>) => ({
+    ...place,
+    __gated: true,
+  })),
+}));
+
 import { ensureUser } from "../../../server/utils/auth";
 import { getDb } from "../../../server/db/index";
+import { applyPreciseLocationPrivacy } from "../../../server/utils/locationPrivacy";
 
 const mockEnsureUser = vi.mocked(ensureUser);
 const mockGetDb = vi.mocked(getDb);
+const mockApplyPreciseLocationPrivacy = vi.mocked(applyPreciseLocationPrivacy);
 
 function makeDbWithInsert(returned: Record<string, unknown>) {
   const returningMock = vi.fn().mockResolvedValue([returned]);
@@ -79,8 +91,31 @@ describe("POST /api/places", () => {
     const defaultHandler = "default" in handler ? handler.default : handler;
     const result = await (defaultHandler as (event: unknown) => unknown)({});
 
-    expect(result).toEqual(createdPlace);
+    // Pins the wiring both ways: the handler must call the privacy gate with
+    // the newly-created row and resolved caller id, AND must return the
+    // gate's output (the `__gated` marker) rather than the raw insert result.
+    expect(result).toEqual({ ...createdPlace, __gated: true });
     expect(mockDb.insert).toHaveBeenCalledTimes(1);
+    expect(mockApplyPreciseLocationPrivacy).toHaveBeenCalledWith(
+      createdPlace,
+      "user-1",
+    );
+  });
+
+  it("throws 500 when the insert returns no row", async () => {
+    mockEnsureUser.mockResolvedValue("user-1");
+    mockReadBody.mockResolvedValue({ name: "Paris" });
+
+    const returningMock = vi.fn().mockResolvedValue([]);
+    const valuesMock = vi.fn().mockReturnValue({ returning: returningMock });
+    const mockDb = { insert: vi.fn().mockReturnValue({ values: valuesMock }) };
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+
+    await expect(
+      (defaultHandler as (event: unknown) => unknown)({}),
+    ).rejects.toMatchObject({ statusCode: 500 });
   });
 
   it("throws 400 when name is missing", async () => {
@@ -135,7 +170,7 @@ describe("POST /api/places", () => {
     const defaultHandler = "default" in handler ? handler.default : handler;
     const result = await (defaultHandler as (event: unknown) => unknown)({});
 
-    expect(result).toEqual(createdPlace);
+    expect(result).toEqual({ ...createdPlace, __gated: true });
   });
 
   it("throws 400 when only latitude is provided without longitude", async () => {

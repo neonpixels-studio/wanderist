@@ -69,15 +69,29 @@ vi.mock("drizzle-orm", async (importOriginal) => {
   return { ...original, eq: vi.fn(original.eq) };
 });
 
+// Returns a distinguishable value (not an identity passthrough) so tests can
+// tell "the handler returned the gate's output" apart from "the handler
+// returned the raw row and happened to call the gate as a side effect."
+vi.mock("../../../server/utils/locationPrivacy", () => ({
+  applyPreciseLocationPrivacy: vi.fn((place: Record<string, unknown>) => ({
+    ...place,
+    __gated: true,
+  })),
+}));
+
 import {
   requireRouterParam,
   assertOwnership,
 } from "../../../server/utils/db-helpers";
 import { getDb } from "../../../server/db/index";
+import { requireUser } from "../../../server/utils/auth";
+import { applyPreciseLocationPrivacy } from "../../../server/utils/locationPrivacy";
 
 const mockRequireRouterParam = vi.mocked(requireRouterParam);
 const mockAssertOwnership = vi.mocked(assertOwnership);
 const mockGetDb = vi.mocked(getDb);
+const mockRequireUser = vi.mocked(requireUser);
+const mockApplyPreciseLocationPrivacy = vi.mocked(applyPreciseLocationPrivacy);
 
 function makeDbWithUpdate(returned: Record<string, unknown>) {
   const returningMock = vi.fn().mockResolvedValue([returned]);
@@ -92,10 +106,17 @@ const handler = await import("../../../server/api/places/[id].patch");
 describe("PATCH /api/places/:id", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRequireUser.mockReturnValue("user-1");
   });
 
   it("updates and returns the place", async () => {
-    const updatedPlace = { id: "place-1", userId: "user-1", name: "Berlin" };
+    const updatedPlace = {
+      id: "place-1",
+      userId: "user-1",
+      name: "Berlin",
+      latitude: 52.52,
+      longitude: 13.405,
+    };
     mockRequireRouterParam.mockReturnValue("place-1");
     mockReadBody.mockResolvedValue({ name: "Berlin" });
     mockAssertOwnership.mockResolvedValue(undefined);
@@ -105,7 +126,33 @@ describe("PATCH /api/places/:id", () => {
     const defaultHandler = "default" in handler ? handler.default : handler;
     const result = await (defaultHandler as (event: unknown) => unknown)({});
 
-    expect(result).toEqual(updatedPlace);
+    // Pins the wiring both ways: the handler must call the privacy gate with
+    // the updated row and resolved viewer id, AND must return the gate's
+    // output (the `__gated` marker) rather than discarding it and returning
+    // the raw update result.
+    expect(result).toEqual({ ...updatedPlace, __gated: true });
+    expect(mockApplyPreciseLocationPrivacy).toHaveBeenCalledWith(
+      updatedPlace,
+      "user-1",
+    );
+  });
+
+  it("throws 404 when the update finds no matching row (place deleted between the ownership check and the write)", async () => {
+    mockRequireRouterParam.mockReturnValue("place-1");
+    mockReadBody.mockResolvedValue({ name: "Berlin" });
+    mockAssertOwnership.mockResolvedValue(undefined);
+
+    const returningMock = vi.fn().mockResolvedValue([]);
+    const whereMock = vi.fn().mockReturnValue({ returning: returningMock });
+    const setMock = vi.fn().mockReturnValue({ where: whereMock });
+    const mockDb = { update: vi.fn().mockReturnValue({ set: setMock }) };
+    mockGetDb.mockReturnValue(mockDb as unknown as ReturnType<typeof getDb>);
+
+    const defaultHandler = "default" in handler ? handler.default : handler;
+
+    await expect(
+      (defaultHandler as (event: unknown) => unknown)({}),
+    ).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("throws 400 when id param is missing", async () => {

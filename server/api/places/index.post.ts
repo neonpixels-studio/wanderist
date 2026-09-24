@@ -8,6 +8,7 @@ import {
   optionalLongitude,
 } from "../../utils/db-helpers";
 import { assertPlaceLimit } from "../../utils/planLimits";
+import { applyPreciseLocationPrivacy } from "../../utils/locationPrivacy";
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -52,5 +53,15 @@ export default defineEventHandler(async (event) => {
     })
     .returning();
 
-  return inserted[0];
+  const place = inserted[0];
+  if (!place) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: "Failed to create place",
+    });
+  }
+
+  // Owner-only route — see locationPrivacy.ts for why the privacy check is
+  // still applied here even though it's a no-op today.
+  return applyPreciseLocationPrivacy(place, userId);
 });

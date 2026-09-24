@@ -4,6 +4,7 @@ import { requireUser } from "../../utils/auth";
 import { getDb } from "../../db/index";
 import { places } from "../../db/schema";
 import { MAX_PAGE, parsePageParam, pageToOffset } from "../../utils/pagination";
+import { applyPreciseLocationPrivacy } from "../../utils/locationPrivacy";
 
 const PAGE_SIZE = 20;
 
@@ -53,8 +54,14 @@ export default defineEventHandler(async (event) => {
 
   const rows = await fetchPlacesPage(database, filters, page);
 
+  // Owner-only route — see locationPrivacy.ts for why the privacy check is
+  // still applied here even though it's a no-op today.
+  const privacyScopedRows = rows.map((row) =>
+    applyPreciseLocationPrivacy(row, userId),
+  );
+
   return {
-    places: rows,
+    places: privacyScopedRows,
     page,
     hasMore: rows.length === PAGE_SIZE && page < MAX_PAGE,
   };

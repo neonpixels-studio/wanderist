@@ -6,8 +6,10 @@ import {
   optionalLongitude,
   requireRouterParam,
 } from "../../utils/db-helpers";
+import { requireUser } from "../../utils/auth";
 import { getDb } from "../../db/index";
 import { places } from "../../db/schema";
+import { applyPreciseLocationPrivacy } from "../../utils/locationPrivacy";
 
 type PlaceUpdates = Partial<typeof places.$inferInsert>;
 
@@ -100,5 +102,17 @@ export default defineEventHandler(async (event) => {
     .where(eq(places.id, id))
     .returning();
 
-  return updated[0];
+  // assertOwnership and this UPDATE are separate round trips, so a delete
+  // racing in between can leave `updated` empty even though ownership just
+  // checked out; guard rather than let applyPreciseLocationPrivacy throw on
+  // an undefined row.
+  const place = updated[0];
+  if (!place) {
+    throw createError({ statusCode: 404, statusMessage: "Not found" });
+  }
+
+  // Owner-only route — see locationPrivacy.ts for why the privacy check is
+  // still applied here even though it's a no-op today.
+  const userId = requireUser(event);
+  return applyPreciseLocationPrivacy(place, userId);
 });
