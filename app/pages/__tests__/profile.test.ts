@@ -624,9 +624,14 @@ describe("profile page", () => {
     await clickFollowButton(wrapper);
 
     // The toggle targeted user-1 but the route is now user-2, so the loaded
-    // profile's count must not be bumped and no followers refetch should fire.
+    // profile's count must not be bumped, and onToggleFollow's own guard must
+    // not refetch the stale (now-navigated-away-from) user-1's followers. The
+    // route change itself does legitimately trigger the page's own
+    // navigation-driven refetch for user-2 (see the useAsyncData watch on
+    // userId further down) — that's an unrelated, correct refetch, not the
+    // bug this test guards against.
     expect(profile.value?.followerCount).toBe(3);
-    expect(mockFetchFollowers).not.toHaveBeenCalled();
+    expect(mockFetchFollowers).not.toHaveBeenCalledWith("user-1");
   });
 
   describe("Open Graph / Twitter meta (#269)", () => {

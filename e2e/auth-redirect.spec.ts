@@ -17,9 +17,6 @@ const PROTECTED_ROUTES = [
   "/settings",
   "/explore",
   "/home",
-  // Traveler profile route (app/pages/u/[id].vue) — auth-gated like the rest.
-  // Any id works since the middleware redirects before the page fetches.
-  "/u/test-user",
 ];
 
 for (const route of PROTECTED_ROUTES) {
@@ -53,4 +50,23 @@ test("login page (/login) renders the Clerk sign-in form", async ({ page }) => {
   await expect(page).toHaveURL("/login");
   // Clerk renders a sign-in widget inside the auth panel.
   await expect(page.locator(".auth__form")).toBeVisible({ timeout: 10_000 });
+});
+
+// Traveler profile route (app/pages/u/[id].vue) is intentionally auth-free
+// (#279) so a shared profile link unfurls for an anonymous visitor instead of
+// bouncing to /login before the page's og/twitter meta ever renders. This id
+// doesn't need to exist in the DB: even the "profile unavailable" not-found
+// state must render in place, not redirect.
+test("profile page (/u/<id>) is accessible without authentication (#279)", async ({
+  page,
+}) => {
+  await page.goto("/u/test-user");
+  // Waiting on this locator auto-waits through Clerk's client-side bootstrap
+  // (the same window app/plugins/auth-guard.client.ts's watchEffect would
+  // need to fire a redirect in), so a passing assertion here already proves
+  // no redirect happened by the time the page settles.
+  await expect(page.locator(".profile-state")).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page).toHaveURL(/\/u\/test-user/);
 });
