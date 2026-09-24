@@ -396,6 +396,7 @@ import type { StopOrderMutator } from "~/utils/stopOrder";
 import { INVITE_UNAVAILABLE_TITLE } from "~/constants/trips";
 import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
 import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
+import { extractErrorMessage } from "~/utils/extractErrorMessage";
 
 // No auth middleware: a public trip must open for anonymous visitors following
 // a shared link. The GET endpoint enforces visibility — a private trip returns
@@ -733,8 +734,7 @@ async function onAddStop(): Promise<void> {
       status: "planned",
     });
   } catch (error) {
-    addStopError.value =
-      error instanceof Error ? error.message : "Failed to add stop";
+    addStopError.value = extractErrorMessage(error);
   } finally {
     isAddingStop.value = false;
   }
@@ -803,8 +803,7 @@ async function persistStopOrder(
     if (tripId.value !== requestTripId) {
       return;
     }
-    reorderError.value =
-      error instanceof Error ? error.message : "Failed to reorder stops";
+    reorderError.value = extractErrorMessage(error);
     await announceMove(
       `Could not move ${movedStopName}. The order was not changed.`,
     );
@@ -981,12 +980,9 @@ async function onCoverFileSelected(event: Event): Promise<void> {
       await tripsStore.patchTrip(tripId.value, { coverImageId: result.id });
     } catch (patchError) {
       // The file uploaded but the trip could not be updated; the media is now
-      // orphaned server-side. Surface the specific error so the user knows
+      // orphaned server-side. Surface the server's own error so the user knows
       // the cover change did not persist (note: media cleanup is not implemented).
-      uploadError.value =
-        patchError instanceof Error
-          ? patchError.message
-          : "Cover uploaded but could not be saved to the trip";
+      uploadError.value = extractErrorMessage(patchError);
       return;
     }
     // Set after both steps succeed so the displayed cover matches persisted state
@@ -1034,8 +1030,7 @@ async function onShare(): Promise<void> {
   try {
     await tripsStore.patchTrip(tripId.value, { visibility: "public" });
   } catch (error) {
-    shareError.value =
-      error instanceof Error ? error.message : "Failed to update visibility";
+    shareError.value = extractErrorMessage(error);
     return;
   }
 

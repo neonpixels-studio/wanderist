@@ -5,6 +5,7 @@
  *   const { upload, isUploading, error } = useMediaUpload()
  *   const result = await upload(file)  // { id, url }
  */
+import { extractErrorMessage } from "~/utils/extractErrorMessage";
 
 export interface MediaUploadResult {
   id: string;
@@ -28,11 +29,7 @@ export function useMediaUpload() {
 
       return response;
     } catch (uploadError) {
-      const message =
-        uploadError instanceof Error
-          ? uploadError.message
-          : "Upload failed. Please try again.";
-      error.value = message;
+      error.value = extractErrorMessage(uploadError);
       throw uploadError;
     } finally {
       isUploading.value = false;

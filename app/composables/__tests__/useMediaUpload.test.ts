@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { UNEXPECTED_ERROR_MESSAGE } from "../../utils/extractErrorMessage";
 
 const mockFetch = vi.fn();
 vi.stubGlobal("$fetch", mockFetch);
@@ -67,7 +68,38 @@ describe("useMediaUpload", () => {
     const { upload, error } = useMediaUpload();
 
     await expect(upload(buildFile())).rejects.toThrow("Network failure");
-    expect(error.value).toBe("Network failure");
+    expect(error.value).toBe(UNEXPECTED_ERROR_MESSAGE);
+  });
+
+  // Regression guard: a raw Error's `.message` can carry framework/network
+  // diagnostic text (stack-shaped strings, internal implementation detail)
+  // that was never meant for a user to see. extractErrorMessage strips it
+  // down to the generic fallback unless the server deliberately chose to
+  // surface a statusMessage (see app/utils/extractErrorMessage.ts).
+  it("never surfaces a raw diagnostic error message to the user-facing error ref", async () => {
+    const diagnosticError = new TypeError(
+      "Cannot read properties of undefined (reading 'foo') at fetchInternal (chunk-XYZ.js:42:17)",
+    );
+    mockFetch.mockRejectedValue(diagnosticError);
+    const { upload, error } = useMediaUpload();
+
+    await upload(buildFile()).catch(() => {});
+
+    expect(error.value).not.toContain("Cannot read properties");
+    expect(error.value).not.toContain("chunk-XYZ.js");
+    expect(error.value).toBe(UNEXPECTED_ERROR_MESSAGE);
+  });
+
+  it("surfaces the server's own statusMessage when it deliberately provided one", async () => {
+    const serverError = Object.assign(new Error("Request failed"), {
+      data: { statusMessage: "File too large" },
+    });
+    mockFetch.mockRejectedValue(serverError);
+    const { upload, error } = useMediaUpload();
+
+    await upload(buildFile()).catch(() => {});
+
+    expect(error.value).toBe("File too large");
   });
 
   it("clears error from a previous failed upload on a new successful upload", async () => {
@@ -78,7 +110,7 @@ describe("useMediaUpload", () => {
     const { upload, error } = useMediaUpload();
 
     await upload(buildFile()).catch(() => {});
-    expect(error.value).toBe("First failure");
+    expect(error.value).toBe(UNEXPECTED_ERROR_MESSAGE);
 
     await upload(buildFile());
     expect(error.value).toBeNull();

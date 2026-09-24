@@ -1,4 +1,4 @@
-const UNEXPECTED_ERROR_MESSAGE = "An unexpected error occurred";
+export const UNEXPECTED_ERROR_MESSAGE = "An unexpected error occurred";
 
 /**
  * Extracts a human-readable error message from an unknown thrown value.

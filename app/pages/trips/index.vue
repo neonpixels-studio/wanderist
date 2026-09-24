@@ -146,6 +146,7 @@ import { formatCompact } from "~/utils/formatNumber";
 import { useStats } from "~/composables/useStats";
 import { formatTripDateRange } from "~/utils/tripDates";
 import type { TripStatus } from "~/utils/tripDates";
+import { extractErrorMessage } from "~/utils/extractErrorMessage";
 
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Trips" });
@@ -218,8 +219,7 @@ async function handleCreateTrip(): Promise<void> {
     await tripsStore.createTrip({ name });
     closeNewTripForm();
   } catch (error) {
-    createTripError.value =
-      error instanceof Error ? error.message : "Failed to create trip";
+    createTripError.value = extractErrorMessage(error);
   } finally {
     isCreatingTrip.value = false;
   }

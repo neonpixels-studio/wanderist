@@ -254,6 +254,7 @@ import { useMapbox } from "~/composables/useMapbox";
 import { resolveMapboxStyleLabel } from "~/composables/useMapboxStyles";
 import type { DropPinResult, MapInstance } from "~/composables/useMapbox";
 import { useStats } from "~/composables/useStats";
+import { extractErrorMessage } from "~/utils/extractErrorMessage";
 
 definePageMeta({ layout: "app", middleware: "auth" });
 useHead({ title: "Wanderist — Map" });
@@ -492,8 +493,7 @@ async function submitEditPlace(input: UpdatePlaceInput): Promise<void> {
       return;
     }
 
-    updatePlaceError.value =
-      error instanceof Error ? error.message : "Failed to update place";
+    updatePlaceError.value = extractErrorMessage(error);
   } finally {
     updatingPlaceId.value = null;
   }
@@ -578,8 +578,7 @@ async function submitDropPin(): Promise<void> {
 
     selectPlace(created);
   } catch (error) {
-    createPlaceError.value =
-      error instanceof Error ? error.message : "Failed to create place";
+    createPlaceError.value = extractErrorMessage(error);
   } finally {
     isCreatingPlace.value = false;
   }
@@ -594,7 +593,7 @@ async function initializeMap(): Promise<void> {
     mapPanelRef.value,
     mapStyle.value,
     (error) => {
-      mapError.value = error.message;
+      mapError.value = extractErrorMessage(error);
     },
   );
 

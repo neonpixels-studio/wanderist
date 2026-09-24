@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as vue from "vue";
+import { UNEXPECTED_ERROR_MESSAGE } from "~/utils/extractErrorMessage";
 
 // useApiClient is a Nuxt auto-imported composable. Stub it before importing
 // the store so the module resolves against a controlled mock.
@@ -72,7 +73,10 @@ describe("usePlacesStore", () => {
 
       await expect(store.fetchPlaces()).rejects.toThrow("Network error");
 
-      expect(store.error).toBe("Network error");
+      // The raw Error's message is diagnostic text, not something the server
+      // chose to surface — the store falls back to the generic message rather
+      // than leaking it (see app/utils/extractErrorMessage.ts).
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
       expect(store.isLoading).toBe(false);
     });
 
@@ -142,7 +146,11 @@ describe("usePlacesStore", () => {
       const store = usePlacesStore();
 
       await expect(store.fetchPlaces()).rejects.toThrow(/exceeded .* pages/);
-      expect(store.error).toMatch(/exceeded .* pages/);
+      // The thrown Error's message is diagnostic text for developers, not
+      // something the server chose to show a user — the generic fallback
+      // surfaces on store.error instead of leaking it (see
+      // app/utils/extractErrorMessage.ts).
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
       expect(store.places).toEqual([]);
     });
   });

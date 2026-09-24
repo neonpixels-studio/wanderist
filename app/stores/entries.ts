@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { extractErrorMessage } from "~/utils/extractErrorMessage";
 
 export interface EntryPhoto {
   id: string;
@@ -108,8 +109,7 @@ function replaceLikeState(list: Entry[], updated: Entry): Entry[] {
 }
 
 function setError(error: Ref<string | null>, caught: unknown): void {
-  error.value =
-    caught instanceof Error ? caught.message : "An unexpected error occurred";
+  error.value = extractErrorMessage(caught);
 }
 
 export const useEntriesStore = defineStore("entries", () => {

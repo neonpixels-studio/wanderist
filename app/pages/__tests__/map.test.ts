@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from "pinia";
 import MapPage from "../map.vue";
 import PlaceEditForm from "~/components/PlaceEditForm.vue";
 import { pageGlobalConfig as globalConfig } from "./test-utils";
+import { UNEXPECTED_ERROR_MESSAGE } from "~/utils/extractErrorMessage";
 
 // Explore's trending-place cards link here with the place name as a `place`
 // query param (see issue #218). Reactive (like Nuxt's real useRoute) so the
@@ -422,7 +423,12 @@ describe("Map page (/map)", () => {
     await wrapper.find(".place-edit-form form").trigger("submit");
     await flushPromises();
 
-    expect(wrapper.find(".place-edit-form__error").text()).toBe("Save failed");
+    // The raw Error's message is diagnostic text, not something the server
+    // chose to surface — the generic fallback shows instead of leaking it
+    // (see app/utils/extractErrorMessage.ts).
+    expect(wrapper.find(".place-edit-form__error").text()).toBe(
+      UNEXPECTED_ERROR_MESSAGE,
+    );
     expect(wrapper.find(".place-edit-form").exists()).toBe(true);
   });
 
@@ -643,7 +649,7 @@ describe("Map page (/map)", () => {
     await flushPromises();
     expect(errorWrapper.find(".places-error").exists()).toBe(true);
     expect(errorWrapper.find(".places-error").text()).toContain(
-      "Network error",
+      UNEXPECTED_ERROR_MESSAGE,
     );
   });
 });

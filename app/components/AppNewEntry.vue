@@ -261,6 +261,10 @@ import {
   localIsoDate,
   isValidLocalDate,
 } from "~/utils/localDate";
+import {
+  extractErrorMessage,
+  UNEXPECTED_ERROR_MESSAGE,
+} from "~/utils/extractErrorMessage";
 
 const MAX_LOCATION_SUGGESTIONS = 5;
 
@@ -918,8 +922,7 @@ async function handleCreatePlace(): Promise<void> {
     await runCreatePlace(requestToken, requestedName);
   } catch (caught) {
     if (isCurrentCreate(requestToken, requestedName)) {
-      createPlaceError.value =
-        caught instanceof Error ? caught.message : "Failed to create place";
+      createPlaceError.value = extractErrorMessage(caught);
     }
   }
 }
@@ -1056,14 +1059,17 @@ async function persistEntry(
   });
 }
 
-// The message shown when a save fails: the server's own error when it threw one,
-// otherwise a mode-specific fallback (edit vs create).
+// The message shown when a save fails: the server's own error when it
+// deliberately chose to surface one, otherwise a mode-specific fallback (edit
+// vs create) rather than extractErrorMessage's generic default — knowing
+// whether this was an edit or a create lets the fallback stay specific.
 function publishFailureMessage(
   caught: unknown,
   editedEntryId: string | null,
 ): string {
-  if (caught instanceof Error) {
-    return caught.message;
+  const message = extractErrorMessage(caught);
+  if (message !== UNEXPECTED_ERROR_MESSAGE) {
+    return message;
   }
   return editedEntryId
     ? "Failed to save changes. Please try again."

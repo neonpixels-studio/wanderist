@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { UNEXPECTED_ERROR_MESSAGE } from "~/utils/extractErrorMessage";
 
 const mockApiFetch = vi.fn();
 vi.stubGlobal("useApiClient", () => ({ apiFetch: mockApiFetch }));
@@ -136,7 +137,11 @@ describe("useEntriesStore", () => {
       const store = useEntriesStore();
 
       await expect(store.fetchEntries()).rejects.toThrow(/exceeded 500 pages/);
-      expect(store.error).toMatch(/exceeded 500 pages/);
+      // The thrown Error's message is diagnostic text for developers, not
+      // something the server chose to show a user — the generic fallback
+      // surfaces on store.error instead of leaking it (see
+      // app/utils/extractErrorMessage.ts).
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
       expect(store.isLoading).toBe(false);
       // Fail loud rather than expose a truncated list dressed up as the full one.
       expect(store.entries).toEqual([]);
@@ -152,7 +157,11 @@ describe("useEntriesStore", () => {
       await expect(store.fetchEntries()).rejects.toThrow(
         /Malformed \/api\/entries response/,
       );
-      expect(store.error).toMatch(/Malformed \/api\/entries response/);
+      // The thrown Error's message is diagnostic text for developers, not
+      // something the server chose to show a user — the generic fallback
+      // surfaces on store.error instead of leaking it (see
+      // app/utils/extractErrorMessage.ts).
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
       expect(store.isLoading).toBe(false);
     });
 
@@ -168,7 +177,11 @@ describe("useEntriesStore", () => {
       await expect(store.fetchEntries()).rejects.toThrow(
         /Malformed \/api\/entries response/,
       );
-      expect(store.error).toMatch(/Malformed \/api\/entries response/);
+      // The thrown Error's message is diagnostic text for developers, not
+      // something the server chose to show a user — the generic fallback
+      // surfaces on store.error instead of leaking it (see
+      // app/utils/extractErrorMessage.ts).
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
       expect(store.isLoading).toBe(false);
     });
 
@@ -206,7 +219,7 @@ describe("useEntriesStore", () => {
       // A mid-walk failure must not leave the store holding a truncated list —
       // the prior contents survive and the error surfaces.
       expect(store.entries).toEqual(seeded);
-      expect(store.error).toBe("page 2 failed");
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
       expect(store.isLoading).toBe(false);
     });
 
@@ -231,7 +244,7 @@ describe("useEntriesStore", () => {
 
       await expect(store.fetchEntries()).rejects.toThrow("Network error");
 
-      expect(store.error).toBe("Network error");
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
       expect(store.isLoading).toBe(false);
     });
 
@@ -328,7 +341,7 @@ describe("useEntriesStore", () => {
       const store = useEntriesStore();
 
       await expect(store.fetchEntry("missing")).rejects.toThrow("Not found");
-      expect(store.error).toBe("Not found");
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
     });
   });
 
@@ -386,7 +399,7 @@ describe("useEntriesStore", () => {
       await expect(store.createEntry({ title: "Bad" })).rejects.toThrow(
         "Validation failed",
       );
-      expect(store.error).toBe("Validation failed");
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
     });
   });
 
@@ -456,7 +469,7 @@ describe("useEntriesStore", () => {
       await expect(
         store.updateEntry("missing", { title: "x" }),
       ).rejects.toThrow("Not found");
-      expect(store.error).toBe("Not found");
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
     });
   });
 
@@ -499,7 +512,7 @@ describe("useEntriesStore", () => {
       const store = useEntriesStore();
 
       await expect(store.deleteEntry("e-1")).rejects.toThrow("Forbidden");
-      expect(store.error).toBe("Forbidden");
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
     });
   });
 
@@ -543,7 +556,7 @@ describe("useEntriesStore", () => {
       const store = useEntriesStore();
 
       await expect(store.likeEntry("missing")).rejects.toThrow("Not found");
-      expect(store.error).toBe("Not found");
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
     });
   });
 
@@ -589,7 +602,7 @@ describe("useEntriesStore", () => {
       const store = useEntriesStore();
 
       await expect(store.unlikeEntry("missing")).rejects.toThrow("Not found");
-      expect(store.error).toBe("Not found");
+      expect(store.error).toBe(UNEXPECTED_ERROR_MESSAGE);
     });
   });
 });

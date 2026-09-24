@@ -20,6 +20,7 @@ Object.assign(globalThis, {
 
 const { useTripsStore } = await import("../app/stores/trips");
 import type { Trip, TripStop, TripDetail } from "../app/stores/trips";
+import { UNEXPECTED_ERROR_MESSAGE } from "../app/utils/extractErrorMessage";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -216,7 +217,11 @@ describe("useTripsStore", () => {
       const store = useTripsStore();
 
       await expect(store.fetchTrips()).rejects.toThrow(/exceeded .* pages/);
-      expect(store.listError).toMatch(/exceeded .* pages/);
+      // The thrown Error's message is diagnostic text for developers, not
+      // something the server chose to show a user — the generic fallback
+      // surfaces on store.listError instead of leaking it (see
+      // app/utils/extractErrorMessage.ts).
+      expect(store.listError).toBe(UNEXPECTED_ERROR_MESSAGE);
       expect(store.tripList).toEqual([]);
       expect(store.isLoadingList).toBe(false);
       // Pins the cap itself (MAX_TRIPS_PAGES in app/stores/trips.ts) so a
@@ -242,7 +247,11 @@ describe("useTripsStore", () => {
       const store = useTripsStore();
 
       await expect(store.fetchTrips()).rejects.toThrow(/exceeded .* pages/);
-      expect(store.listError).toMatch(/exceeded .* pages/);
+      // The thrown Error's message is diagnostic text for developers, not
+      // something the server chose to show a user — the generic fallback
+      // surfaces on store.listError instead of leaking it (see
+      // app/utils/extractErrorMessage.ts).
+      expect(store.listError).toBe(UNEXPECTED_ERROR_MESSAGE);
       expect(store.tripList).toEqual([]);
       expect(mockApiFetch).toHaveBeenCalledTimes(500);
     });
@@ -253,7 +262,11 @@ describe("useTripsStore", () => {
       const store = useTripsStore();
 
       await expect(store.fetchTrips()).rejects.toThrow(/Malformed/);
-      expect(store.listError).toMatch(/Malformed/);
+      // The thrown Error's message is diagnostic text for developers, not
+      // something the server chose to show a user — the generic fallback
+      // surfaces on store.listError instead of leaking it (see
+      // app/utils/extractErrorMessage.ts).
+      expect(store.listError).toBe(UNEXPECTED_ERROR_MESSAGE);
     });
 
     it("fails loud when a page response is malformed (non-boolean hasMore)", async () => {
@@ -266,7 +279,11 @@ describe("useTripsStore", () => {
       const store = useTripsStore();
 
       await expect(store.fetchTrips()).rejects.toThrow(/Malformed/);
-      expect(store.listError).toMatch(/Malformed/);
+      // The thrown Error's message is diagnostic text for developers, not
+      // something the server chose to show a user — the generic fallback
+      // surfaces on store.listError instead of leaking it (see
+      // app/utils/extractErrorMessage.ts).
+      expect(store.listError).toBe(UNEXPECTED_ERROR_MESSAGE);
     });
 
     it("preserves the previous tripList and surfaces the error when a page fails mid-walk", async () => {
@@ -291,7 +308,10 @@ describe("useTripsStore", () => {
         "Network error on page 2",
       );
 
-      expect(store.listError).toBe("Network error on page 2");
+      // The raw Error's message is diagnostic text, not something the server
+      // chose to surface — the generic fallback shows instead of leaking it
+      // (see app/utils/extractErrorMessage.ts).
+      expect(store.listError).toBe(UNEXPECTED_ERROR_MESSAGE);
       expect(store.tripList).toEqual([SAMPLE_TRIP]);
       expect(store.isLoadingList).toBe(false);
     });
@@ -328,7 +348,10 @@ describe("useTripsStore", () => {
       const store = useTripsStore();
 
       await expect(store.fetchTrips()).rejects.toThrow("Network error");
-      expect(store.listError).toBe("Network error");
+      // The raw Error's message is diagnostic text, not something the server
+      // chose to surface — the generic fallback shows instead of leaking it
+      // (see app/utils/extractErrorMessage.ts).
+      expect(store.listError).toBe(UNEXPECTED_ERROR_MESSAGE);
     });
 
     it("clears listError before each new fetch", async () => {
@@ -341,7 +364,7 @@ describe("useTripsStore", () => {
 
       const store = useTripsStore();
       await store.fetchTrips().catch(() => {});
-      expect(store.listError).toBe("first error");
+      expect(store.listError).toBe(UNEXPECTED_ERROR_MESSAGE);
 
       await store.fetchTrips();
       expect(store.listError).toBeNull();

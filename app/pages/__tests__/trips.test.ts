@@ -5,6 +5,7 @@ import { createPinia, setActivePinia } from "pinia";
 import TripsPage from "../trips/index.vue";
 import { useTripsStore } from "~/stores/trips";
 import type { Trip } from "~/stores/trips";
+import { UNEXPECTED_ERROR_MESSAGE } from "~/utils/extractErrorMessage";
 
 const mockTripsStats = ref({
   placesCount: 117,
@@ -299,8 +300,11 @@ describe("Trips page (/trips)", () => {
       await wrapper.find(".new-trip-form__row").trigger("submit");
       await flushPromises();
 
+      // The raw Error's message is diagnostic text, not something the server
+      // chose to surface — the generic fallback shows instead of leaking it
+      // (see app/utils/extractErrorMessage.ts).
       expect(wrapper.find(".new-trip-form__error").text()).toBe(
-        "Failed to create trip",
+        UNEXPECTED_ERROR_MESSAGE,
       );
       expect(wrapper.find(".new-trip-form").exists()).toBe(true);
     });
