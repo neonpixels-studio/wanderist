@@ -152,10 +152,11 @@ async function assertLimitIfBecomingActive(
   existing: Trip,
   patchFields: TripPatchFields,
 ): Promise<void> {
-  const staysOrBecomesInactive =
-    isTripCountedAsActive(existing) || !willBecomeActive(existing, patchFields);
+  if (isTripCountedAsActive(existing)) {
+    return;
+  }
 
-  if (staysOrBecomesInactive) {
+  if (!willBecomeActive(existing, patchFields)) {
     return;
   }
 

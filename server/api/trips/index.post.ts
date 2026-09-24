@@ -47,10 +47,22 @@ export default defineEventHandler(async (event) => {
     });
   }
 
-  // Only a trip that would itself count as active needs the limit check —
-  // one created as "past", or with an endDate that's already elapsed, never
-  // eats a plan slot (see isTripCountedAsActive/assertActiveTripLimit).
-  if (isTripCountedAsActive({ status, endDate: endDate ?? null })) {
+  // A trip whose dates are already behind it is effectively "past" from the
+  // moment it's created, regardless of what status the client requested —
+  // storing the raw client value here would let a trip render as
+  // ongoing/upcoming (see server/api/trips/index.get.ts's status filter)
+  // while the active-trip count (isTripCountedAsActive) silently treats it
+  // as past, one rule disagreeing with itself. Normalizing at write time
+  // keeps both in agreement; only a trip that's still effectively active
+  // needs the limit check.
+  const effectiveStatus = isTripCountedAsActive({
+    status,
+    endDate: endDate ?? null,
+  })
+    ? status
+    : TRIP_STATUS.PAST;
+
+  if (effectiveStatus !== TRIP_STATUS.PAST) {
     await assertActiveTripLimit(userId);
   }
 
@@ -60,7 +72,7 @@ export default defineEventHandler(async (event) => {
     id: generateId(),
     userId,
     name,
-    status,
+    status: effectiveStatus,
     visibility,
     startDate: startDate ?? null,
     endDate: endDate ?? null,

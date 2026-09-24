@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
+  trips,
   userPreferences,
   PLAN,
   SUBSCRIPTION_STATUS,
@@ -174,6 +175,13 @@ describe("assertActiveTripLimit", () => {
     await expect(assertActiveTripLimit("user-1")).rejects.toMatchObject({
       statusCode: 402,
     });
+  });
+
+  it("scopes the row query to the given user id", async () => {
+    mockGetEffectivePlan.mockResolvedValue("drifter");
+    setTripRows([]);
+    await assertActiveTripLimit("user-1");
+    expect(mockWhere).toHaveBeenCalledWith(eq(trips.userId, "user-1"));
   });
 
   it("does not throw when under the limit", async () => {

@@ -3,13 +3,12 @@ import type { trips } from "../db/schema";
 
 type TripStatusFields = {
   status: (typeof trips.$inferSelect)["status"];
-  // `undefined` as well as `null`: some call sites build this from an
-  // existing trip object where `endDate` may be omitted rather than
-  // explicitly set to `null`.
+  // `undefined` as well as `null`: defensively tolerated because not every
+  // caller is a full DB row — e.g. a partially-built test fixture, or a
+  // future caller assembling this shape by hand, may omit `endDate` rather
+  // than setting it explicitly to `null`.
   endDate: (typeof trips.$inferSelect)["endDate"] | undefined;
 };
-
-const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Whether a trip counts toward the plan's max-active-trips limit.
@@ -20,15 +19,17 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
  * trip a user forgot to flip to "past" would otherwise count against their
  * plan's active-trip limit forever (see issue #278), so this derives the
  * *effective* status from `endDate` rather than trusting the stored value
- * alone: once a full day has passed since `endDate`, the trip is treated as
- * over regardless of what `status` says.
+ * alone: once the UTC calendar day after `endDate` has begun, the trip is
+ * treated as over regardless of what `status` says.
  *
- * The one-day grace period matters because `endDate` is stored as a
- * date-only value at UTC midnight (see parseOptionalDate): comparing
- * directly against `now` would mark a trip "over" the instant its last day
- * begins, cutting a traveler's final day out from under them. Requiring a
- * full day to elapse keeps the trip active through the entirety of its
- * `endDate` calendar day.
+ * Comparing calendar days (rather than `endDate` plus a fixed 24h) matters
+ * because `endDate` isn't guaranteed to be UTC midnight — `parseOptionalDate`
+ * accepts any parseable date string, and the column is a full `timestamp`,
+ * not a date-only type. A raw instant-vs-instant comparison, or a naive
+ * "+24h", would cut a traveler's final day short (or long) depending on what
+ * time of day the value happened to carry. Truncating both sides to a UTC
+ * calendar day keeps the trip active through the entirety of its `endDate`
+ * day no matter what time component it was stored with.
  *
  * An explicit "past" status always wins, even with no `endDate` to derive
  * from (e.g. a trip cancelled before it started) — derivation can only push
@@ -44,6 +45,10 @@ export function isTripCountedAsActive(
   if (trip.endDate === null || trip.endDate === undefined) {
     return true;
   }
-  const endOfTripDay = trip.endDate.getTime() + ONE_DAY_MS;
-  return endOfTripDay > now.getTime();
+  const startOfDayAfterEndDate = Date.UTC(
+    trip.endDate.getUTCFullYear(),
+    trip.endDate.getUTCMonth(),
+    trip.endDate.getUTCDate() + 1,
+  );
+  return startOfDayAfterEndDate > now.getTime();
 }
