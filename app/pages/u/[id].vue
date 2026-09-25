@@ -27,9 +27,11 @@
            looked anonymous or didn't match, not only for a genuine stranger
            or a nonexistent id, so the copy below stays neutral rather than
            presuming ownership. Mirrors trips/[id].vue and guides/[id].vue's
-           identical not-found sign-in affordance and isClerkLoaded gating. -->
+           identical not-found sign-in affordance, gated on viewerAuthResolved
+           (not raw isClerkLoaded) so it still appears once the bootstrap
+           timeout lapses, not only once Clerk actually resolves. -->
       <NuxtLink
-        v-if="isClerkLoaded && !isSignedIn"
+        v-if="viewerAuthResolved && !isSignedIn"
         to="/login"
         class="btn btn--outline btn--sm"
       >
@@ -48,7 +50,7 @@
         :following="viewerIsFollowingTarget"
         :pending="pending"
         :viewer-is-signed-in="!!isSignedIn"
-        :viewer-auth-loaded="isClerkLoaded"
+        :viewer-auth-loaded="viewerAuthResolved"
         @toggle="onToggleFollow"
       />
 
@@ -140,10 +142,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
 import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
-import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
+import {
+  CLERK_BOOTSTRAP_TIMEOUT_MS,
+  useClerkGatedFetch,
+} from "~/composables/useClerkGatedFetch";
 
 const openCommandPalette = inject<(() => void) | undefined>(
   "openCommandPalette",
@@ -219,6 +224,24 @@ const canRetryAuthenticated = computed(
 const { gate: gateOnClerkLoad, retryGeneration } = useClerkGatedFetch(
   isClerkLoaded,
   canRetryAuthenticated,
+);
+
+// The fetch below gives up waiting on Clerk after CLERK_BOOTSTRAP_TIMEOUT_MS
+// and loads the public profile anonymously anyway (see useClerkGatedFetch),
+// so a page can be fully rendered while isClerkLoaded is still false forever
+// (Clerk's script blocked by an ad blocker, a flaky CDN). Gating the follow
+// button / sign-in prompts on raw isClerkLoaded alone would leave that viewer
+// at a permanent dead end on an otherwise-working page — mirror the fetch's
+// own bounded wait here so the prompts resolve on the same timeout instead.
+const clerkBootstrapTimedOut = ref(false);
+onMounted(() => {
+  const timeoutId = setTimeout(() => {
+    clerkBootstrapTimedOut.value = true;
+  }, CLERK_BOOTSTRAP_TIMEOUT_MS);
+  onUnmounted(() => clearTimeout(timeoutId));
+});
+const viewerAuthResolved = computed(
+  () => isClerkLoaded.value || clerkBootstrapTimedOut.value,
 );
 
 const displayName = computed(

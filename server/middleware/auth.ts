@@ -20,9 +20,14 @@ const PUBLIC_READ_TRIP_PATH = /^\/api\/trips\/[^/]+$/;
 
 // GET /api/users/<id> serves a single profile, which may be public and shared
 // with anonymous visitors via its link (#279). Matches exactly one path
-// segment after /users/ so it never covers a future owner-only collection or
-// sub-resource this pattern shouldn't blanket-open. The route handler
-// (requireViewableProfile) still enforces visibility.
+// segment after /users/, so it never covers a multi-segment sub-resource
+// (those are matched separately below) — but it does match any future
+// single-segment GET under /api/users/ (e.g. a hypothetical .../me or
+// .../export route), not just an id. That's fine for a handler that calls
+// requireUser and 401s on its own, but a future single-segment route reaching
+// for optionalUser would be silently made public by this pattern too — worth
+// checking against this allowlist when adding one. The route handler
+// (requireViewableProfile) still enforces visibility for the id case.
 const PUBLIC_READ_PROFILE_PATH = /^\/api\/users\/[^/]+$/;
 
 // GET /api/users/<id>/{followers,following,trips,guides} serves that same

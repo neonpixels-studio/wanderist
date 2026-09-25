@@ -395,11 +395,7 @@ describe("profile page", () => {
     expect(signInLink).toBeUndefined();
   });
 
-  it("omits the unavailable-state sign-in link while Clerk is still loading", () => {
-    // isClerkLoaded gates this link directly (matching trips/[id].vue and
-    // guides/[id].vue's identical not-found sign-in affordance) — a viewer
-    // whose Clerk script never resolves at all sees no link here, the same
-    // accepted limitation those sibling pages have.
+  it("omits the unavailable-state sign-in link before Clerk resolves or its bootstrap timeout lapses", () => {
     clerkLoadedRef.value = false;
     clerkSignedInRef.value = false;
     notFound.value = true;
@@ -409,6 +405,33 @@ describe("profile page", () => {
       .findAll("a")
       .find((link) => link.text().toLowerCase().includes("sign in"));
     expect(signInLink).toBeUndefined();
+  });
+
+  it("still offers the unavailable-state sign-in link once the bootstrap timeout lapses, even if Clerk never resolves (#279)", async () => {
+    // Clerk blocked by an ad blocker, or a slow/flaky CDN: isClerkLoaded
+    // never flips true, but the gated fetch already fell back to an
+    // anonymous request (see useClerkGatedFetch's CLERK_BOOTSTRAP_TIMEOUT_MS)
+    // and settled into notFound. viewerAuthResolved mirrors that same bound
+    // via its own timer so this link isn't gated on isClerkLoaded forever —
+    // otherwise a signed-out owner of a private profile would be stuck with
+    // no way to sign in.
+    vi.useFakeTimers();
+    try {
+      clerkLoadedRef.value = false;
+      clerkSignedInRef.value = false;
+      notFound.value = true;
+      const wrapper = mount(ProfilePage, globalConfig);
+
+      await vi.advanceTimersByTimeAsync(CLERK_BOOTSTRAP_TIMEOUT_MS);
+      await nextTick();
+
+      const signInLink = wrapper
+        .findAll("a")
+        .find((link) => link.text().toLowerCase().includes("sign in"));
+      expect(signInLink?.attributes("href")).toBe("/login");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("forwards the followers loading state so the list shows no false empty state", () => {
@@ -537,12 +560,9 @@ describe("profile page", () => {
     expect(signInLink?.attributes("href")).toBe("/login");
   });
 
-  it("shows neither a follow button nor a sign-in prompt while Clerk is still loading", () => {
-    // isClerkLoaded gates both affordances directly (matching trips/[id].vue
-    // and guides/[id].vue's identical pattern) — a viewer whose Clerk script
-    // never resolves at all (ad blocker, flaky CDN) sees neither here, the
-    // same accepted limitation those sibling pages have. See
-    // ProfileHeader.test.ts for the equivalent component-level coverage.
+  it("shows neither a follow button nor a sign-in prompt before Clerk resolves or its bootstrap timeout lapses", () => {
+    // See ProfileHeader.test.ts for the equivalent component-level coverage
+    // of viewerAuthLoaded driving this directly.
     clerkLoadedRef.value = false;
     clerkSignedInRef.value = false;
     profile.value = { ...SAMPLE_PROFILE };
@@ -556,6 +576,37 @@ describe("profile page", () => {
       .findAll("a")
       .find((link) => link.text().toLowerCase().includes("sign in"));
     expect(signInLink).toBeUndefined();
+  });
+
+  it("still shows a sign-in prompt once the bootstrap timeout lapses, even if Clerk's script never resolves (#279)", async () => {
+    // Clerk blocked by an ad blocker, or a slow/flaky CDN: isClerkLoaded
+    // never flips true, but the gated fetch already fell back to an
+    // anonymous request (see useClerkGatedFetch's CLERK_BOOTSTRAP_TIMEOUT_MS)
+    // and profile.value is populated — the page can be fully rendered while
+    // isClerkLoaded stays false forever. viewerAuthResolved must resolve on
+    // that same bound via its own timer, or this viewer would see neither a
+    // follow button nor a sign-in prompt, permanently.
+    vi.useFakeTimers();
+    try {
+      clerkLoadedRef.value = false;
+      clerkSignedInRef.value = false;
+      profile.value = { ...SAMPLE_PROFILE };
+      const wrapper = mount(ProfilePage, globalConfig);
+
+      await vi.advanceTimersByTimeAsync(CLERK_BOOTSTRAP_TIMEOUT_MS);
+      await nextTick();
+
+      const followButton = wrapper
+        .findAll("button")
+        .find((button) => button.text().toLowerCase().includes("follow"));
+      expect(followButton).toBeUndefined();
+      const signInLink = wrapper
+        .findAll("a")
+        .find((link) => link.text().toLowerCase().includes("sign in"));
+      expect(signInLink?.attributes("href")).toBe("/login");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("toggles follow when the follow button is clicked", async () => {
