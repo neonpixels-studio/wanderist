@@ -19,13 +19,13 @@ import { and, desc, eq, isNull, SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { stubNitroGlobals } from "../test-utils";
 
-// requireViewableProfileTarget's own dependencies (requireUser, getDb) are
+// requireViewableProfileTarget's own dependencies (optionalUser, getDb) are
 // mocked here so its wiring can be tested without a real auth context or
 // database connection; requireViewableProfile itself runs for real (it lives
 // in the same module, so it can't be mocked independently) against a fake
 // query chain, exactly like the `requireViewableProfile` suite below.
 vi.mock("../../../server/utils/auth", () => ({
-  requireUser: vi.fn(),
+  optionalUser: vi.fn(),
 }));
 vi.mock("../../../server/db/index", () => ({
   getDb: vi.fn(),
@@ -46,7 +46,7 @@ import {
   PROFILE_GUIDES_PAGE_SIZE,
 } from "../../../server/utils/profile-queries";
 import type { Database } from "../../../server/utils/profile-queries";
-import { requireUser } from "../../../server/utils/auth";
+import { optionalUser } from "../../../server/utils/auth";
 import { getDb } from "../../../server/db/index";
 import {
   follows,
@@ -884,14 +884,51 @@ describe("requireViewableProfile", () => {
       ),
     ).rejects.toMatchObject({ statusCode: 404 });
   });
+
+  // #279: a shared profile link must open for an anonymous visitor so its
+  // og/twitter meta can unfurl — currentUserId is nullable for exactly this
+  // case (see /api/users/[id]'s optionalUser call), and null can never equal
+  // targetUserId, so an anonymous viewer is simply a non-owner like any other.
+  it("returns a public profile to an anonymous (null) viewer", async () => {
+    const built = buildSelectChain([
+      rawProfileRow({
+        publicProfile: true,
+        status: SUBSCRIPTION_STATUS.ACTIVE,
+        plan: PLAN.NOMAD,
+      }),
+    ]);
+
+    const result = await requireViewableProfile(
+      built.chain as unknown as Database,
+      null,
+      "target-1",
+    );
+
+    expect(result).toMatchObject({
+      userId: "target-1",
+      effectivelyPublic: true,
+    });
+  });
+
+  it("throws 404 for a private profile viewed by an anonymous (null) viewer", async () => {
+    const built = buildSelectChain([rawProfileRow({ publicProfile: false })]);
+
+    await expect(
+      requireViewableProfile(
+        built.chain as unknown as Database,
+        null,
+        "target-1",
+      ),
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
 });
 
 describe("requireViewableProfileTarget", () => {
-  const mockRequireUser = vi.mocked(requireUser);
+  const mockOptionalUser = vi.mocked(optionalUser);
   const mockGetDb = vi.mocked(getDb);
 
   beforeEach(() => {
-    mockRequireUser.mockReset();
+    mockOptionalUser.mockReset();
     mockGetDb.mockReset();
   });
 
@@ -908,7 +945,7 @@ describe("requireViewableProfileTarget", () => {
         subscriptionPlan: PLAN.NOMAD,
       },
     ]);
-    mockRequireUser.mockReturnValue("viewer-1");
+    mockOptionalUser.mockReturnValue("viewer-1");
     mockGetDb.mockReturnValue(
       built.chain as unknown as ReturnType<typeof getDb>,
     );
@@ -934,7 +971,7 @@ describe("requireViewableProfileTarget", () => {
         subscriptionPlan: null,
       },
     ]);
-    mockRequireUser.mockReturnValue("viewer-1");
+    mockOptionalUser.mockReturnValue("viewer-1");
     mockGetDb.mockReturnValue(
       built.chain as unknown as ReturnType<typeof getDb>,
     );
@@ -956,7 +993,7 @@ describe("requireViewableProfileTarget", () => {
         subscriptionPlan: PLAN.NOMAD,
       },
     ]);
-    mockRequireUser.mockReturnValue("viewer-1");
+    mockOptionalUser.mockReturnValue("viewer-1");
     mockGetDb.mockReturnValue(
       built.chain as unknown as ReturnType<typeof getDb>,
     );
@@ -979,22 +1016,60 @@ describe("requireViewableProfileTarget", () => {
     ]);
   });
 
-  it("propagates the 401 when requireUser throws, without touching the database", async () => {
-    mockRequireUser.mockImplementation(() => {
-      throw createError({ statusCode: 401, statusMessage: "Unauthorized" });
+  // #279: a shared profile link's followers/following/trips/guides
+  // sub-resources must open for an anonymous visitor too, the same as the
+  // profile-detail endpoint (requireViewableProfile above) — optionalUser
+  // returns null rather than throwing, so a missing token no longer 401s.
+  it("resolves an anonymous (null) viewer against a public target profile", async () => {
+    const built = buildSelectChain([
+      {
+        userId: "target-1",
+        publicProfile: true,
+        subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
+        subscriptionPlan: PLAN.NOMAD,
+      },
+    ]);
+    mockOptionalUser.mockReturnValue(null);
+    mockGetDb.mockReturnValue(
+      built.chain as unknown as ReturnType<typeof getDb>,
+    );
+    stubRouterParam("target-1");
+
+    const result = await requireViewableProfileTarget(
+      {} as Parameters<typeof requireViewableProfileTarget>[0],
+    );
+
+    expect(result).toEqual({
+      database: built.chain,
+      targetUserId: "target-1",
+      viewerId: null,
     });
+  });
+
+  it("throws 404 for an anonymous (null) viewer against a private target profile", async () => {
+    const built = buildSelectChain([
+      {
+        userId: "target-1",
+        publicProfile: false,
+        subscriptionStatus: null,
+        subscriptionPlan: null,
+      },
+    ]);
+    mockOptionalUser.mockReturnValue(null);
+    mockGetDb.mockReturnValue(
+      built.chain as unknown as ReturnType<typeof getDb>,
+    );
     stubRouterParam("target-1");
 
     await expect(
       requireViewableProfileTarget(
         {} as Parameters<typeof requireViewableProfileTarget>[0],
       ),
-    ).rejects.toMatchObject({ statusCode: 401 });
-    expect(mockGetDb).not.toHaveBeenCalled();
+    ).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("throws 400 when the route id param is missing", async () => {
-    mockRequireUser.mockReturnValue("viewer-1");
+    mockOptionalUser.mockReturnValue("viewer-1");
     stubRouterParam(undefined);
 
     await expect(

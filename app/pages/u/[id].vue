@@ -21,6 +21,22 @@
         <AppIcon name="arrow-right" :size="14" />
         back to Explore
       </NuxtLink>
+      <!-- Removing the auth middleware (#279) means the profile's own owner,
+           browsing signed out (an expired session, a fresh browser), can now
+           land here too — this profile-state branch fires whenever the fetch
+           looked anonymous or didn't match, not only for a genuine stranger
+           or a nonexistent id, so the copy below stays neutral rather than
+           presuming ownership. Mirrors trips/[id].vue and guides/[id].vue's
+           identical not-found sign-in affordance, gated on viewerAuthResolved
+           (not raw isClerkLoaded) so it still appears once the bootstrap
+           timeout lapses, not only once Clerk actually resolves. -->
+      <NuxtLink
+        v-if="viewerAuthResolved && !isSignedIn"
+        to="/login"
+        class="btn btn--outline btn--sm"
+      >
+        sign in to view this profile
+      </NuxtLink>
     </div>
 
     <AppAlert v-else-if="error" intent="error" :message="error" />
@@ -33,6 +49,8 @@
         :is-self="profile.isSelf"
         :following="viewerIsFollowingTarget"
         :pending="pending"
+        :viewer-is-signed-in="!!isSignedIn"
+        :viewer-auth-loaded="viewerAuthResolved"
         @toggle="onToggleFollow"
       />
 
@@ -124,17 +142,37 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { DEFAULT_TRAVELER_NAME, formatHandle } from "~/utils/travelerLabels";
-import { useClerkGatedFetch } from "~/composables/useClerkGatedFetch";
 import { SITE_NAME, useOgMeta } from "~/composables/useOgMeta";
+import {
+  CLERK_BOOTSTRAP_TIMEOUT_MS,
+  useClerkGatedFetch,
+} from "~/composables/useClerkGatedFetch";
 
 const openCommandPalette = inject<(() => void) | undefined>(
   "openCommandPalette",
   undefined,
 );
 
-definePageMeta({ layout: "app", middleware: "auth" });
+// No auth middleware: a public profile must open for anonymous visitors
+// following a shared link, instead of being redirected to /login before the
+// page (and its og/twitter meta, see useOgMeta below) ever renders (#279).
+// This mirrors trips/[id].vue and guides/[id].vue. The GET endpoints
+// (/api/users/[id] and its followers/following/trips/guides sub-resources)
+// enforce visibility — a private profile 404s for anyone but its owner, it
+// never redirects to /login — so a private profile stays protected.
+// Owner-only affordances (follow/unfollow) are meaningless for the profile
+// owner viewing their own page and simply reflect `profile.isSelf` from the
+// API response.
+//
+// Note: the profile fetch below is client-only (server: false), so a crawler
+// that doesn't execute JS still only sees the SSR fallback title/description,
+// not the traveler's real name/bio — the same limitation trips/[id].vue and
+// guides/[id].vue already have; SSR-populating it is a separate, cross-page
+// gap, not something this fix (which only removes the anonymous-access
+// redirect) takes on.
+definePageMeta({ layout: "app" });
 
 const route = useRoute();
 const userId = computed(() => String(route.params.id));
@@ -175,29 +213,35 @@ const {
   error: followError,
 } = useFollows();
 
-// This page requires auth (middleware: "auth" above), but that middleware
-// itself doesn't wait for Clerk to finish loading — it only redirects once
-// isLoaded is already true, so an unresolved Clerk on a hard refresh still
-// lets the page mount. apiFetch (see useApiClient) then sends the profile
-// request with no token, which the server treats as anonymous and rejects
-// with a 401 (#280, the same race #255 fixed for guide/trip detail) — even
-// for a viewer loading their own profile.
+// isLoaded gates when the profile fetch below is allowed to fire with a real
+// token (see the useClerkGatedFetch usage further down); isSignedIn drives
+// canRetryAuthenticated so a session that resolves after the first (possibly
+// anonymous) fetch re-issues it, same as trips/[id].vue and guides/[id].vue.
 const { isLoaded: isClerkLoaded, isSignedIn } = useClerkAuth();
-
-// A refetch only changes the answer once the viewer is signed in; an
-// anonymous visitor never gains a token, so this (turned into
-// retryGeneration by useClerkGatedFetch below) never advances a second time
-// for them.
 const canRetryAuthenticated = computed(
   () => isClerkLoaded.value && !!isSignedIn.value,
 );
-
-// Gated on Clerk's bootstrap (#255, #280) so the viewer's first request
-// already carries a token instead of 401ing anonymously first — see
-// useClerkGatedFetch.
 const { gate: gateOnClerkLoad, retryGeneration } = useClerkGatedFetch(
   isClerkLoaded,
   canRetryAuthenticated,
+);
+
+// The fetch below gives up waiting on Clerk after CLERK_BOOTSTRAP_TIMEOUT_MS
+// and loads the public profile anonymously anyway (see useClerkGatedFetch),
+// so a page can be fully rendered while isClerkLoaded is still false forever
+// (Clerk's script blocked by an ad blocker, a flaky CDN). Gating the follow
+// button / sign-in prompts on raw isClerkLoaded alone would leave that viewer
+// at a permanent dead end on an otherwise-working page — mirror the fetch's
+// own bounded wait here so the prompts resolve on the same timeout instead.
+const clerkBootstrapTimedOut = ref(false);
+onMounted(() => {
+  const timeoutId = setTimeout(() => {
+    clerkBootstrapTimedOut.value = true;
+  }, CLERK_BOOTSTRAP_TIMEOUT_MS);
+  onUnmounted(() => clearTimeout(timeoutId));
+});
+const viewerAuthResolved = computed(
+  () => isClerkLoaded.value || clerkBootstrapTimedOut.value,
 );
 
 const displayName = computed(
@@ -259,21 +303,17 @@ async function onToggleFollow(): Promise<void> {
   await fetchFollowers(targetUserId);
 }
 
-// Drive loading from the route param (not a bare onMounted) so navigating
-// between two profiles — the primary path, since follower lists link to
-// /u/[id] — refetches instead of showing the previous traveler.
-// `server: false` keeps the fetch client-only: these calls carry the Clerk
-// session token (client-side), so running them during SSR would 401 and
-// hydrate a stuck loading state. This mirrors explore.vue's client-only load
-// while keeping trips/[id].vue's watch-on-param refetch.
-//
-// fetchFollowing (the viewer's own follow state) is bundled in here rather
-// than a separate onMounted call: it carries the same token and would race
-// Clerk's bootstrap the same way, and useClerkGatedFetch only supports one
-// in-flight gate per call site (a second concurrent gate() call tears down
-// the first's pending timer/watch) — so both fetches must share this single
-// gate. The minor cost is refetching the viewer's own follow state on every
-// profile navigation, not just on mount.
+// `server: false` keeps the fetch client-only: an authenticated request
+// carries the Clerk session token, which only exists client-side (Clerk runs
+// with skipServerMiddleware) — running it during SSR would hang, since
+// Clerk's getToken never resolves on the server. Gated on Clerk's bootstrap
+// (#255) so the owner's first request already carries a token instead of
+// reading their own private profile anonymously (and 404ing) first — an
+// anonymous visitor is unaffected, since the gate falls back to an anonymous
+// fetch after CLERK_BOOTSTRAP_TIMEOUT_MS regardless. Watches retryGeneration
+// too so a session resolving (or clearing) after the first fetch re-issues it
+// with the new auth state, not just on route-param (profile-to-profile)
+// navigation.
 function fetchProfileDetail(): Promise<unknown> {
   return gateOnClerkLoad(() =>
     Promise.all([
@@ -282,7 +322,6 @@ function fetchProfileDetail(): Promise<unknown> {
       fetchFollowingList(userId.value),
       fetchTrips(userId.value),
       fetchGuides(userId.value),
-      fetchFollowing(),
     ]),
   );
 }
@@ -290,6 +329,33 @@ function fetchProfileDetail(): Promise<unknown> {
 useAsyncData(() => `profile-${userId.value}`, fetchProfileDetail, {
   server: false,
   watch: [userId, retryGeneration],
+});
+
+// Follow state depends on the session token, so it is client-only too. The
+// other fetches above get that from `server: false` on useAsyncData, but a
+// bare `watch` has no such option, and Vue's `immediate: true` does invoke
+// its callback during SSR component setup. Registering the watch itself
+// inside onMounted (rather than a bare top-level watch) is what keeps this
+// off the server: onMounted never runs during SSR, full stop, so nothing here
+// depends on Clerk merely reporting unloaded there. Wait for
+// canRetryAuthenticated (not a bare fetchFollowing() call) so an anonymous
+// visitor following a shared profile link never fires this: /api/follows
+// always requires a token, so a tokenless request would 401 and surface a
+// spurious "Could not load following list" error banner (#279). `immediate:
+// true` still fetches right away for a viewer whose session is already
+// resolved by mount; a viewer who signs in afterward fetches once that
+// resolves.
+onMounted(() => {
+  watch(
+    canRetryAuthenticated,
+    (viewerIsAuthenticated) => {
+      if (!viewerIsAuthenticated) {
+        return;
+      }
+      fetchFollowing();
+    },
+    { immediate: true },
+  );
 });
 </script>
 

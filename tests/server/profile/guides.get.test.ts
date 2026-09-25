@@ -61,11 +61,28 @@ describe("GET /api/users/[id]/guides", () => {
     expect(mockFetchPublicGuides).not.toHaveBeenCalled();
   });
 
-  it("throws 401 when the user is not authenticated", async () => {
-    mockRequireViewableProfileTarget.mockRejectedValue(
-      createError({ statusCode: 401, statusMessage: "Unauthorized" }),
-    );
+  // #279: a shared profile link must open for an anonymous visitor, so
+  // requireViewableProfileTarget resolves with a null viewerId rather than
+  // throwing 401 — the visibility guard itself (tested separately in
+  // profile-queries.test.ts) decides whether an anonymous viewer may see this
+  // profile at all. fetchPublicGuides is the one sub-resource query that
+  // branches on the viewer (an owner sees their non-discoverable guides too,
+  // see profile-queries.ts), so the null viewerId must reach it unchanged —
+  // not get coalesced to targetUserId, which would hand an anonymous visitor
+  // the owner's private guides.
+  it("forwards a null viewerId to fetchPublicGuides for an anonymous visitor", async () => {
+    mockRequireViewableProfileTarget.mockResolvedValue({
+      database: {} as Awaited<
+        ReturnType<typeof requireViewableProfileTarget>
+      >["database"],
+      targetUserId: "target-1",
+      viewerId: null,
+    });
+    mockFetchPublicGuides.mockResolvedValue({ guides: GUIDES, hasMore: true });
 
-    await expect(callHandler()).rejects.toMatchObject({ statusCode: 401 });
+    const result = await callHandler();
+
+    expect(result).toEqual({ guides: GUIDES, hasMore: true });
+    expect(mockFetchPublicGuides).toHaveBeenCalledWith({}, "target-1", null);
   });
 });

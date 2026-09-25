@@ -3,14 +3,6 @@ import { mount, enableAutoUnmount } from "@vue/test-utils";
 import { nextTick, reactive, ref, watch } from "vue";
 import ProfilePage from "../u/[id].vue";
 import { CLERK_BOOTSTRAP_TIMEOUT_MS } from "~/composables/useClerkGatedFetch";
-
-// The #280 gate below makes the page's useAsyncData handler re-fire through a
-// real `watch` (see the useAsyncData stub below), so a mounted page's watcher
-// stays alive past its own test unless explicitly torn down — the next test's
-// route/Clerk-ref mutation would otherwise still be observed by leftover
-// watchers from every earlier test in this file, double- (or 21-times-)
-// counting calls against the shared mockFetch* spies below.
-enableAutoUnmount(afterEach);
 import ProfileHeader from "~/components/ProfileHeader.vue";
 import ProfileFollowerList from "~/components/ProfileFollowerList.vue";
 import ProfileFollowingList from "~/components/ProfileFollowingList.vue";
@@ -44,12 +36,24 @@ vi.stubGlobal("useRoute", () => ({
 // #269 og/twitter meta coverage below reads this trackable useSeoMeta stub.
 const useSeoMetaMock = stubOgMetaGlobals();
 
-// isClerkLoaded/isSignedIn drive the fetch's #280 gate below; drive them from
-// shared refs so a test can simulate the Clerk bootstrap window and a viewer
-// signing in after the fact, same pattern as trip-detail.test.ts's #255
-// coverage.
+// The page now runs a real `watch(canRetryAuthenticated, ...)` (#279, follow
+// state) alongside useClerkGatedFetch's own real internal watcher — both
+// driven by this file's shared, module-scope clerkLoadedRef/clerkSignedInRef.
+// Without unmounting each wrapper, a still-mounted component from an earlier
+// test keeps reacting to a later test's ref changes and re-invokes the same
+// persistent useFollows mocks, inflating call counts read by an unrelated
+// test. Auto-unmounting after every test tears down those effects so each
+// test's assertions only see its own mount's calls.
+enableAutoUnmount(afterEach);
+
+// The page's fetch is gated on Clerk's bootstrap (#279, mirroring
+// trips/[id].vue and guides/[id].vue) and wraps a signed-in viewer's follow
+// affordance too. Defaults to an already-resolved, signed-in viewer so
+// existing tests (written before #279) keep exercising the follow button
+// without each one having to drive these refs itself; the anonymous-viewer
+// tests below override clerkSignedInRef explicitly.
 const clerkLoadedRef = ref(true);
-const clerkSignedInRef = ref(false);
+const clerkSignedInRef = ref(true);
 vi.stubGlobal("useClerkAuth", () => ({
   isLoaded: clerkLoadedRef,
   isSignedIn: clerkSignedInRef,
@@ -58,10 +62,10 @@ vi.stubGlobal("useClerkAuth", () => ({
 
 // The page loads via useAsyncData; the global stub ignores the handler, so
 // invoke it here to exercise the mount-time fetches and record the call so the
-// wiring (key + watch on the route param and retryGeneration) can be
+// wiring (key + watch on the route param and retry generation) can be
 // asserted. Honour the real refetch-on-watch contract (not just record the
-// watch array) so a test can assert the #280 gate's retryGeneration actually
-// re-triggers the fetch once Clerk resolves.
+// watch array) so a test can assert the useClerkGatedFetch gate's
+// retryGeneration actually re-triggers the fetch once Clerk resolves.
 let lastAsyncDataCall: {
   key: () => string;
   options: { watch?: unknown[]; server?: boolean };
@@ -231,10 +235,10 @@ describe("profile page", () => {
     followingIds.value = new Set();
     pendingUserIds.value = new Set();
     clerkLoadedRef.value = true;
-    clerkSignedInRef.value = false;
+    clerkSignedInRef.value = true;
   });
 
-  it("loads via useAsyncData keyed on and watching the route param", () => {
+  it("loads via useAsyncData keyed on and watching the route param and retry generation", () => {
     mount(ProfilePage, globalConfig);
 
     // The watch source must be the route param itself — that is what makes
@@ -244,8 +248,54 @@ describe("profile page", () => {
       value: string;
     };
     expect(watched.value).toBe("user-1");
-    // Client-only: the fetches carry the Clerk token, so SSR would 401.
+    // A second watch source (useClerkGatedFetch's retryGeneration) re-issues
+    // the request once a session resolves after the first (possibly
+    // anonymous) fetch — see useClerkGatedFetch.test.ts for the retry logic
+    // itself.
+    expect(lastAsyncDataCall?.options.watch?.length).toBe(2);
+    // Client-only: an authenticated request carries the Clerk token, so SSR
+    // would hang (Clerk's getToken never resolves on the server).
     expect(lastAsyncDataCall?.options.server).toBe(false);
+  });
+
+  it("still fetches a public profile for a signed-out (anonymous) viewer, without redirecting (#279)", () => {
+    clerkSignedInRef.value = false;
+    profile.value = { ...SAMPLE_PROFILE };
+
+    mount(ProfilePage, globalConfig);
+
+    // No auth middleware and no gate withholding on sign-in state (only on
+    // Clerk having finished loading, which the default clerkLoadedRef already
+    // satisfies) — a shared profile link opens for an anonymous visitor.
+    expect(mockFetchProfile).toHaveBeenCalledWith("user-1");
+  });
+
+  it("does not fetch the viewer's own follow state for an anonymous viewer (#279)", () => {
+    clerkSignedInRef.value = false;
+    profile.value = { ...SAMPLE_PROFILE };
+
+    mount(ProfilePage, globalConfig);
+
+    // /api/follows always requires a token — fetching it anonymously would
+    // 401 and surface a spurious "Could not load following list" error
+    // banner (useFollows' own `error` ref, rendered via followError above)
+    // on a page that must otherwise render cleanly for a share-link visitor.
+    expect(mockFetchFollowing).not.toHaveBeenCalled();
+  });
+
+  it("fetches the viewer's own follow state once a session resolves after mount", async () => {
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+    profile.value = { ...SAMPLE_PROFILE };
+
+    mount(ProfilePage, globalConfig);
+    expect(mockFetchFollowing).not.toHaveBeenCalled();
+
+    clerkLoadedRef.value = true;
+    clerkSignedInRef.value = true;
+    await nextTick();
+
+    expect(mockFetchFollowing).toHaveBeenCalled();
   });
 
   it("fetches the profile, followers, following, trips, guides, and follow state on mount", () => {
@@ -262,9 +312,9 @@ describe("profile page", () => {
 
   // Regression coverage for #280: /u/[id]'s fetch used to fire with no
   // isClerkLoaded gate at all, so a hard refresh raced an unresolved Clerk
-  // bootstrap and 401'd anonymously — even for a viewer loading their own
-  // profile, since middleware: "auth" lets navigation through before Clerk
-  // finishes loading (see app/middleware/auth.ts).
+  // bootstrap and could 401 anonymously — even for a viewer loading their own
+  // profile. useClerkGatedFetch's gate (shared with trips/[id].vue and
+  // guides/[id].vue) withholds the profile fetch until Clerk resolves.
   it("does not fetch until Clerk resolves, then fetches exactly once already authenticated (no anonymous 401 race)", async () => {
     clerkLoadedRef.value = false;
     clerkSignedInRef.value = false;
@@ -300,12 +350,6 @@ describe("profile page", () => {
     }
   });
 
-  it("watches retryGeneration (not just the route param) so a delayed Clerk resolution re-triggers the fetch", () => {
-    mount(ProfilePage, globalConfig);
-
-    expect(lastAsyncDataCall?.options.watch).toHaveLength(2);
-  });
-
   it("renders a loaded public profile", () => {
     profile.value = { ...SAMPLE_PROFILE };
     followers.value = [
@@ -325,6 +369,69 @@ describe("profile page", () => {
 
     expect(wrapper.text()).toContain("Profile unavailable");
     expect(wrapper.find(".phead").exists()).toBe(false);
+  });
+
+  it("offers a sign-in link in the unavailable state for a signed-out viewer (#279)", () => {
+    // Covers the profile owner landing on their own private profile while
+    // signed out (an expired session, a fresh browser) — now reachable since
+    // the auth middleware no longer redirects them to /login first.
+    clerkSignedInRef.value = false;
+    notFound.value = true;
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    const signInLink = wrapper
+      .findAll("a")
+      .find((link) => link.text().toLowerCase().includes("sign in"));
+    expect(signInLink?.attributes("href")).toBe("/login");
+  });
+
+  it("omits the sign-in link in the unavailable state for a signed-in viewer", () => {
+    notFound.value = true;
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    const signInLink = wrapper
+      .findAll("a")
+      .find((link) => link.text().toLowerCase().includes("sign in"));
+    expect(signInLink).toBeUndefined();
+  });
+
+  it("omits the unavailable-state sign-in link before Clerk resolves or its bootstrap timeout lapses", () => {
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+    notFound.value = true;
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    const signInLink = wrapper
+      .findAll("a")
+      .find((link) => link.text().toLowerCase().includes("sign in"));
+    expect(signInLink).toBeUndefined();
+  });
+
+  it("still offers the unavailable-state sign-in link once the bootstrap timeout lapses, even if Clerk never resolves (#279)", async () => {
+    // Clerk blocked by an ad blocker, or a slow/flaky CDN: isClerkLoaded
+    // never flips true, but the gated fetch already fell back to an
+    // anonymous request (see useClerkGatedFetch's CLERK_BOOTSTRAP_TIMEOUT_MS)
+    // and settled into notFound. viewerAuthResolved mirrors that same bound
+    // via its own timer so this link isn't gated on isClerkLoaded forever —
+    // otherwise a signed-out owner of a private profile would be stuck with
+    // no way to sign in.
+    vi.useFakeTimers();
+    try {
+      clerkLoadedRef.value = false;
+      clerkSignedInRef.value = false;
+      notFound.value = true;
+      const wrapper = mount(ProfilePage, globalConfig);
+
+      await vi.advanceTimersByTimeAsync(CLERK_BOOTSTRAP_TIMEOUT_MS);
+      await nextTick();
+
+      const signInLink = wrapper
+        .findAll("a")
+        .find((link) => link.text().toLowerCase().includes("sign in"));
+      expect(signInLink?.attributes("href")).toBe("/login");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("forwards the followers loading state so the list shows no false empty state", () => {
@@ -438,6 +545,70 @@ describe("profile page", () => {
     expect(followButton).toBeUndefined();
   });
 
+  it("shows a sign-in prompt instead of a follow button for an anonymous viewer (#279)", () => {
+    clerkSignedInRef.value = false;
+    profile.value = { ...SAMPLE_PROFILE };
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    const followButton = wrapper
+      .findAll("button")
+      .find((button) => button.text().toLowerCase().includes("follow"));
+    expect(followButton).toBeUndefined();
+    const signInLink = wrapper
+      .findAll("a")
+      .find((link) => link.text().toLowerCase().includes("sign in"));
+    expect(signInLink?.attributes("href")).toBe("/login");
+  });
+
+  it("shows neither a follow button nor a sign-in prompt before Clerk resolves or its bootstrap timeout lapses", () => {
+    // See ProfileHeader.test.ts for the equivalent component-level coverage
+    // of viewerAuthLoaded driving this directly.
+    clerkLoadedRef.value = false;
+    clerkSignedInRef.value = false;
+    profile.value = { ...SAMPLE_PROFILE };
+    const wrapper = mount(ProfilePage, globalConfig);
+
+    const followButton = wrapper
+      .findAll("button")
+      .find((button) => button.text().toLowerCase().includes("follow"));
+    expect(followButton).toBeUndefined();
+    const signInLink = wrapper
+      .findAll("a")
+      .find((link) => link.text().toLowerCase().includes("sign in"));
+    expect(signInLink).toBeUndefined();
+  });
+
+  it("still shows a sign-in prompt once the bootstrap timeout lapses, even if Clerk's script never resolves (#279)", async () => {
+    // Clerk blocked by an ad blocker, or a slow/flaky CDN: isClerkLoaded
+    // never flips true, but the gated fetch already fell back to an
+    // anonymous request (see useClerkGatedFetch's CLERK_BOOTSTRAP_TIMEOUT_MS)
+    // and profile.value is populated — the page can be fully rendered while
+    // isClerkLoaded stays false forever. viewerAuthResolved must resolve on
+    // that same bound via its own timer, or this viewer would see neither a
+    // follow button nor a sign-in prompt, permanently.
+    vi.useFakeTimers();
+    try {
+      clerkLoadedRef.value = false;
+      clerkSignedInRef.value = false;
+      profile.value = { ...SAMPLE_PROFILE };
+      const wrapper = mount(ProfilePage, globalConfig);
+
+      await vi.advanceTimersByTimeAsync(CLERK_BOOTSTRAP_TIMEOUT_MS);
+      await nextTick();
+
+      const followButton = wrapper
+        .findAll("button")
+        .find((button) => button.text().toLowerCase().includes("follow"));
+      expect(followButton).toBeUndefined();
+      const signInLink = wrapper
+        .findAll("a")
+        .find((link) => link.text().toLowerCase().includes("sign in"));
+      expect(signInLink?.attributes("href")).toBe("/login");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("toggles follow when the follow button is clicked", async () => {
     profile.value = { ...SAMPLE_PROFILE };
     const wrapper = mount(ProfilePage, globalConfig);
@@ -519,11 +690,12 @@ describe("profile page", () => {
     await clickFollowButton(wrapper);
 
     // The toggle targeted user-1 but the route is now user-2, so the loaded
-    // profile's count must not be bumped and onToggleFollow's own guarded
-    // refetch (for the stale target, user-1) must not fire. The route change
-    // to user-2 does trigger the page's own unrelated navigation reload
-    // (including a fresh fetchFollowers("user-2")) via useAsyncData's watch —
-    // that is the correct, separate behaviour this test isn't exercising.
+    // profile's count must not be bumped, and onToggleFollow's own guard must
+    // not refetch the stale (now-navigated-away-from) user-1's followers. The
+    // route change itself does legitimately trigger the page's own
+    // navigation-driven refetch for user-2 (see the useAsyncData watch on
+    // userId further down) — that's an unrelated, correct refetch, not the
+    // bug this test guards against.
     expect(profile.value?.followerCount).toBe(3);
     expect(mockFetchFollowers).not.toHaveBeenCalledWith("user-1");
   });

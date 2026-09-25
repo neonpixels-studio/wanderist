@@ -18,6 +18,37 @@ const PUBLIC_READ_GUIDE_PATH = /^\/api\/guides\/[^/]+$/;
 // visibility.
 const PUBLIC_READ_TRIP_PATH = /^\/api\/trips\/[^/]+$/;
 
+// GET /api/users/<id> serves a single profile, which may be public and shared
+// with anonymous visitors via its link (#279). Matches exactly one path
+// segment after /users/, so it never covers a multi-segment sub-resource
+// (those are matched separately below) — but it does match any future
+// single-segment GET under /api/users/ (e.g. a hypothetical .../me or
+// .../export route), not just an id. That's fine for a handler that calls
+// requireUser and 401s on its own, but a future single-segment route reaching
+// for optionalUser would be silently made public by this pattern too — worth
+// checking against this allowlist when adding one. The route handler
+// (requireViewableProfile) still enforces visibility for the id case.
+const PUBLIC_READ_PROFILE_PATH = /^\/api\/users\/[^/]+$/;
+
+// GET /api/users/<id>/{followers,following,trips,guides} serves that same
+// public profile's sub-resource lists (#279) — named explicitly (not
+// [^/]+\/[^/]+) so a future owner-only sub-resource under /api/users/<id>/
+// isn't opened by default. The route handler (requireViewableProfileTarget)
+// still enforces visibility.
+const PUBLIC_READ_PROFILE_SUB_PATH =
+  /^\/api\/users\/[^/]+\/(followers|following|trips|guides)$/;
+
+// Every GET path pattern a request may match without a bearer token. A list
+// (not one growing `||` chain) so a fourth/fifth public route is a one-line
+// addition to isOptionalAuthRoute below, not another branch to thread through
+// its condition.
+const OPTIONAL_AUTH_GET_PATTERNS = [
+  PUBLIC_READ_GUIDE_PATH,
+  PUBLIC_READ_TRIP_PATH,
+  PUBLIC_READ_PROFILE_PATH,
+  PUBLIC_READ_PROFILE_SUB_PATH,
+];
+
 function isApiPath(path: string): boolean {
   return path.startsWith(API_PATH_PREFIX);
 }
@@ -42,7 +73,7 @@ function isOptionalAuthRoute(event: H3Event): boolean {
   }
 
   const path = pathname(event);
-  return PUBLIC_READ_GUIDE_PATH.test(path) || PUBLIC_READ_TRIP_PATH.test(path);
+  return OPTIONAL_AUTH_GET_PATTERNS.some((pattern) => pattern.test(path));
 }
 
 function extractBearerToken(event: H3Event): string | null {

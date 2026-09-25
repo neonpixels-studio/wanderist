@@ -20,11 +20,7 @@ const PROTECTED_ROUTES = new Set([
 ]);
 
 function isProtectedRoute(path: string): boolean {
-  return (
-    PROTECTED_ROUTES.has(path) ||
-    path.startsWith("/trips/") ||
-    path.startsWith("/u/")
-  );
+  return PROTECTED_ROUTES.has(path) || path.startsWith("/trips/");
 }
 
 export default defineNuxtPlugin(() => {

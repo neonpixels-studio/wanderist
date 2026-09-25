@@ -6,6 +6,7 @@ const globalConfig = {
   global: {
     stubs: {
       AppIcon: { template: "<svg data-icon />" },
+      NuxtLink: { template: '<a :href="to"><slot /></a>', props: ["to"] },
     },
   },
 };
@@ -17,6 +18,8 @@ const BASE_PROPS = {
   isSelf: false,
   following: false,
   pending: false,
+  viewerIsSignedIn: true,
+  viewerAuthLoaded: true,
 };
 
 describe("ProfileHeader", () => {
@@ -88,5 +91,36 @@ describe("ProfileHeader", () => {
 
     expect(wrapper.find(".phead__handle").exists()).toBe(false);
     expect(wrapper.find(".phead__home").exists()).toBe(false);
+  });
+
+  it("shows a sign-in prompt instead of a follow button for a signed-out viewer", () => {
+    const wrapper = mount(ProfileHeader, {
+      ...globalConfig,
+      props: {
+        ...BASE_PROPS,
+        viewerIsSignedIn: false,
+        viewerAuthLoaded: true,
+      },
+    });
+
+    expect(wrapper.find("button").exists()).toBe(false);
+    const signInLink = wrapper.find("a");
+    expect(signInLink.exists()).toBe(true);
+    expect(signInLink.text().toLowerCase()).toContain("sign in");
+    expect(signInLink.attributes("href")).toBe("/login");
+  });
+
+  it("shows neither a follow button nor a sign-in prompt while auth is still resolving", () => {
+    const wrapper = mount(ProfileHeader, {
+      ...globalConfig,
+      props: {
+        ...BASE_PROPS,
+        viewerIsSignedIn: false,
+        viewerAuthLoaded: false,
+      },
+    });
+
+    expect(wrapper.find("button").exists()).toBe(false);
+    expect(wrapper.find("a").exists()).toBe(false);
   });
 });

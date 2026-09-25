@@ -23,7 +23,7 @@ import {
   userPreferences,
   VISIBILITY,
 } from "../db/schema";
-import { requireUser } from "./auth";
+import { optionalUser } from "./auth";
 import { requireRouterParam } from "./db-helpers";
 import { discoverableAuthorCondition } from "./discover-queries";
 import {
@@ -396,7 +396,7 @@ export async function fetchPublicTrips(
 export async function fetchPublicGuides(
   database: Database,
   userId: string,
-  viewerId: string,
+  viewerId: string | null,
 ): Promise<GuidesPage> {
   const authorMustBeDiscoverable =
     viewerId === userId ? undefined : discoverableAuthorCondition();
@@ -436,11 +436,14 @@ export async function fetchPublicGuides(
  * visibility-only row, used by the sub-resource list endpoints) so the rule
  * itself cannot drift between the two even though they fetch different
  * shapes. Narrows `profile` to non-null for the caller via the `asserts`
- * return type.
+ * return type. `currentUserId` is nullable: a shared profile link must open
+ * for anonymous visitors (see `/api/users/[id]`), and an anonymous viewer is
+ * simply never equal to `targetUserId`, so it falls through to the
+ * public/private check like any other non-owner.
  */
 function assertProfileViewable<T extends { effectivelyPublic: boolean }>(
   profile: T | null,
-  currentUserId: string,
+  currentUserId: string | null,
   targetUserId: string,
 ): asserts profile is T {
   if (!profile) {
@@ -463,7 +466,7 @@ function assertProfileViewable<T extends { effectivelyPublic: boolean }>(
  */
 export async function requireViewableProfile(
   database: Database,
-  currentUserId: string,
+  currentUserId: string | null,
   targetUserId: string,
 ): Promise<ProfileRow> {
   const profile = await fetchProfileRow(database, targetUserId);
@@ -474,20 +477,27 @@ export async function requireViewableProfile(
 }
 
 /**
- * Resolves the database, authenticated viewer, and the `id` route param, then
- * enforces the same visibility rule as `requireViewableProfile` — via the
- * lean `fetchProfileVisibility` rather than the counts-laden `fetchProfileRow`
- * — before any `/api/users/[id]/*` sub-resource list is read. Every such
- * endpoint (followers, trips, guides) needs this identical preamble;
- * consolidating it here means a new one can't accidentally skip the
- * visibility check. Returns `viewerId` too (not just `targetUserId`) so a
- * list that treats the owner differently from any other viewer — see
- * `fetchPublicGuides` — can do so without re-deriving the authenticated user.
+ * Resolves the database, viewer (authenticated or anonymous), and the `id`
+ * route param, then enforces the same visibility rule as
+ * `requireViewableProfile` — via the lean `fetchProfileVisibility` rather
+ * than the counts-laden `fetchProfileRow` — before any `/api/users/[id]/*`
+ * sub-resource list is read. Every such endpoint (followers, trips, guides)
+ * needs this identical preamble; consolidating it here means a new one can't
+ * accidentally skip the visibility check. Returns `viewerId` too (not just
+ * `targetUserId`) so a list that treats the owner differently from any other
+ * viewer — see `fetchPublicGuides` — can do so without re-deriving the
+ * authenticated user. Auth is optional here for the same reason as
+ * `/api/users/[id]`: a shared public profile link must open for anonymous
+ * visitors, and the visibility rule below still gates strictly — an
+ * anonymous (null) viewer is treated as a non-owner and can only read a
+ * public profile's sub-resources, otherwise 404.
  */
-export async function requireViewableProfileTarget(
-  event: H3Event,
-): Promise<{ database: Database; targetUserId: string; viewerId: string }> {
-  const viewerId = requireUser(event);
+export async function requireViewableProfileTarget(event: H3Event): Promise<{
+  database: Database;
+  targetUserId: string;
+  viewerId: string | null;
+}> {
+  const viewerId = optionalUser(event);
   const targetUserId = requireRouterParam(event, "id");
   const database = getDb();
 
